@@ -1,0 +1,80 @@
+name: 🐛 Bug Report / 缺陷反馈
+description: Report a bug or unexpected behavior in OVH Nexus / 反馈 OVH Nexus 中的功能异常或缺陷
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **⚠️ Security Warning / 安全脱敏提醒**
+        > Never paste real OVHcloud API credentials (`appKey`, `appSecret`, `consumerKey`), `API_SECRET_KEY`, Telegram Bot tokens, or SMTP passwords into this issue.
+        > 严禁在 Issue 中粘贴真实的 OVH API 密钥、`API_SECRET_KEY`、Telegram 机器人 Token 或 SMTP 邮箱密码！
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Module / 涉及功能模块
+      description: Which part of OVH Nexus is affected? / 问题出现在哪个模块？
+      options:
+        - "Live Availability & Pricing Matrix / 实时库存与配置价格矩阵"
+        - "Public SKU Change Watcher / 货架 SKU 变动监控"
+        - "Notification Center (Telegram / SMTP) / 多通道通知中心"
+        - "Order Queue & Stock Monitor / 自动抢购队列与库存监控"
+        - "Dedicated Server Control (IPMI / OS / Firewall) / 独服管控与硬件防火墙"
+        - "VPS Fleet & Service Renewals / VPS 实例与到期续费大盘"
+        - "Authentication & Multi-Account / 登录认证与多账户切换"
+        - "Docker Build & Deployment / Docker 部署与容器运行"
+        - "UI / Theme / i18n (EN/FR/zh-CN) / 界面主题与多语言"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: region
+    attributes:
+      label: OVHcloud Endpoint / OVH 区域节点
+      options:
+        - "ovh-eu (Europe)"
+        - "ovh-ca (Canada / APAC)"
+        - "ovh-us (United States)"
+        - "N/A (Not region-specific / 与区域无关)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description / 问题描述
+      description: A clear and concise description of what happened vs. what you expected. / 请简明描述实际发生的异常现象与您的预期行为。
+      placeholder: |
+        What happened / 实际现象:
+        Expected behavior / 预期行为:
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce / 复现步骤
+      placeholder: |
+        1. Navigate to '...' / 进入 '...' 页面
+        2. Click on '...' / 点击 '...'
+        3. Observe error / 出现如下报错
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs (Redacted) / 相关日志（已脱敏）
+      description: Paste relevant container or browser console logs (`docker compose logs --tail=100`). / 请粘贴脱敏后的容器或浏览器控制台日志。
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-Submission Checklist / 提交前确认
+      options:
+        - label: I have redacted all sensitive API keys, tokens, and passwords from my report and logs. / 我已确认移除所有敏感 API 密钥、Token 与密码。
+          required: true
+        - label: I have searched existing issues to avoid duplicates. / 我已搜索现有 Issue，确认这不是重复反馈。
+          required: true
