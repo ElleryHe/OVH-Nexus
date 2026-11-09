@@ -3,24 +3,33 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.0.2]
+:::note[当前最新版本：v1.1.0]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
 
-## [1.0.2] - 依赖链安全加固清零与 Node 22 LTS 构建升级
+## [1.1.0] - 依赖链安全加固清零、三语系统架构图与文档体验升级
 
 ### 安全修复 (Security)
 
 - **全仓依赖安全告警清零 (`0 vulnerabilities`)**：
-  - 将主项目中的 `react-router-dom` 升级至 `>= 7.18.5`，并将文档站 `website/` 中的 `astro`（`>= 7.4.7`）、`@astrojs/starlight` 与 `sharp`（`>= 0.35.5`）升级至最新安全版本。
+  - 将主项目中的 `react-router-dom` 升级至 `>= 7.18.5`、`vite` 升级至 `>= 8.3.6`，并将文档站 `website/` 中的 `astro`（`>= 7.4.7`）、`@astrojs/starlight`（`>= 0.42.10`）与 `sharp`（`>= 0.35.5`）升级至最新安全版本。
   - 在主目录与 `website/` 的 `package.json` 中通过 `overrides` 强制锁定构建期子依赖安全版本（`esbuild >= 0.28.1`、`glob >= 14.0.2`、`minimatch >= 11.0.1`、`postcss-selector-parser >= 6.1.5`、`zod >= 4.6.6`），彻底消除 GitHub Dependabot 报出的全部 31 条安全告警。
+
+### 新增功能 (Added)
+
+- **三语高清系统架构图**：
+  - 为英、法、中三语《项目简介》页面新增本地化高清系统架构图（`architecture-en.jpg`、`architecture-fr.jpg`、`architecture-zh.jpg`）。
+- **文档站首页版权底栏与外链新窗口跳转**：
+  - 在文档站首页底部新增年份自动更新的版权与协议底栏（`© <年份> OVH-Nexus · AGPL-3.0`），并为所有外站链接自动启用新窗口打开（`target="_blank"`）。
 
 ### 变更与优化 (Changed)
 
-- **Docker 前端构建镜像升级**：
+- **Docker Node 22 LTS 构建升级与 README 开箱即用配置**：
   - 将 `Dockerfile` 第一阶段 `frontend-builder` 基础镜像由 `node:18-alpine` 升级至长期支持版 `node:22-alpine` (LTS)。
+  - 完善 `README.md`、`docs/README.fr.md` 与 `docs/README.zh-CN.md` 的快速开始章节，提供完整的独立 `docker-compose.yml` 与 `.env` 配置示例，以及外站链接新窗口跳转属性。
+  - 修复文档站首页卡片图标键名（`telegram` 与 `padlock`）。
 
 ---
 

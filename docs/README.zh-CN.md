@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://ovh-nexus.ellery.me/zh-cn/"><img src="https://img.shields.io/badge/文档-ovh--nexus.ellery.me%2Fzh--cn-0050D7?logo=read-the-docs&logoColor=white" alt="Documentation" /></a>
-  <a href="https://hub.docker.com/r/elleryhe/ovh-nexus"><img src="https://img.shields.io/badge/Docker-elleryhe%2Fovh--nexus-2496ED?logo=docker&logoColor=white" alt="Docker Hub" /></a>
-  <img src="https://img.shields.io/badge/License-AGPL%20v3.0-blue.svg" alt="License: AGPL v3.0" />
+  <a href="https://ovh-nexus.ellery.me/zh-cn/" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/文档-ovh--nexus.ellery.me%2Fzh--cn-0050D7?logo=read-the-docs&logoColor=white" alt="Documentation" /></a>
+  <a href="https://hub.docker.com/r/elleryhe/ovh-nexus" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Docker-elleryhe%2Fovh--nexus-2496ED?logo=docker&logoColor=white" alt="Docker Hub" /></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3.0-blue.svg" alt="License: AGPL v3.0" /></a>
 </p>
 
 ---
@@ -32,22 +32,61 @@
 - **全球实时库存矩阵与自动抢购队列**：免 API Key 拉取全球机房实时库存，自动展示商业型号（`KS-A`、`RISE-1`、`SCALE-a1`）、可读化硬件规格与精确到子配置的月付价格。
 - **公开货架 SKU 变动监控与通知中心**：免 API Key 追踪所有在架/预上机架型号上新与下架（内置防抖熔断机制），支持多实例 **Telegram 机器人**与 **SMTP 邮件**按需订阅 7 类事件。
 
-📚 **完整中文文档**：**[https://ovh-nexus.ellery.me/zh-cn/](https://ovh-nexus.ellery.me/zh-cn/)**
+📚 **完整中文文档**：<a href="https://ovh-nexus.ellery.me/zh-cn/" target="_blank" rel="noopener noreferrer"><strong>https://ovh-nexus.ellery.me/zh-cn/</strong></a>
 
 ---
 
-## 30 秒快速开始
+## 快速开始 (Docker Compose)
+
+OVH Nexus 通过 Docker Hub 分发多架构单容器镜像 `elleryhe/ovh-nexus:latest`，无需克隆代码仓库即可直接部署运行。
+
+### 1. 创建工作目录与 `.env` 配置文件
 
 ```bash
-# 1. 创建环境变量配置文件
-cp .env.example .env
-# 编辑 .env 并设置至少 12 位的高强度 API_SECRET_KEY（例如 openssl rand -hex 24）
+mkdir -p ovh-nexus && cd ovh-nexus
 
-# 2. 启动容器
+cat > .env << EOF
+# 必填：Web 控制台登录密码 / API 密钥（至少 12 位随机字符）
+API_SECRET_KEY=$(openssl rand -hex 24)
+
+# 可选：默认界面语言 (en | fr | zh-CN)
+DEFAULT_LOCALE=zh-CN
+
+# 可选：若通过 HTTPS 反向代理访问请设为 true
+COOKIE_SECURE=false
+EOF
+```
+
+### 2. 创建 `docker-compose.yml`
+
+```yaml
+services:
+  ovh-nexus:
+    image: ${DOCKER_IMAGE:-elleryhe/ovh-nexus:latest}
+    container_name: ovh-nexus
+    ports:
+      - "20000:80"
+    environment:
+      - DEBUG=false
+      - ENABLE_API_KEY_AUTH=true
+      - API_SECRET_KEY=${API_SECRET_KEY:?请在 .env 中设置至少 12 位的强口令 API_SECRET_KEY}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      - DEFAULT_LOCALE=${DEFAULT_LOCALE:-zh-CN}
+      - BIND_HOST=127.0.0.1
+    volumes:
+      - ./data:/app/backend/data
+      - ./logs:/app/backend/logs
+      - ./cache:/app/backend/cache
+    restart: unless-stopped
+```
+
+### 3. 启动容器
+
+```bash
 docker compose up -d
 ```
 
-浏览器访问 `http://localhost:20000`，使用 `.env` 中配置的 `API_SECRET_KEY` 登录即可。
+浏览器访问 `http://localhost:20000`，输入 `.env` 中生成的 `API_SECRET_KEY`（可通过 `grep API_SECRET_KEY .env` 查看）即可登录控制台。
 
 ---
 
@@ -55,11 +94,11 @@ docker compose up -d
 
 | 指南章节 | 链接 |
 | :--- | :--- |
-| **快速开始与安装升级** | [ovh-nexus.ellery.me/zh-cn/getting-started/quick-start/](https://ovh-nexus.ellery.me/zh-cn/getting-started/quick-start/) |
-| **反向代理与 HTTPS (`COOKIE_SECURE`)** | [ovh-nexus.ellery.me/zh-cn/getting-started/reverse-proxy/](https://ovh-nexus.ellery.me/zh-cn/getting-started/reverse-proxy/) |
-| **环境变量与 OVH API 凭据申请** | [ovh-nexus.ellery.me/zh-cn/configuration/environment-variables/](https://ovh-nexus.ellery.me/zh-cn/configuration/environment-variables/) |
-| **功能指南（独服、VPS、库存、SKU 监控、通知中心）** | [ovh-nexus.ellery.me/zh-cn/features/dedicated-servers/](https://ovh-nexus.ellery.me/zh-cn/features/dedicated-servers/) |
-| **安全加固建议与故障排查** | [ovh-nexus.ellery.me/zh-cn/operations/security/](https://ovh-nexus.ellery.me/zh-cn/operations/security/) |
+| **快速开始与安装升级** | <a href="https://ovh-nexus.ellery.me/zh-cn/getting-started/quick-start/" target="_blank" rel="noopener noreferrer">ovh-nexus.ellery.me/zh-cn/getting-started/quick-start/</a> |
+| **反向代理与 HTTPS (`COOKIE_SECURE`)** | <a href="https://ovh-nexus.ellery.me/zh-cn/getting-started/reverse-proxy/" target="_blank" rel="noopener noreferrer">ovh-nexus.ellery.me/zh-cn/getting-started/reverse-proxy/</a> |
+| **环境变量与 OVH API 凭据申请** | <a href="https://ovh-nexus.ellery.me/zh-cn/configuration/environment-variables/" target="_blank" rel="noopener noreferrer">ovh-nexus.ellery.me/zh-cn/configuration/environment-variables/</a> |
+| **功能指南（独服、VPS、库存、SKU 监控、通知中心）** | <a href="https://ovh-nexus.ellery.me/zh-cn/features/dedicated-servers/" target="_blank" rel="noopener noreferrer">ovh-nexus.ellery.me/zh-cn/features/dedicated-servers/</a> |
+| **安全加固建议与故障排查** | <a href="https://ovh-nexus.ellery.me/zh-cn/operations/security/" target="_blank" rel="noopener noreferrer">ovh-nexus.ellery.me/zh-cn/operations/security/</a> |
 
 ---
 

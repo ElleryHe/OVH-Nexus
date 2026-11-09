@@ -18,7 +18,7 @@ OVH Nexus is configured at container startup via environment variables defined i
 | `BIND_HOST` | No | `127.0.0.1` | Host interface the Python backend binds to inside the container (`127.0.0.1` so only the internal Nginx process can reach it). |
 | `PORT` | No | `19998` | Internal port for the Python Flask backend (proxied by internal Nginx on container port `80`). |
 | `CORS_ORIGINS` | No | `http://localhost:19999,http://127.0.0.1:19999` | Comma-separated list of allowed cross-origin development origins. Not needed in production Docker deployments where Nginx serves the UI and `/api/*` from the same origin. |
-| `DOCKER_IMAGE` | No | `elleryhe/ovh-nexus:latest` | Used by `docker-compose.yml` to override the container image tag (e.g., `elleryhe/ovh-nexus:1.0.2`). |
+| `DOCKER_IMAGE` | No | `elleryhe/ovh-nexus:latest` | Used by `docker-compose.yml` to override the container image tag (e.g., `elleryhe/ovh-nexus:1.1.0`). |
 
 ## Generating a Strong `API_SECRET_KEY`
 

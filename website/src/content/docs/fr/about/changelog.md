@@ -3,24 +3,33 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.0.2]
+:::note[Dernière version : v1.1.0]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
 
-## [1.0.2] - Mise à Jour de Sécurité des Dépendances & Node 22 LTS
+## [1.1.0] - Durcissement des Dépendances, Schémas d'Architecture & Améliorations Documentaires
 
 ### Sécurité (Security)
 
 - **Arbre de Dépendances Sans Vulnérabilité (`0 vulnerabilities`)** :
-  - Mise à jour de `react-router-dom` (`>= 7.18.5`) dans la console principale et de `astro` (`>= 7.4.7`), `@astrojs/starlight` et `sharp` (`>= 0.35.5`) dans le site de documentation `website/`.
-  - Ajout de règles npm `overrides` pour les sous-dépendances de compilation (`esbuild >= 0.28.1`, `glob >= 14.0.2`, `minimatch >= 11.0.1`, `postcss-selector-parser >= 6.1.5`, `zod >= 4.6.6`), corrigeant l'ensemble des 31 alertes GitHub Dependabot.
+  - Mise à jour de `react-router-dom` (`>= 7.18.5`) et `vite` (`>= 8.3.6`) dans la console principale, ainsi que de `astro` (`>= 7.4.7`), `@astrojs/starlight` (`>= 0.42.10`) et `sharp` (`>= 0.35.5`) dans le site de documentation `website/`.
+  - Ajout de règles npm `overrides` (`esbuild >= 0.28.1`, `glob >= 14.0.2`, `minimatch >= 11.0.1`, `postcss-selector-parser >= 6.1.5`, `zod >= 4.6.6`), corrigeant l'ensemble des 31 alertes GitHub Dependabot.
+
+### Ajouté (Added)
+
+- **Schémas d'Architecture Trilingues** :
+  - Ajout des diagrammes d'architecture haute résolution localisés (`architecture-en.jpg`, `architecture-fr.jpg`, `architecture-zh.jpg`) sur la page de présentation.
+- **Pied de Page d'Accueil & Liens Externes** :
+  - Ajout d'un pied de page dynamique (`© <Année> OVH-Nexus · AGPL-3.0`) sur la page d'accueil de la documentation et ouverture automatique des liens externes dans un nouvel onglet (`target="_blank"`).
 
 ### Modifié (Changed)
 
-- **Environnement de Build Docker** :
+- **Build Docker Node 22 LTS & Démarrage Rapide Autonome** :
   - Passage de l'étape `frontend-builder` du `Dockerfile` de `node:18-alpine` à `node:22-alpine` (LTS).
+  - Enrichissement du Démarrage Rapide dans `README.md`, `docs/README.fr.md` et `docs/README.zh-CN.md` avec un fichier `docker-compose.yml` complet prêt à l'emploi sans cloner le dépôt.
+  - Correction des icônes de cartes Starlight (`telegram` et `padlock`) sur la page d'accueil.
 
 ---
 

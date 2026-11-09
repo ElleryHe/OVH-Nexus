@@ -2,6 +2,7 @@
 title: Documentation OVH Nexus
 description: Console web auto-hébergée et multi-comptes pour le contrôle de flotte OVHcloud et l'approvisionnement automatisé de serveurs dédiés et VPS.
 template: splash
+editUrl: false
 hero:
   tagline: Gestion unifiée de flotte OVHcloud, suivi des commandes et de la livraison en direct, matrice de disponibilité en temps réel, veille publique des SKU et achat automatisé dans un seul conteneur.
   image:
@@ -15,6 +16,9 @@ hero:
       link: https://github.com/ElleryHe/OVH-Nexus
       icon: external
       variant: minimal
+      attrs:
+        target: _blank
+        rel: noopener noreferrer
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
@@ -32,10 +36,14 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Commandes, Livraison & Renouvellements" icon="approve-check-circle">
     Synchronisez vos commandes OVHcloud, récupérez les liens de paiement et suivez en direct les 4 étapes de livraison matérielle (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) ainsi que les échéances d'expiration de tous vos services.
   </Card>
-  <Card title="Centre de Notifications Multi-Canaux" icon="bell">
+  <Card title="Centre de Notifications Multi-Canaux" icon="telegram">
     Configurez plusieurs **Bots Telegram** et comptes **Email SMTP** (`SSL/TLS`, `STARTTLS`, `Plain` avec modèles HTML responsives) abonnés à 7 événements granulaires (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
   </Card>
-  <Card title="Architecture Auto-Hébergée Durcie" icon="lock">
+  <Card title="Architecture Auto-Hébergée Durcie" icon="padlock">
     Image Docker tout-en-un multi-architecture (`linux/amd64` & `linux/arm64`) combinant Nginx et Python avec validation stricte de `API_SECRET_KEY`, cookies de session `HttpOnly`, limitation de débit anti-force-brute, masquage des secrets (`****`) et interface trilingue (`en` / `fr` / `zh-CN`).
   </Card>
 </CardGrid>
+
+<footer class="nexus-home-footer">
+  © <span data-nexus-year>2026</span> <a href="https://github.com/ElleryHe/OVH-Nexus" target="_blank" rel="noopener noreferrer">OVH-Nexus</a> · <a href="/fr/about/license/">AGPL-3.0</a>
+</footer>

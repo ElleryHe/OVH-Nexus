@@ -20,35 +20,7 @@ OVH Nexus unifies the entire lifecycle in one web interface:
 
 OVH Nexus is distributed as an all-in-one container (`elleryhe/ovh-nexus`):
 
-```text
-Browser (HTTPS / HTTP)
-   │
-   ▼
-┌───────────────────────────────────────────────────────────┐
-│ Docker Container (elleryhe/ovh-nexus)                     │
-│                                                           │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Nginx (Port 80 inside container -> 20000 on host)   │  │
-│  │  • Serves React SPA static bundle (/usr/share/...)  │  │
-│  │  • Enforces CSP & security headers                  │  │
-│  │  • Proxies /api/* to 127.0.0.1:19998                │  │
-│  └─────────────────────────┬───────────────────────────┘  │
-│                            │                              │
-│                            ▼                              │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Python Flask Backend (127.0.0.1:19998)              │  │
-│  │  • Session Cookie Auth & Brute-Force Rate Limiter   │  │
-│  │  • Multi-Account OVHcloud API Client Registry       │  │
-│  │  • CatalogService (Eco + Baremetal 12h disk cache)  │  │
-│  │  • ServerMonitor & Queue Worker Daemon              │  │
-│  │  • SkuWatcher (Public SKU diff & anti-glitch engine)│  │
-│  │  • NotificationHub (Telegram Bot & SMTP dispatchers)│  │
-│  └─────────────────────────────────────────────────────┘  │
-│       │                    │                    │         │
-│       ▼                    ▼                    ▼         │
-│  /app/backend/data   /app/backend/logs   /app/backend/cache
-└───────────────────────────────────────────────────────────┘
-```
+![OVH Nexus — Single-Container Architecture](../../../assets/architecture-en.jpg)
 
 ## Supported OVHcloud Regions
 
