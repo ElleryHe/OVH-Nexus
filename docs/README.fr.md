@@ -15,56 +15,56 @@
   <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <a href="https://ovh-nexus.ellery.me/fr/"><img src="https://img.shields.io/badge/Docs-ovh--nexus.ellery.me%2Ffr-0050D7?logo=read-the-docs&logoColor=white" alt="Documentation" /></a>
+  <a href="https://hub.docker.com/r/elleryhe/ovh-nexus"><img src="https://img.shields.io/badge/Docker-elleryhe%2Fovh--nexus-2496ED?logo=docker&logoColor=white" alt="Docker Hub" /></a>
+  <img src="https://img.shields.io/badge/License-AGPL%20v3.0-blue.svg" alt="License: AGPL v3.0" />
+</p>
+
 ---
 
 ## Présentation
 
-**OVH Nexus** est une console web auto-hébergée et multi-comptes conçue pour les utilisateurs d’OVHcloud (`OVH Europe`, `OVH Canada`, `OVH US`). Elle réunit dans un seul conteneur Docker **la gestion quotidienne de votre infrastructure Cloud** et **la surveillance de stock / commande automatisée**.
+**OVH Nexus** est une console web auto-hébergée et multi-comptes conçue pour les utilisateurs d’OVHcloud (`ovh-eu`, `ovh-ca`, `ovh-us`). Elle réunit dans un seul conteneur Docker **la gestion quotidienne de votre infrastructure Cloud** et **la surveillance de stock, la veille SKU et la commande automatisée**.
 
-### Fonctionnalités Principales
+- **Contrôle des Serveurs Dédiés & VPS** : Inventaire matériel, trafic MRTG, console IPMI/KVM, réinstallation OS automatisée (RAID/ZFS, injection de clés SSH), pare-feu IP Edge & mitigation Anti-DDoS, et gestion VPS.
+- **Commandes, Livraison & Renouvellements** : Suivi en direct des 4 étapes de livraison (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) et matrice d’expiration des services.
+- **Disponibilité en Direct & File d’Achat Auto** : Stock en temps réel enrichi avec les noms commerciaux (`KS-A`, `RISE-1`, `SCALE-a1`), spécifications lisibles et tarification mensuelle exacte par configuration.
+- **Veille SKU & Centre de Notifications** : Détection sans clé API des nouveaux modèles ou retraits de serveurs, et alertes multi-canaux (**Telegram Bot** et **Email SMTP**) sur 7 événements.
 
-1. **Contrôle des Serveurs Dédiés (`/dedicated/server`)**
-   - Inventaire matériel, spécifications réseau, graphiques de trafic MRTG en temps réel et accès distant IPMI/KVM (SOL, KVM, xterm.js).
-   - Réinstallation OS automatisée avec RAID matériel/logiciel, profils Proxmox ZFS et **injection directe de clés publiques SSH (`/me/sshKey`)**.
-   - **Pare-feu IP Edge & Mitigation Anti-DDoS (`/ip/{ip}/firewall` & `/mitigation`)** : gestion des règles de pare-feu réseau OVH et activation de la mitigation permanente Anti-DDoS.
-2. **Gestion de la Flotte VPS (`/vps`)**
-   - Vue d’ensemble des VPS achetés (modèle, vCore/RAM/Disque, adresses IPv4/IPv6, état, échéance) et redémarrage en un clic (`/vps/{serviceName}/reboot`).
-3. **Suivi des Commandes & Livraison en Direct (`/me/order` & `/followUp`)**
-   - Liste des commandes OVHcloud récentes, liens de paiement/facture PDF et suivi en temps réel des 4 étapes de livraison (`CREATING`, `VALIDATING`, `DELIVERING`, `INSTALLATION`).
-4. **Matrice d’Expiration & Renouvellement des Services (`/serviceInfos`)**
-   - Compte à rebours avant expiration (`<= 7j`, `<= 30j`, `> 30j`) et mode de renouvellement (`Automatique`, `Manuel`, `Résiliation à l'échéance`) pour tous vos serveurs dédiés et VPS.
-5. **Disponibilité en Temps Réel, Veille SKU & Centre de Notifications Multi-Canaux**
-   - Matrice de disponibilité en direct dans tous les datacenters OVHcloud (`GRA`, `SBG`, `RBX`, `LIM`, `FRA`, `LON`, `WAW`, `BHS`, `SGP`, `SYD`) avec **noms commerciaux (`KS-A`, `RISE-1`), spécifications matérielles lisibles et tarification mensuelle exacte par configuration**.
-   - **Veille des Changements SKU** : détection automatique des nouveaux modèles et retraits de serveurs sur les étagères publiques OVHcloud avec protection anti-faux-positifs.
-   - **Centre de Notifications** : canaux multiples **Telegram Bot** et **Email SMTP** (`SSL/TLS`, `STARTTLS`) avec abonnement granulaire à 7 types d’événements.
-6. **Interface Trilingue Intégrée (`en` / `fr` / `zh-CN`)**
-   - Basculez instantanément entre **English**, **Français** et **简体中文** depuis l’interface web ou via la variable d’environnement `DEFAULT_LOCALE=fr`.
+📚 **Documentation complète (Français)** : **[https://ovh-nexus.ellery.me/fr/](https://ovh-nexus.ellery.me/fr/)**
 
 ---
 
-## Démarrage Rapide (Docker Compose)
-
-### 1. Créer le fichier `.env`
+## Démarrage Rapide (30 secondes)
 
 ```bash
-cat > .env << 'EOF'
-API_SECRET_KEY=votre-cle-secrete-robuste
-DEFAULT_LOCALE=fr
-COOKIE_SECURE=false
-EOF
-```
+# 1. Créer le fichier de configuration .env
+cp .env.example .env
+# Éditez .env et définissez une clé API_SECRET_KEY robuste (au moins 12 caractères)
 
-### 2. Lancer le conteneur
-
-```bash
+# 2. Démarrer avec Docker Compose
 docker compose up -d
 ```
 
-Accédez ensuite à `http://localhost:20000` et connectez-vous avec `API_SECRET_KEY`.
+Accédez à `http://localhost:20000` et connectez-vous avec votre `API_SECRET_KEY`.
+
+---
+
+## Liens Utiles
+
+| Guide | Lien |
+| :--- | :--- |
+| **Démarrage Rapide & Installation** | [ovh-nexus.ellery.me/fr/getting-started/quick-start/](https://ovh-nexus.ellery.me/fr/getting-started/quick-start/) |
+| **Reverse Proxy & HTTPS (`COOKIE_SECURE`)** | [ovh-nexus.ellery.me/fr/getting-started/reverse-proxy/](https://ovh-nexus.ellery.me/fr/getting-started/reverse-proxy/) |
+| **Variables d’Environnement & Clés API OVH** | [ovh-nexus.ellery.me/fr/configuration/environment-variables/](https://ovh-nexus.ellery.me/fr/configuration/environment-variables/) |
+| **Guides des Fonctionnalités** | [ovh-nexus.ellery.me/fr/features/dedicated-servers/](https://ovh-nexus.ellery.me/fr/features/dedicated-servers/) |
+| **Sécurité & Dépannage** | [ovh-nexus.ellery.me/fr/operations/security/](https://ovh-nexus.ellery.me/fr/operations/security/) |
 
 ---
 
 ## Licence & Clause de non-responsabilité
 
-- **Licence** : Distribué sous licence **GNU Affero General Public License v3.0 (AGPL-3.0)**. Voir le fichier [LICENSE](../LICENSE).
-- **Avertissement** : **OVH Nexus** est un projet open-source tiers indépendant et n’est **pas affilié à, ni approuvé par OVH SAS / OVHcloud**. « OVH » et « OVHcloud » sont des marques déposées d’OVH SAS.
+Distribué sous licence **GNU Affero General Public License v3.0 (AGPL-3.0)**. Voir [LICENSE](../LICENSE), [CONTRIBUTING.md](../CONTRIBUTING.md) et [SECURITY.md](../SECURITY.md).
+
+> **OVH Nexus** est un projet open-source indépendant et n’est **pas affilié à, ni approuvé par OVH SAS / OVHcloud**. « OVH » et « OVHcloud » sont des marques déposées d’OVH SAS.

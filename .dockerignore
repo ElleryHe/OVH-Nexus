@@ -44,6 +44,7 @@ backend/data/
 .env.production.local
 
 # 测试和文档
+website/
 docs/
 backend/tests/
 *.md
