@@ -3,11 +3,27 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.0.0]
+:::note[当前最新版本：v1.0.1]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.0.1] - 官方文档站上线与 CI/CD 构建优化
+
+### 新增功能 (Added)
+
+- **官方三语文档站点 (`website/`)**：
+  - 基于 **Astro Starlight** 与 **Pagefind** 离线全文检索引擎构建全量三语（`en`、`fr`、`zh-CN`）官方文档站，覆盖 5 大章节共 69 个页面（`https://ovh-nexus.ellery.me`）。
+  - 配置基于 **Cloudflare Workers Static Assets** 的纯静态资产部署架构（`wrangler.jsonc`，关闭 `workers_dev` 与 `preview_urls`），并配置严格的 CSP 与缓存响应头（`_headers`）。
+
+### 变更与优化 (Changed)
+
+- **仓库 README 精简与 CI 触发隔离**：
+  - 精简 `README.md`、`docs/README.fr.md` 与 `docs/README.zh-CN.md`，提供 30 秒快速开始与文档站直达导航。
+  - 在 `.github/workflows/dockerhub.yml` 中配置 `paths-ignore` 忽略规则，并在 `.dockerignore` 中排除 `website/`，避免纯文档变更触发不必要的 Docker 镜像重编译。
+
+---
 
 ## [1.0.0] - 首个公开正式版发布
 

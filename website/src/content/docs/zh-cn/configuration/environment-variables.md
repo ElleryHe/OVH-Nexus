@@ -18,7 +18,7 @@ OVH Nexus 在容器启动时通过 `.env` 文件或 `docker-compose.yml` 中的 
 | `BIND_HOST` | 否 | `127.0.0.1` | 容器内部 Python 后端监听的网卡地址（默认仅监听 `127.0.0.1`，仅供容器内 Nginx 反代调用）。 |
 | `PORT` | 否 | `19998` | 容器内 Python Flask 后端监听端口（由容器内 Nginx 在 80 端口统一代理）。 |
 | `CORS_ORIGINS` | 否 | `http://localhost:19999,http://127.0.0.1:19999` | 前后端分离本地开发时的跨域白名单（逗号分隔）。Docker 生产部署下前后端同源，无需修改。 |
-| `DOCKER_IMAGE` | 否 | `elleryhe/ovh-nexus:latest` | 供 `docker-compose.yml` 覆盖镜像版本标签（如 `elleryhe/ovh-nexus:1.0.0`）。 |
+| `DOCKER_IMAGE` | 否 | `elleryhe/ovh-nexus:latest` | 供 `docker-compose.yml` 覆盖镜像版本标签（如 `elleryhe/ovh-nexus:1.0.1`）。 |
 
 ## 生成高强度 `API_SECRET_KEY`
 

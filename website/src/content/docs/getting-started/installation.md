@@ -12,13 +12,13 @@ Official container images are built automatically by GitHub Actions and publishe
 | Tag Pattern | Example | Description |
 | :--- | :--- | :--- |
 | `latest` | `elleryhe/ovh-nexus:latest` | Latest stable release built from the `main` branch. |
-| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.0.0` | Pinned immutable semantic version release. |
+| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.0.1` | Pinned immutable semantic version release. |
 | `MAJOR.MINOR` | `elleryhe/ovh-nexus:1.0` | Tracks the latest patch within the `1.0.x` series. |
 
 To pin a specific version in `docker-compose.yml`, set `DOCKER_IMAGE` in your `.env` file:
 
 ```ini
-DOCKER_IMAGE=elleryhe/ovh-nexus:1.0.0
+DOCKER_IMAGE=elleryhe/ovh-nexus:1.0.1
 ```
 
 ## Upgrading OVH Nexus

@@ -3,11 +3,27 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.0.0]
+:::note[Dernière version : v1.0.1]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.0.1] - Site de Documentation & Optimisation CI/CD
+
+### Ajouté (Added)
+
+- **Site de Documentation Officiel (`website/`)** :
+  - Création d'un site de documentation trilingue (`en`, `fr`, `zh-CN`) complet propulsé par **Astro Starlight** et la recherche statique hors ligne **Pagefind** sur 69 pages (`https://ovh-nexus.ellery.me`).
+  - Configuration du déploiement **Cloudflare Workers** purement statique (`wrangler.jsonc`, `workers_dev: false`, `preview_urls: false`) avec en-têtes de sécurité CSP stricts (`_headers`).
+
+### Modifié (Changed)
+
+- **Présentation du Dépôt & Déclencheurs CI** :
+  - Simplification de `README.md`, `docs/README.fr.md` et `docs/README.zh-CN.md` avec démarrage rapide en 30 secondes et liens vers la documentation.
+  - Ajout de filtres `paths-ignore` dans `.github/workflows/dockerhub.yml` et exclusion de `website/` dans `.dockerignore` afin que les modifications documentaires ne déclenchent pas de reconstruction d'image Docker.
+
+---
 
 ## [1.0.0] - Première Version Publique
 

@@ -3,11 +3,27 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.0.0]
+:::note[Latest Release: v1.0.1]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.0.1] - Documentation Site & CI/CD Optimization
+
+### Added
+
+- **Official Documentation Site (`website/`)**:
+  - Built a full tri-lingual (`en`, `fr`, `zh-CN`) documentation site powered by **Astro Starlight** and **Pagefind** static offline search across 69 pages (`https://ovh-nexus.ellery.me`).
+  - Configured assets-only **Cloudflare Workers** deployment (`wrangler.jsonc`, `workers_dev: false`, `preview_urls: false`) with strict CSP and immutable asset caching (`_headers`).
+
+### Changed
+
+- **Repository Storefront & CI Triggers**:
+  - Streamlined `README.md`, `docs/README.fr.md`, and `docs/README.zh-CN.md` with quick-start instructions and direct links to the documentation portal.
+  - Added `paths-ignore` rules to `.github/workflows/dockerhub.yml` and excluded `website/` in `.dockerignore` so documentation-only commits do not trigger unnecessary Docker image builds.
+
+---
 
 ## [1.0.0] - Initial Public Release
 
