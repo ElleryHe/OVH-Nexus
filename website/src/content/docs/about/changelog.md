@@ -3,11 +3,26 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.0.1]
+:::note[Latest Release: v1.0.2]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.0.2] - Dependency Security Hardening & Node 22 LTS Builder
+
+### Security
+
+- **Zero-Vulnerability Dependency Tree**:
+  - Upgraded `react-router-dom` (`>= 7.18.5`) in the main console and `astro` (`>= 7.4.7`), `@astrojs/starlight`, and `sharp` (`>= 0.35.5`) in the `website/` documentation portal.
+  - Added npm `overrides` for transitive build-time packages (`esbuild >= 0.28.1`, `glob >= 14.0.2`, `minimatch >= 11.0.1`, `postcss-selector-parser >= 6.1.5`, `zod >= 4.6.6`), resolving all 31 GitHub Dependabot security advisories across both lockfiles (`0 vulnerabilities`).
+
+### Changed
+
+- **Docker Build Runtime**:
+  - Upgraded the `frontend-builder` stage in `Dockerfile` from `node:18-alpine` to `node:22-alpine` (LTS).
+
+---
 
 ## [1.0.1] - Documentation Site & CI/CD Optimization
 

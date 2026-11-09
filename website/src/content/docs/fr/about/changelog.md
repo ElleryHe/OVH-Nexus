@@ -3,11 +3,26 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.0.1]
+:::note[Dernière version : v1.0.2]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.0.2] - Mise à Jour de Sécurité des Dépendances & Node 22 LTS
+
+### Sécurité (Security)
+
+- **Arbre de Dépendances Sans Vulnérabilité (`0 vulnerabilities`)** :
+  - Mise à jour de `react-router-dom` (`>= 7.18.5`) dans la console principale et de `astro` (`>= 7.4.7`), `@astrojs/starlight` et `sharp` (`>= 0.35.5`) dans le site de documentation `website/`.
+  - Ajout de règles npm `overrides` pour les sous-dépendances de compilation (`esbuild >= 0.28.1`, `glob >= 14.0.2`, `minimatch >= 11.0.1`, `postcss-selector-parser >= 6.1.5`, `zod >= 4.6.6`), corrigeant l'ensemble des 31 alertes GitHub Dependabot.
+
+### Modifié (Changed)
+
+- **Environnement de Build Docker** :
+  - Passage de l'étape `frontend-builder` du `Dockerfile` de `node:18-alpine` à `node:22-alpine` (LTS).
+
+---
 
 ## [1.0.1] - Site de Documentation & Optimisation CI/CD
 

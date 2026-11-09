@@ -1,6 +1,5 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import starlightLinksValidator from 'starlight-links-validator';
 
 export default defineConfig({
   site: 'https://ovh-nexus.ellery.me',
@@ -29,14 +28,17 @@ export default defineConfig({
           lang: 'zh-CN',
         },
       },
-      social: {
-        github: 'https://github.com/ElleryHe/OVH-Nexus',
-      },
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/ElleryHe/OVH-Nexus',
+        },
+      ],
       editLink: {
         baseUrl: 'https://github.com/ElleryHe/OVH-Nexus/edit/main/website/',
       },
       lastUpdated: false,
-      plugins: [starlightLinksValidator()],
       sidebar: [
         {
           label: 'Getting Started',

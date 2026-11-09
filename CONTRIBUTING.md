@@ -27,7 +27,7 @@ If you discover a security vulnerability, **do not open a public issue**. Please
 
 ### Prerequisites
 - **Docker & Docker Compose** (recommended for end-to-end testing)
-- **Node.js 18+** & `npm` (for frontend development)
+- **Node.js 22+** & `npm` (for frontend & documentation development)
 - **Python 3.11+** (for backend development & unit tests)
 
 ### Project Structure

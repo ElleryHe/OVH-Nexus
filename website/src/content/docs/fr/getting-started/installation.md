@@ -12,13 +12,13 @@ Les images officielles sont compilées automatiquement par GitHub Actions et pub
 | Modèle de Tag | Exemple | Description |
 | :--- | :--- | :--- |
 | `latest` | `elleryhe/ovh-nexus:latest` | Dernière version stable publiée depuis la branche `main`. |
-| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.0.1` | Version sémantique immuable figée. |
+| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.0.2` | Version sémantique immuable figée. |
 | `MAJOR.MINOR` | `elleryhe/ovh-nexus:1.0` | Suit automatiquement le dernier correctif de la série `1.0.x`. |
 
 Pour fixer une version précise dans `docker-compose.yml`, définissez `DOCKER_IMAGE` dans votre fichier `.env` :
 
 ```ini
-DOCKER_IMAGE=elleryhe/ovh-nexus:1.0.1
+DOCKER_IMAGE=elleryhe/ovh-nexus:1.0.2
 ```
 
 ## Mettre à Jour OVH Nexus
