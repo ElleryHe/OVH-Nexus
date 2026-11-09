@@ -1,0 +1,41 @@
+---
+title: Documentation OVH Nexus
+description: Console web auto-hébergée et multi-comptes pour le contrôle de flotte OVHcloud et l'approvisionnement automatisé de serveurs dédiés et VPS.
+template: splash
+hero:
+  tagline: Gestion unifiée de flotte OVHcloud, suivi des commandes et de la livraison en direct, matrice de disponibilité en temps réel, veille publique des SKU et achat automatisé dans un seul conteneur.
+  image:
+    file: ../../../assets/logo.svg
+  actions:
+    - text: Démarrage Rapide (30s)
+      link: /fr/getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: Voir sur GitHub
+      link: https://github.com/ElleryHe/OVH-Nexus
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Contrôle des Serveurs Dédiés & VPS" icon="laptop">
+    Consultez l'inventaire matériel, les graphiques de trafic MRTG et les consoles distantes IPMI/KVM (`SOL`, `KVM`, `xterm.js`). Lancez des réinstallations OS avec RAID matériel/logiciel, profils Proxmox ZFS, injection de clés SSH (`/me/sshKey`), et gérez le pare-feu IP Edge et la mitigation Anti-DDoS.
+  </Card>
+  <Card title="Matrice de Stock en Direct & Tarification Exacte" icon="magnifier">
+    Surveillez les datacenters OVHcloud (`GRA`, `SBG`, `RBX`, `LIM`, `FRA`, `LON`, `WAW`, `BHS`, `SGP`, `SYD`, `VIN`, `HIL`) sans clé API. Enrichit automatiquement chaque `planCode` avec les noms commerciaux (`KS-A`, `RISE-1`, `SCALE-a1`), les spécifications RAM/stockage lisibles et le prix mensuel exact par configuration.
+  </Card>
+  <Card title="Veille Publique des Changements SKU" icon="rocket">
+    Détectez en temps réel l'apparition ou le retrait de modèles et configurations sur les étagères OVHcloud — y compris les serveurs pré-rackés avant leur mise en vente — avec confirmation de retrait sur 2 cycles et disjoncteur anti-faux-positifs (>30 %).
+  </Card>
+  <Card title="Commandes, Livraison & Renouvellements" icon="approve-check-circle">
+    Synchronisez vos commandes OVHcloud, récupérez les liens de paiement et suivez en direct les 4 étapes de livraison matérielle (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) ainsi que les échéances d'expiration de tous vos services.
+  </Card>
+  <Card title="Centre de Notifications Multi-Canaux" icon="bell">
+    Configurez plusieurs **Bots Telegram** et comptes **Email SMTP** (`SSL/TLS`, `STARTTLS`, `Plain` avec modèles HTML responsives) abonnés à 7 événements granulaires (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
+  </Card>
+  <Card title="Architecture Auto-Hébergée Durcie" icon="lock">
+    Image Docker tout-en-un multi-architecture (`linux/amd64` & `linux/arm64`) combinant Nginx et Python avec validation stricte de `API_SECRET_KEY`, cookies de session `HttpOnly`, limitation de débit anti-force-brute, masquage des secrets (`****`) et interface trilingue (`en` / `fr` / `zh-CN`).
+  </Card>
+</CardGrid>

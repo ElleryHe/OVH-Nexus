@@ -1,0 +1,41 @@
+---
+title: OVH Nexus Documentation
+description: Self-hosted, multi-account OVHcloud control and automated bare-metal / VPS procurement console.
+template: splash
+hero:
+  tagline: Unified OVHcloud Fleet Control, Live Order & Delivery Tracking, Real-Time Stock Matrix, Public SKU Watcher, and Automated Server Procurement in a Single Container.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Quick Start (30s)
+      link: /getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/ElleryHe/OVH-Nexus
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Dedicated Server & VPS Fleet Control" icon="laptop">
+    Inspect hardware inventory, MRTG traffic telemetry, and IPMI/KVM remote consoles (`SOL`, `KVM`, `xterm.js`). Perform automated OS reinstallations with custom hardware/software RAID, Proxmox ZFS profiles, one-click SSH key injection (`/me/sshKey`), and manage OVHcloud IP Edge Firewall & Anti-DDoS mitigation.
+  </Card>
+  <Card title="Live Stock Matrix & Exact Pricing" icon="magnifier">
+    Monitor global OVHcloud datacenters (`GRA`, `SBG`, `RBX`, `LIM`, `FRA`, `LON`, `WAW`, `BHS`, `SGP`, `SYD`, `VIN`, `HIL`) without an API key. Automatically enriches cryptic `planCode` strings with commercial model names (`KS-A`, `RISE-1`, `SCALE-a1`), readable RAM/storage specs, and exact configuration-level monthly pricing.
+  </Card>
+  <Card title="Public SKU Change Watcher" icon="rocket">
+    Track newly racked or removed server SKUs and hardware configurations across OVHcloud shelves in real time—including unreleased models before sales open—with built-in 2-round removal confirmation and >30% drop circuit-breaker protection.
+  </Card>
+  <Card title="Orders, Delivery & Renewal Matrix" icon="approve-check-circle">
+    Follow recent OVHcloud orders, retrieve invoice & payment links, watch the 4-stage hardware delivery pipeline (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`), and track expiration countdowns across all accounts.
+  </Card>
+  <Card title="Multi-Channel Notification Center" icon="bell">
+    Configure multiple **Telegram Bots** and **SMTP Email** channels (`SSL/TLS`, `STARTTLS`, `Plain` with responsive HTML templates) subscribed to 7 fine-grained events (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
+  </Card>
+  <Card title="Hardened Self-Hosted Architecture" icon="lock">
+    All-in-one multi-arch Docker image (`linux/amd64` & `linux/arm64`) bundling Nginx and Python backend with mandatory `API_SECRET_KEY` validation, `HttpOnly` session cookies, login rate limiting, secret masking (`****`), and tri-lingual UI (`en` / `fr` / `zh-CN`).
+  </Card>
+</CardGrid>

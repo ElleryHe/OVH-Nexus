@@ -1,0 +1,41 @@
+---
+title: OVH Nexus 官方文档
+description: 面向 OVHcloud 的多账户自托管云资产管控与独服/VPS 自动化采购控制台。
+template: splash
+hero:
+  tagline: 单容器整合 OVHcloud 独服/VPS 日常运维管控、实时订单交付追踪、全球机房库存矩阵、公开货架 SKU 变动监控与自动化抢购。
+  image:
+    file: ../../../assets/logo.svg
+  actions:
+    - text: 30 秒快速开始
+      link: /zh-cn/getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: 访问 GitHub 仓库
+      link: https://github.com/ElleryHe/OVH-Nexus
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="独立服务器与 VPS 深度管控" icon="laptop">
+    一屏查看硬件资产、MRTG 实时流量图表与 IPMI/KVM 远程控制台（`SOL`、`KVM`、`xterm.js`）。支持自定义软/硬 RAID、Proxmox ZFS 模板自动化重装系统、一键注入账户 SSH 公钥（`/me/sshKey`），以及面板内直接管理 IP 边缘防火墙与永久 Anti-DDoS 缓解。
+  </Card>
+  <Card title="全球实时库存矩阵与配置级定价" icon="magnifier">
+    免 API Key 实时监控 OVHcloud 全球数据中心（`GRA`、`SBG`、`RBX`、`LIM`、`FRA`、`LON`、`WAW`、`BHS`、`SGP`、`SYD`、`VIN`、`HIL`）库存。自动关联公开目录展示友好商业型号（`KS-A`、`RISE-1`、`SCALE-a1`）、可读化硬件规格与精确到子配置的月付价格。
+  </Card>
+  <Card title="公开货架 SKU 变动监控" icon="rocket">
+    免 API Key 全天候追踪 OVHcloud 货架（含未开售预上机架型号）的 SKU 上新、下架与配置增减，内置首轮基线静默、连续 2 轮缺失确认下架与单轮锐减 >30% 熔断防误报机制。
+  </Card>
+  <Card title="订单实时交付与续费到期总览" icon="approve-check-circle">
+    同步账户历史订单、提取待支付订单付款链接与 PDF 账单，实时追踪 OVH 官方 4 步硬件交付流水线（`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`），并汇总全账户独服与 VPS 到期倒计时预警。
+  </Card>
+  <Card title="可插拔多通道通知中心" icon="bell">
+    支持同时配置多个 **Telegram 机器人**与 **SMTP 邮件**通道（支持 `SSL/TLS`、`STARTTLS`、`Plain` 及响应式 HTML 邮件模板），按需独立订阅 7 类细粒度事件（`stock.available`、`stock.unavailable`、`sku.changed`、`order.success`、`order.failed`、`order.delivered`、`service.expiring`）。
+  </Card>
+  <Card title="安全加固的单容器自托管架构" icon="lock">
+    官方提供 `linux/amd64` 与 `linux/arm64` 多架构单容器镜像，内置强制强口令校验（`API_SECRET_KEY`）、`HttpOnly` 会话 Cookie、防暴力破解限流、敏感凭据掩码（`****`）以及中/英/法三语自适应明暗主题界面。
+  </Card>
+</CardGrid>
