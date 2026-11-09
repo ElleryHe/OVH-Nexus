@@ -1,0 +1,18 @@
+services:
+  ovh-nexus:
+    image: ${DOCKER_IMAGE:-elleryhe/ovh-nexus:latest}
+    container_name: ovh-nexus
+    ports:
+      - "20000:80"
+    environment:
+      - DEBUG=false
+      - ENABLE_API_KEY_AUTH=true
+      - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
+      - BIND_HOST=127.0.0.1
+    volumes:
+      - ./data:/app/backend/data
+      - ./logs:/app/backend/logs
+      - ./cache:/app/backend/cache
+    restart: unless-stopped

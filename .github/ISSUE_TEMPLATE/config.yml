@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a Security Vulnerability / 私密上报安全漏洞
+    url: https://github.com/ElleryHe/OVH-Nexus/security/advisories/new
+    about: Please do NOT report security vulnerabilities in public issues. Use GitHub Private Vulnerability Reporting instead. / 请勿在公开 Issue 中提交安全漏洞，请使用 GitHub 私密安全通告上报。

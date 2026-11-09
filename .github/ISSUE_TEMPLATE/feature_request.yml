@@ -1,0 +1,41 @@
+name: ✨ Feature Request / 功能建议
+description: Suggest an enhancement, new OVHcloud API integration, or notification channel / 建议新功能、OVHcloud API 集成或新通知通道
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category / 功能分类
+      options:
+        - "OVHcloud Official API Integration / OVHcloud 官方 API 能力扩展"
+        - "Notification Channel (Webhook, Bark, Discord, etc.) / 新增通知推送渠道"
+        - "Live Availability & SKU Intelligence / 实时库存与 SKU 监控增强"
+        - "Automated Procurement & Queue Strategy / 抢购队列与下单策略优化"
+        - "UI / UX & Localization / 界面交互与多语言体验"
+        - "Other / 其他"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case / 需求背景与使用场景
+      description: What problem does this feature solve, or what workflow does it improve? / 该功能旨在解决什么痛点或优化哪个使用场景？
+      placeholder: Describe the use case... / 请描述您的使用场景...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution / 期望的实现方案
+      description: Describe how you envision this feature working (include OVHcloud API endpoints if applicable). / 请描述您期望的交互或实现方式（如涉及 OVH 官方接口可附上 API 路径）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context / 补充信息
+      description: Any screenshots, mockups, or reference links. / 任何相关的截图、设计草图或参考链接。
