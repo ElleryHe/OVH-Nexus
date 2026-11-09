@@ -2,6 +2,7 @@
 title: OVH Nexus 官方文档
 description: 面向 OVHcloud 的多账户自托管云资产管控与独服/VPS 自动化采购控制台。
 template: splash
+editUrl: false
 hero:
   tagline: 单容器整合 OVHcloud 独服/VPS 日常运维管控、实时订单交付追踪、全球机房库存矩阵、公开货架 SKU 变动监控与自动化抢购。
   image:
@@ -15,6 +16,9 @@ hero:
       link: https://github.com/ElleryHe/OVH-Nexus
       icon: external
       variant: minimal
+      attrs:
+        target: _blank
+        rel: noopener noreferrer
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
@@ -32,10 +36,14 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="订单实时交付与续费到期总览" icon="approve-check-circle">
     同步账户历史订单、提取待支付订单付款链接与 PDF 账单，实时追踪 OVH 官方 4 步硬件交付流水线（`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`），并汇总全账户独服与 VPS 到期倒计时预警。
   </Card>
-  <Card title="可插拔多通道通知中心" icon="bell">
+  <Card title="可插拔多通道通知中心" icon="telegram">
     支持同时配置多个 **Telegram 机器人**与 **SMTP 邮件**通道（支持 `SSL/TLS`、`STARTTLS`、`Plain` 及响应式 HTML 邮件模板），按需独立订阅 7 类细粒度事件（`stock.available`、`stock.unavailable`、`sku.changed`、`order.success`、`order.failed`、`order.delivered`、`service.expiring`）。
   </Card>
-  <Card title="安全加固的单容器自托管架构" icon="lock">
+  <Card title="安全加固的单容器自托管架构" icon="padlock">
     官方提供 `linux/amd64` 与 `linux/arm64` 多架构单容器镜像，内置强制强口令校验（`API_SECRET_KEY`）、`HttpOnly` 会话 Cookie、防暴力破解限流、敏感凭据掩码（`****`）以及中/英/法三语自适应明暗主题界面。
   </Card>
 </CardGrid>
+
+<footer class="nexus-home-footer">
+  © <span data-nexus-year>2026</span> <a href="https://github.com/ElleryHe/OVH-Nexus" target="_blank" rel="noopener noreferrer">OVH-Nexus</a> · <a href="/zh-cn/about/license/">AGPL-3.0</a>
+</footer>

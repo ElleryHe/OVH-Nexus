@@ -38,3 +38,38 @@
   display: table;
   width: 100%;
 }
+
+.nexus-home-footer {
+  margin-top: 3.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--sl-color-gray-5);
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-3);
+}
+
+.nexus-home-footer a {
+  color: var(--sl-color-gray-2);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.nexus-home-footer a:hover {
+  color: var(--sl-color-accent);
+  text-decoration: underline;
+}
+
+.nexus-arch-diagram {
+  margin: 1.5rem 0;
+  border-radius: 12px;
+  border: 1px solid var(--sl-color-gray-5);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.nexus-arch-diagram img {
+  display: block;
+  width: 100%;
+  height: auto;
+}

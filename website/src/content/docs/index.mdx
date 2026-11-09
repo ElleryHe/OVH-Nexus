@@ -2,6 +2,7 @@
 title: OVH Nexus Documentation
 description: Self-hosted, multi-account OVHcloud control and automated bare-metal / VPS procurement console.
 template: splash
+editUrl: false
 hero:
   tagline: Unified OVHcloud Fleet Control, Live Order & Delivery Tracking, Real-Time Stock Matrix, Public SKU Watcher, and Automated Server Procurement in a Single Container.
   image:
@@ -15,6 +16,9 @@ hero:
       link: https://github.com/ElleryHe/OVH-Nexus
       icon: external
       variant: minimal
+      attrs:
+        target: _blank
+        rel: noopener noreferrer
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
@@ -32,10 +36,14 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Orders, Delivery & Renewal Matrix" icon="approve-check-circle">
     Follow recent OVHcloud orders, retrieve invoice & payment links, watch the 4-stage hardware delivery pipeline (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`), and track expiration countdowns across all accounts.
   </Card>
-  <Card title="Multi-Channel Notification Center" icon="bell">
+  <Card title="Multi-Channel Notification Center" icon="telegram">
     Configure multiple **Telegram Bots** and **SMTP Email** channels (`SSL/TLS`, `STARTTLS`, `Plain` with responsive HTML templates) subscribed to 7 fine-grained events (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
   </Card>
-  <Card title="Hardened Self-Hosted Architecture" icon="lock">
+  <Card title="Hardened Self-Hosted Architecture" icon="padlock">
     All-in-one multi-arch Docker image (`linux/amd64` & `linux/arm64`) bundling Nginx and Python backend with mandatory `API_SECRET_KEY` validation, `HttpOnly` session cookies, login rate limiting, secret masking (`****`), and tri-lingual UI (`en` / `fr` / `zh-CN`).
   </Card>
 </CardGrid>
+
+<footer class="nexus-home-footer">
+  © <span data-nexus-year>2026</span> <a href="https://github.com/ElleryHe/OVH-Nexus" target="_blank" rel="noopener noreferrer">OVH-Nexus</a> · <a href="/about/license/">AGPL-3.0</a>
+</footer>

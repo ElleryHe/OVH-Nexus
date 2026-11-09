@@ -2,9 +2,11 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, "./package.json"), "utf-8")
+  fs.readFileSync(path.resolve(rootDir, "./package.json"), "utf-8")
 );
 
 // https://vitejs.dev/config/
@@ -32,7 +34,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(rootDir, "./src"),
     },
   },
 });

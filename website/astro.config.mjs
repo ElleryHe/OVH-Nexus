@@ -1,6 +1,5 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import starlightLinksValidator from 'starlight-links-validator';
 
 export default defineConfig({
   site: 'https://ovh-nexus.ellery.me',
@@ -14,6 +13,36 @@ export default defineConfig({
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
+      head: [
+        {
+          tag: 'script',
+          content: `
+            (() => {
+              const applyNexusEnhancements = () => {
+                const year = String(new Date().getFullYear());
+                document.querySelectorAll('[data-nexus-year]').forEach((el) => {
+                  el.textContent = year;
+                });
+                document.querySelectorAll('a[href^="http://"], a[href^="https://"]').forEach((a) => {
+                  try {
+                    const url = new URL(a.href, window.location.origin);
+                    if (url.hostname !== window.location.hostname && url.hostname !== 'ovh-nexus.ellery.me') {
+                      a.setAttribute('target', '_blank');
+                      a.setAttribute('rel', 'noopener noreferrer');
+                    }
+                  } catch {}
+                });
+              };
+              if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', applyNexusEnhancements);
+              } else {
+                applyNexusEnhancements();
+              }
+              document.addEventListener('astro:page-load', applyNexusEnhancements);
+            })();
+          `,
+        },
+      ],
       defaultLocale: 'root',
       locales: {
         root: {
@@ -29,14 +58,17 @@ export default defineConfig({
           lang: 'zh-CN',
         },
       },
-      social: {
-        github: 'https://github.com/ElleryHe/OVH-Nexus',
-      },
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/ElleryHe/OVH-Nexus',
+        },
+      ],
       editLink: {
         baseUrl: 'https://github.com/ElleryHe/OVH-Nexus/edit/main/website/',
       },
       lastUpdated: false,
-      plugins: [starlightLinksValidator()],
       sidebar: [
         {
           label: 'Getting Started',
