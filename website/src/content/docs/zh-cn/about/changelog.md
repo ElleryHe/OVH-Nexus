@@ -3,11 +3,20 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.1.0]
+:::note[当前最新版本：v1.1.1]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.1.1] - 后端测试依赖安全补丁
+
+### 安全修复 (Security)
+
+- **后端测试依赖升级 (`CVE-2025-71176` / `GHSA-6w46-j5rx-g56g`)**：
+  - 将 `backend/requirements-dev.txt` 中的 `pytest` 由 `8.4.2` 升级至 `>=9.0.3`，修复 UNIX 临时目录处理安全漏洞（`CVE-2025-71176`），实现全仓 npm 与 pip 依赖的 GitHub Dependabot 告警彻底清零（0 Open Alerts）。
+
+---
 
 ## [1.1.0] - 依赖链安全加固清零、三语系统架构图与文档体验升级
 

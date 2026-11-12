@@ -3,11 +3,20 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.1.0]
+:::note[Latest Release: v1.1.1]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.1.1] - Backend Test Dependency Security Patch
+
+### Security
+
+- **Backend Dev Dependency Update (`CVE-2025-71176` / `GHSA-6w46-j5rx-g56g`)**:
+  - Upgraded `pytest` in `backend/requirements-dev.txt` from `8.4.2` to `>=9.0.3` to remediate the UNIX temporary directory handling vulnerability (`CVE-2025-71176`), achieving 0 open Dependabot alerts across all npm and pip manifests.
+
+---
 
 ## [1.1.0] - Security Hardening, Visual Architecture Diagrams & Documentation Polish
 
