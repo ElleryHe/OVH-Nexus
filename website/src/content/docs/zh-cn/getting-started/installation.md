@@ -12,13 +12,13 @@ description: Docker 镜像版本标签说明、多架构支持、平滑升级与
 | 标签格式 | 示例 | 说明 |
 | :--- | :--- | :--- |
 | `latest` | `elleryhe/ovh-nexus:latest` | `main` 分支最新发布的稳定版镜像。 |
-| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.1.0` | 固定语义化版本号镜像，适合对稳定性要求极高的生产环境锁定版本。 |
+| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.1.1` | 固定语义化版本号镜像，适合对稳定性要求极高的生产环境锁定版本。 |
 | `MAJOR.MINOR` | `elleryhe/ovh-nexus:1.1` | 自动跟随 `1.1.x` 系列的最新补丁版本。 |
 
 如需固定镜像版本，只需在 `.env` 中指定 `DOCKER_IMAGE`：
 
 ```ini
-DOCKER_IMAGE=elleryhe/ovh-nexus:1.1.0
+DOCKER_IMAGE=elleryhe/ovh-nexus:1.1.1
 ```
 
 ## 平滑升级容器

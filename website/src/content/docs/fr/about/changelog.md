@@ -3,11 +3,20 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.1.0]
+:::note[Dernière version : v1.1.1]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.1.1] - Correctif de Sécurité des Dépendances de Test Backend
+
+### Sécurité (Security)
+
+- **Mise à jour de la dépendance de test Backend (`CVE-2025-71176` / `GHSA-6w46-j5rx-g56g`)** :
+  - Mise à jour de `pytest` dans `backend/requirements-dev.txt` de `8.4.2` vers `>=9.0.3` afin de corriger la vulnérabilité liée aux répertoires temporaires UNIX (`CVE-2025-71176`), ramenant le nombre total d'alertes Dependabot (npm et pip) à 0.
+
+---
 
 ## [1.1.0] - Durcissement des Dépendances, Schémas d'Architecture & Améliorations Documentaires
 
