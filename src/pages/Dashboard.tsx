@@ -235,8 +235,8 @@ const Dashboard = () => {
           </div>
           <div className="mt-4 flex items-center justify-between text-xs text-cyber-muted">
             <span>{t("dashboard.stat.failedOrders", { failed: stats.purchaseFailed })}</span>
-            <Link to="/settings" className="hover:text-cyber-accent transition-colors">
-              {t("nav.settings")}
+            <Link to="/api-accounts" className="hover:text-cyber-accent transition-colors font-medium">
+              {t("nav.apiAccounts")} →
             </Link>
           </div>
         </div>

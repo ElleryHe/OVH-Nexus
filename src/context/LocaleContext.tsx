@@ -48,7 +48,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.mcp': 'MCP AI Gateway',
     'nav.notifications': 'Notification Center',
     'nav.logs': 'System Logs',
-    'nav.settings': 'Settings & API',
+    'nav.apiAccounts': 'OVH API Accounts',
+    'nav.settings': 'System & Security',
 
     // Sidebar Footer
     'sidebar.apiStatus': 'OVHcloud API',
@@ -67,8 +68,9 @@ const translations: Record<Locale, Record<string, string>> = {
     'dashboard.refresh': 'Refresh Status',
     'dashboard.refreshing': 'Refreshing...',
     'dashboard.apiNotConfigured': 'OVHcloud API Not Configured',
-    'dashboard.apiNotConfiguredDesc': 'Configure your OVHcloud API credentials in Settings to unlock server control, account orders, and automated procurement.',
+    'dashboard.apiNotConfiguredDesc': 'Add your OVHcloud API credentials in OVH API Accounts to unlock server control, account orders, and automated procurement.',
     'dashboard.configureApi': 'Configure API',
+    'dashboard.dismissNotice': 'Dismiss',
     'dashboard.stat.servers': 'Catalog Models',
     'dashboard.stat.serversLoading': 'Loading catalog...',
     'dashboard.stat.serversReady': 'Dedicated server plans indexed',
@@ -150,7 +152,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.mcp': 'Passerelle IA MCP',
     'nav.notifications': 'Centre de Notifications',
     'nav.logs': 'Journaux Système',
-    'nav.settings': 'Paramètres & API',
+    'nav.apiAccounts': 'Comptes API OVH',
+    'nav.settings': 'Système & Sécurité',
 
     // Sidebar Footer
     'sidebar.apiStatus': 'API OVHcloud',
@@ -169,8 +172,9 @@ const translations: Record<Locale, Record<string, string>> = {
     'dashboard.refresh': 'Actualiser',
     'dashboard.refreshing': 'Actualisation...',
     'dashboard.apiNotConfigured': 'API OVHcloud non configurée',
-    'dashboard.apiNotConfiguredDesc': 'Configurez vos identifiants API OVHcloud dans Paramètres pour activer la gestion de flotte et les commandes.',
+    'dashboard.apiNotConfiguredDesc': 'Ajoutez vos identifiants dans Comptes API OVH pour activer la gestion de flotte et les commandes.',
     'dashboard.configureApi': 'Configurer l’API',
+    'dashboard.dismissNotice': 'Masquer',
     'dashboard.stat.servers': 'Modèles Catalogue',
     'dashboard.stat.serversLoading': 'Chargement...',
     'dashboard.stat.serversReady': 'Serveurs dédiés indexés',
@@ -252,7 +256,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.mcp': 'MCP AI 网关',
     'nav.notifications': '通知中心',
     'nav.logs': '系统运行日志',
-    'nav.settings': 'API 与系统设置',
+    'nav.apiAccounts': 'OVH API 账户',
+    'nav.settings': '系统与安全设置',
 
     // Sidebar Footer
     'sidebar.apiStatus': 'OVHcloud API',
@@ -271,8 +276,9 @@ const translations: Record<Locale, Record<string, string>> = {
     'dashboard.refresh': '刷新状态',
     'dashboard.refreshing': '刷新中...',
     'dashboard.apiNotConfigured': '尚未配置 OVHcloud API 凭证',
-    'dashboard.apiNotConfiguredDesc': '请前往「API 与系统设置」配置您的 OVH 密钥，以启用独服/VPS 管理、订单交付追踪与自动抢购功能。',
+    'dashboard.apiNotConfiguredDesc': '请前往「OVH API 账户」添加您的 OVH 密钥，以启用独服/VPS 管理、订单交付追踪与自动抢购功能。',
     'dashboard.configureApi': '立即配置 API',
+    'dashboard.dismissNotice': '暂时收起',
     'dashboard.stat.servers': '目录机型数',
     'dashboard.stat.serversLoading': '正在加载目录...',
     'dashboard.stat.serversReady': '已索引独立服务器型号',

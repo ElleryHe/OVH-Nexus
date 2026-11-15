@@ -1,177 +1,156 @@
 import { useState, useEffect, useRef } from "react";
-import { Outlet, useLocation } from "react-router-dom";
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { Menu, X } from "lucide-react";
 import Sidebar from "./Sidebar";
+import { NexusLogo } from "./NexusLogo";
 import { useAPI } from "@/context/APIContext";
+import { useLocale } from "@/context/LocaleContext";
 import APINotice from "./APINotice";
 
+const COMPACT_BREAKPOINT = 1024; // Aligns strictly with Tailwind `lg:`
+
 const Layout = () => {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const isMobile = useIsMobile();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isCompact, setIsCompact] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < COMPACT_BREAKPOINT : false
+  );
   const { isAuthenticated, isLoading } = useAPI();
+  const { t } = useLocale();
   const location = useLocation();
   const touchStartX = useRef(0);
-  const touchEndX = useRef(0);
-  
-  // 监听触摸事件以实现从左向右划出侧边栏
-  useEffect(() => {
-    if (isMobile) {
-      const handleTouchStart = (e: TouchEvent) => {
-        touchStartX.current = e.touches[0].clientX;
-      };
-      
-      const handleTouchEnd = (e: TouchEvent) => {
-        touchEndX.current = e.changedTouches[0].clientX;
-        const distance = touchEndX.current - touchStartX.current;
-        
-        // 如果从屏幕左边缘开始向右划动超过30px，打开侧边栏
-        if (touchStartX.current < 20 && distance > 30 && !sidebarOpen) {
-          setSidebarOpen(true);
-        }
-        
-        // 如果侧边栏打开，从右向左划动超过50px，关闭侧边栏
-        if (distance < -50 && sidebarOpen) {
-          setSidebarOpen(false);
-        }
-      };
-      
-      document.addEventListener('touchstart', handleTouchStart);
-      document.addEventListener('touchend', handleTouchEnd);
-      
-      return () => {
-        document.removeEventListener('touchstart', handleTouchStart);
-        document.removeEventListener('touchend', handleTouchEnd);
-      };
-    }
-  }, [isMobile, sidebarOpen]);
 
   useEffect(() => {
-    // 仅在移动端时关闭边栏，桌面端始终保持显示
-    if (isMobile) {
-      setSidebarOpen(false);
-    } else {
-      setSidebarOpen(true);
-    }
-  }, [isMobile]);
+    const mql = window.matchMedia(`(max-width: ${COMPACT_BREAKPOINT - 1}px)`);
+    const onChange = () => {
+      const compact = window.innerWidth < COMPACT_BREAKPOINT;
+      setIsCompact(compact);
+      if (!compact) {
+        setDrawerOpen(false);
+      }
+    };
+    mql.addEventListener("change", onChange);
+    onChange();
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
-    // 移动端切换页面时关闭侧边栏
-    if (isMobile) {
-      setSidebarOpen(false);
-    }
-  }, [location.pathname, isMobile]);
+    setDrawerOpen(false);
+  }, [location.pathname, location.search]);
 
-  const toggleSidebar = () => {
-    setSidebarOpen(!sidebarOpen);
-  };
+  useEffect(() => {
+    if (!isCompact) return;
+    const handleTouchStart = (e: TouchEvent) => {
+      touchStartX.current = e.touches[0].clientX;
+    };
+    const handleTouchEnd = (e: TouchEvent) => {
+      const distance = e.changedTouches[0].clientX - touchStartX.current;
+      if (touchStartX.current < 24 && distance > 40 && !drawerOpen) {
+        setDrawerOpen(true);
+      } else if (distance < -50 && drawerOpen) {
+        setDrawerOpen(false);
+      }
+    };
+    document.addEventListener("touchstart", handleTouchStart);
+    document.addEventListener("touchend", handleTouchEnd);
+    return () => {
+      document.removeEventListener("touchstart", handleTouchStart);
+      document.removeEventListener("touchend", handleTouchEnd);
+    };
+  }, [isCompact, drawerOpen]);
+
+  const hideApiNoticePaths = ["/server-control", "/api-accounts", "/settings"];
+  const shouldShowApiNotice =
+    !isLoading &&
+    !isAuthenticated &&
+    !hideApiNoticePaths.includes(location.pathname);
 
   return (
     <div className="min-h-screen flex flex-col bg-cyber-bg cyber-grid-bg text-cyber-text">
       {/* Subtle enterprise top accent border */}
-      <div className="fixed top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-blue-600/60 via-indigo-500/40 to-transparent z-50"></div>
-      
+      <div className="fixed top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-blue-600/60 via-indigo-500/40 to-transparent z-50" />
+
+      {/* Compact Top Navigation Bar (< 1024px) */}
+      <header className="lg:hidden sticky top-0 z-30 h-14 px-4 bg-cyber-surface/95 backdrop-blur border-b border-cyber-grid flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            className="p-2 -ml-1 rounded-md border border-cyber-grid bg-cyber-bg/60 text-cyber-text hover:text-cyber-accent hover:border-cyber-accent/40 transition-colors"
+            aria-label="打开导航菜单"
+          >
+            <Menu size={18} />
+          </button>
+          <Link to="/" className="flex items-center gap-2">
+            <NexusLogo size={28} />
+            <span className="font-bold text-sm tracking-tight text-cyber-text">
+              {t("brand.name")}
+            </span>
+          </Link>
+        </div>
+        <Link
+          to="/api-accounts"
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-cyber-grid bg-cyber-bg/60 text-cyber-muted hover:text-cyber-text transition-colors"
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${
+              isAuthenticated ? "bg-emerald-500" : "bg-amber-500"
+            }`}
+          />
+          <span>
+            {isAuthenticated ? t("sidebar.connected") : t("sidebar.notConfigured")}
+          </span>
+        </Link>
+      </header>
+
       <div className="flex-1 flex relative">
-        {/* 桌面端始终显示侧边栏 */}
-        <div className={`hidden lg:block fixed inset-y-0 left-0 z-40`}>
-          <Sidebar onToggle={toggleSidebar} isOpen={true} />
+        {/* Desktop Permanent Sidebar (>= 1024px) */}
+        <div className="hidden lg:block fixed inset-y-0 left-0 z-40">
+          <Sidebar onToggle={() => {}} isOpen={true} />
         </div>
 
-        {/* 移动端可滑出的侧边栏 */}
+        {/* Mobile / Tablet Slide-out Sidebar (< 1024px) */}
         <AnimatePresence mode="wait">
-          {isMobile && sidebarOpen && (
+          {isCompact && drawerOpen && (
             <>
-              {/* 背景遮罩，点击关闭侧边栏 */}
               <motion.div
                 initial={{ opacity: 0 }}
-                animate={{ opacity: 0.5 }}
+                animate={{ opacity: 0.55 }}
                 exit={{ opacity: 0 }}
-                className="fixed inset-0 bg-black z-30"
-                onClick={() => setSidebarOpen(false)}
-                style={{ pointerEvents: 'auto' }}
+                className="fixed inset-0 bg-black z-40"
+                onClick={() => setDrawerOpen(false)}
               />
-              
-              {/* 侧边栏 */}
               <motion.div
-                initial={{ x: -280 }}
+                initial={{ x: -290 }}
                 animate={{ x: 0 }}
-                exit={{ x: -280 }}
-                transition={{ duration: 0.3, ease: "easeInOut" }}
-                className="fixed inset-y-0 left-0 z-40"
+                exit={{ x: -290 }}
+                transition={{ duration: 0.22, ease: "easeOut" }}
+                className="fixed inset-y-0 left-0 z-50"
               >
-                <Sidebar onToggle={toggleSidebar} isOpen={sidebarOpen} />
-                
-                {/* 添加关闭按钮 */}
-                <button 
-                  onClick={() => setSidebarOpen(false)}
-                  className="absolute top-4 right-4 w-8 h-8 bg-cyber-bg border border-cyber-accent/30 rounded-md flex items-center justify-center text-cyber-text hover:bg-cyber-accent/10 transition-colors"
-                  aria-label="关闭侧边栏"
+                <Sidebar
+                  onToggle={() => setDrawerOpen(false)}
+                  isOpen={drawerOpen}
+                />
+                <button
+                  type="button"
+                  onClick={() => setDrawerOpen(false)}
+                  className="absolute top-3.5 right-3.5 w-8 h-8 bg-cyber-bg border border-cyber-grid rounded-md flex items-center justify-center text-cyber-muted hover:text-cyber-text transition-colors"
+                  aria-label="关闭导航菜单"
                 >
-                  <svg 
-                    xmlns="http://www.w3.org/2000/svg" 
-                    width="16" 
-                    height="16" 
-                    viewBox="0 0 24 24" 
-                    fill="none" 
-                    stroke="currentColor" 
-                    strokeWidth="2" 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
+                  <X size={16} />
                 </button>
               </motion.div>
             </>
           )}
         </AnimatePresence>
 
-        {/* 移动端贴边呼出按钮 */}
-        {isMobile && !sidebarOpen && (
-          <div 
-            onClick={toggleSidebar}
-            className="fixed right-0 top-1/3 z-40 cursor-pointer"
-          >
-            <div className="flex items-center">
-              <div className="h-16 w-4 bg-cyber-bg/80 border border-r-0 border-cyber-accent/50 rounded-l-md flex items-center justify-center">
-                <svg 
-                  xmlns="http://www.w3.org/2000/svg" 
-                  width="16" 
-                  height="16" 
-                  viewBox="0 0 24 24" 
-                  fill="none" 
-                  stroke="currentColor" 
-                  strokeWidth="2" 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round"
-                  className="text-cyber-accent"
-                >
-                  <polyline points="15 18 9 12 15 6"></polyline>
-                </svg>
-              </div>
-              <div className="h-24 w-1.5 bg-cyber-accent/80 rounded-l-sm shadow-neon"></div>
-            </div>
-          </div>
-        )}
-
-        <main 
-          className={`flex-1 py-6 px-4 sm:px-6 transition-all duration-300 ${
-            !isMobile ? "lg:ml-72" : "ml-0"
-          } relative`}
-        >
-          {!isLoading && !isAuthenticated && location.pathname !== '/server-control' && <APINotice />}
-          
+        <main className="flex-1 py-6 px-4 sm:px-6 lg:ml-72 min-w-0 relative">
           <div className="container mx-auto max-w-7xl">
-            {/* 移除面包屑部分，直接显示页面内容 */}
+            {shouldShowApiNotice && <APINotice />}
             <Outlet />
           </div>
-          
-          {/* 移除移动端菜单按钮，只依赖左侧滑动手势显示菜单 */}
         </main>
       </div>
-      
-      {/* 移除移动端底部导航栏 */}
     </div>
   );
 };

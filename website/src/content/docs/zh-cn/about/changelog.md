@@ -3,11 +3,31 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.2.2]
+:::note[当前最新版本：v1.2.3]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.2.3] - 响应式侧边栏布局修复、首次部署 OVH API 引导闭环、2FA 状态同步与文档站 SEO 增强
+
+### 问题修复 (Fixed)
+
+- **Tailwind CSS v3 响应式选择器转义异常与侧边栏消失修复**：
+  - 将 `package.json` `overrides` 中的 `postcss-selector-parser` 锁定为 `^6.1.6`（修复误解析至 `7.2.0` 导致 `.lg\:block` 等响应式类名被三重转义失效、桌面端左侧导航栏被隐藏的问题）。
+  - 在 `Layout.tsx` 中补齐 `< 1024px` 紧凑视口顶部导航栏与菜单按钮，彻底消除 `768px–1023px` 视口盲区。
+- **首次部署 OVH API 填写入口闭环与顶部提示条优化**：
+  - 在左侧主导航新增 **「OVH API 账户」(`/api-accounts`)** 入口，并在「系统与安全设置」(`/settings`) 中增加多账户管理卡片跳转。
+  - 将顶部「立即配置 API」按钮直连 `/api-accounts` 填写表单，在配置页自动隐藏重复提示条并支持一键收起关闭，同时补齐首次绑定 2FA 的前置引导提示。
+- **2FA (TOTP) 绑定后状态同步修复**：
+  - 统一后端 `/api/auth/totp/status` 与 `/api/auth/totp/activate` 返回的 `totpEnabled` / `enabled` 字段及中文错误提示字段（`message`），修复绑定验证成功后前端仍显示“未启用”的问题。
+
+### 新增功能 (Added)
+
+- **文档门户 SEO 与搜索引擎抓取优化 (`website/`)**：
+  - 新增构建期 `/sitemap.xml` 直出生成（与 `/sitemap-index.xml` 同步输出），注入 `<lastmod>` 更新日期与 `hreflang="x-default"` 多语言互链；完善 `robots.txt` 搜索引擎放行规则、`_headers` MIME 响应头与 OpenGraph 社交预览图（`og-image.jpg`）。
+
+---
 
 ## [1.2.2] - 依赖基线升级与 Dependabot 跨大版本治理加固
 
