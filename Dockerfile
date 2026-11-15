@@ -17,7 +17,7 @@ COPY eslint.config.js ./
 
 RUN npm run build
 
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 LABEL org.opencontainers.image.title="OVH Nexus" \
       org.opencontainers.image.description="Self-hosted OVHcloud control, automated bare-metal/VPS procurement & privacy-shielded MCP AI gateway console" \
