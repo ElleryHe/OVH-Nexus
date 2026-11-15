@@ -15,7 +15,7 @@ By participating in this project, you agree to abide by our [Code of Conduct](./
 > [!CAUTION]
 > **Never commit or paste real credentials** in code, tests, screenshots, issues, or pull requests:
 > - OVHcloud API credentials (`appKey`, `appSecret`, `consumerKey`)
-> - Console session secret (`API_SECRET_KEY`)
+> - Console session secret (`API_SECRET_KEY`) or MCP Bearer Tokens (`nxs_mcp_...`)
 > - Telegram Bot tokens (`tgToken`) or Chat IDs
 > - SMTP credentials (`username`, `password`)
 
@@ -38,16 +38,18 @@ If you discover a security vulnerability, **do not open a public issue**. Please
 │   ├── catalog_service.py       # Public OVHcloud catalog dictionary & hardware spec parser
 │   ├── sku_watcher.py           # Public availability SKU change watcher & anti-glitch engine
 │   ├── server_monitor.py        # Stock subscription & auto-order monitor
+│   ├── mcp/                     # Model Context Protocol (MCP) Gateway & Bidirectional Privacy Shield
 │   ├── notifications/           # Pluggable NotificationHub (Telegram & SMTP Email)
 │   ├── routes/cloud_fleet.py    # OVHcloud Orders, Services, SSH Keys, VPS & Edge Firewall APIs
-│   └── tests/                   # Backend security & functional unit test suite
+│   └── tests/                   # Backend security & MCP gateway unit test suite
 ├── src/
 │   ├── components/              # Shared UI components, Sidebar, PasswordGate, NexusLogo
 │   ├── context/                 # APIContext, LocaleContext (EN/FR/zh-CN), ThemeContext
-│   ├── pages/                   # Console feature pages
+│   ├── pages/                   # Console feature pages (including MCPGatewayPage)
 │   └── utils/                   # API client & hardware/pricing formatters
+├── website/                     # Official tri-lingual documentation portal (Astro Starlight)
 ├── nginx/                       # Nginx reverse-proxy & security header configuration
-└── Dockerfile                   # Multi-stage single-container build
+└── Dockerfile                   # Multi-stage single-container build with HEALTHCHECK
 ```
 
 ### Running Locally for Development
@@ -61,7 +63,7 @@ If you discover a security vulnerability, **do not open a public issue**. Please
    ```bash
    cd backend
    pip install -r requirements.txt -r requirements-dev.txt
-   API_SECRET_KEY=dev-secret-key PORT=19998 python app.py
+   API_SECRET_KEY=dev-secret-key-at-least-12-chars PORT=19998 python app.py
    ```
 3. **Full Container Build & Verification**:
    ```bash
@@ -73,23 +75,24 @@ If you discover a security vulnerability, **do not open a public issue**. Please
 
 ## 4. Running Tests
 
-All backend changes must pass the security and functional test suite before submitting a pull request:
+All backend changes must pass the security and MCP gateway unit test suite before submitting a pull request:
 
 ```bash
-pytest backend/tests/test_security.py
+API_SECRET_KEY="test-master-secret" pytest backend/tests/ -v
 ```
 
-Frontend changes must compile cleanly without TypeScript or Vite bundling errors:
+Frontend and documentation changes must compile cleanly without TypeScript, Vite, or Astro bundling errors:
 
 ```bash
 npm run build
+npm run build --prefix website
 ```
 
 ---
 
 ## 5. Pull Request Guidelines
 
-1. **Branching**: Create a descriptive feature or bugfix branch from `main` (e.g., `feat/webhook-channel` or `fix/catalog-timeout`).
+1. **Branching**: Create a descriptive feature or bugfix branch (e.g., `feat/webhook-channel` or `fix/catalog-timeout`). Keep branch history linear via `git rebase`.
 2. **Commit Messages**: Follow [Conventional Commits](https://www.conventionalcommits.org/):
    - `feat(scope): ...` for new features
    - `fix(scope): ...` for bug fixes

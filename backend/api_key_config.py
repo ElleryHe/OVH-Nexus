@@ -49,6 +49,8 @@ WHITELIST_PATHS = [
     '/api/auth/logout',
     # Telegram 服务器无法携带会话；该端点由处理函数校验 secret_token + chat_id
     '/api/telegram/webhook',
+    # MCP Streamable HTTP 端点由 mcp.server 独立校验专用 Bearer Token 与限流（不含 /api/mcp/* 管理接口）
+    '/api/mcp',
 ]
 
 

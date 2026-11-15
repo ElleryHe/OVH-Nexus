@@ -3,11 +3,30 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.1.1]
+:::note[Dernière version : v1.2.0]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.2.0] - Passerelle IA MCP, Bouclier de Confidentialité & Commandes Non Payées
+
+### Ajouté (Added)
+
+- **Passerelle Model Context Protocol (MCP) Streamable HTTP (`/api/mcp`)** :
+  - Point de terminaison JSON-RPC 2.0 intégré inspiré d'`ovh/ovhcloud-cli`, désactivé par défaut et authentifié par un jeton Bearer isolé (`nxs_mcp_...`) avec protection anti-brute-force.
+  - **20 Outils MCP répartis sur 3 niveaux de permissions configurables** :
+    - `L1 Lecture Seule` (`11 outils`) : Profils de comptes pseudonymisés, serveurs dédiés, VPS, pare-feu IP Edge, échéances d'expiration, suivi des commandes, disponibilité temps réel et changements de SKU.
+    - `L2 Commande Non Payée` (`5 outils`) : Devis et création de commande non payée en 2 étapes (`order_quote` → `order_create_unpaid`), file d'attente et alertes de stock.
+    - `L3 Opérations Réversibles` (`4 outils`) : Redémarrage matériel serveur dédié/VPS, réinitialisation IPMI et règles du pare-feu IP Edge / Anti-DDoS.
+  - **Lignes Rouges Financières & Destructives Verrouillées en Dur (L4)** :
+    - Verrouillage inconditionnel de `auto_pay = False` et `quantity = 1` dans le code, quota horaire de commandes, et blocage permanent de la réinstallation d'OS, de la résiliation de service et des clés SSH/API.
+- **Bouclier de Confidentialité Bidirectionnel (`Mode Équilibré`, `backend/mcp/privacy_shield.py`)** :
+  - Pseudonymisation persistante des comptes (`acct-01`), serveurs dédiés (`bm-01`), VPS (`vps-01`), IP publiques (`ip-01`, `*.*.*.42`) et commandes (`ord-01`), avec suppression des liens de paiement contenant `orderPassword`.
+- **Console WebUI Passerelle IA MCP (`/mcp`) & Audit (`mcp.action`)** :
+  - Nouvelle page dédiée avec gestion des jetons, liste blanche multi-comptes, générateur de configuration client (Claude Code, Claude Desktop, Cursor, Antigravity), table des alias et alertes `mcp.action` dans le Centre de Notifications.
+
+---
 
 ## [1.1.1] - Correctif de Sécurité des Dépendances de Test Backend
 

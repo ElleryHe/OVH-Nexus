@@ -3,11 +3,30 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.1.1]
+:::note[当前最新版本：v1.2.0]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.2.0] - MCP AI 网关、双向隐私混淆护盾与“免付款下单”安全沙盒
+
+### 新增功能 (Added)
+
+- **内置 Model Context Protocol (MCP) Streamable HTTP 网关 (`/api/mcp`)**：
+  - 对标官方 `ovh/ovhcloud-cli` 交互范式，内置遵循 JSON-RPC 2.0 标准的无状态 Streamable HTTP 端点；默认安全关闭，采用与 WebUI 登录密码彻底隔离的专属高熵令牌（`nxs_mcp_...`）鉴权，并内置按 IP 防爆破限流。
+  - **三级可配置权限沙盒（共 20 个 MCP 工具）**：
+    - `L1 只读查询`（11 个工具）：脱敏后的多账户画像、独服列表与详情、VPS 列表、边缘防火墙状态、服务到期倒计时、订单 4 步交付进度、全球机房实时库存与 SKU 上新变动。
+    - `L2 免付采购`（5 个工具）：两步确认生成【未付款订单】（`order_quote` 签发 5 分钟报价单 → 用户确认后调用 `order_create_unpaid`）、抢购队列管理与库存监控订阅。
+    - `L3 可逆运维`（4 个工具）：独服/VPS 硬件重启、重置卡死的 IPMI 会话、边缘防火墙规则与永久防洪开关。
+  - **L4 代码级永久财务与高危红线**：
+    - 在后端代码层无条件锁死 `auto_pay = False` 与 `quantity = 1`（绝不触发自动扣款），内置每小时下单速率限制，并永久封禁重装系统、退订销毁服务、读取带令牌的 KVM 远程控制台链接及修改 SSH/API 密钥。
+- **双向隐私混淆护盾 (`Balanced Shield`, `backend/mcp/privacy_shield.py`)**：
+  - 自动将 OVH 账户（`acct-01`）、包含 IP 段的独服主机名（`bm-01`）、VPS（`vps-01`）、公网 IP（`ip-01`，仅保留末段尾号 `*.*.*.42`）与订单号（`ord-01`）映射为持久化代号，并彻底剥离含 `orderPassword` 的付款链接与个人敏感信息。
+- **WebUI「MCP AI 网关」控制台 (`/mcp`) 与通知中心审计事件 (`mcp.action`)**：
+  - 在侧边栏「账户与系统」分组新增 **MCP AI 网关** 页面，支持令牌轮换/吊销、L1–L3 权限开关、多账户可见性白名单、一键复制客户端配置（Claude Code、Claude Desktop、Cursor、Antigravity）、隐私混淆映射表查阅，以及 L2/L3 写操作实时触发 `mcp.action` 通知告警。
+
+---
 
 ## [1.1.1] - 后端测试依赖安全补丁
 

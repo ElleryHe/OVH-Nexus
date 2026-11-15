@@ -652,7 +652,7 @@ class CatalogService:
                     "addonPrices": addon_prices,
                 }
                 plans_map[plan_code] = entry
-                is_regional = bool(region_info.get("code"))
+                is_regional = bool((region_info or {}).get("code"))
                 if base_code and (base_code not in plans_map or not is_regional):
                     plans_map[base_code] = entry
                 if product_key and (product_key not in plans_map or not is_regional):

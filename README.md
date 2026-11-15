@@ -31,7 +31,8 @@
 - **Dedicated Server & VPS Fleet Control**: Hardware inventory, MRTG traffic telemetry, IPMI/KVM console, automated OS reinstallation with custom RAID/ZFS & SSH key injection, IP Edge Firewall & permanent Anti-DDoS mitigation, and VPS lifecycle control.
 - **Orders, Delivery & Renewal Matrix**: Live 4-stage order delivery tracking (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) and unified service expiration countdowns across all accounts.
 - **Live Availability Matrix & Auto-Order Queue**: Real-time stock across global datacenters enriched with commercial model names (`KS-A`, `RISE-1`, `SCALE-a1`), readable hardware specs, and exact configuration-level monthly pricing.
-- **Public SKU Watcher & Pluggable Notification Center**: Track newly racked or removed server SKUs without an API key, and dispatch alerts via multi-instance **Telegram Bots** and **SMTP Email** across 7 fine-grained events.
+- **Public SKU Watcher & Pluggable Notification Center**: Track newly racked or removed server SKUs without an API key, and dispatch alerts via multi-instance **Telegram Bots** and **SMTP Email** across 8 fine-grained events.
+- **MCP AI Gateway & Privacy Sandbox (`/api/mcp`)**: Connect Claude Code, Claude Desktop, Cursor, or Antigravity via Streamable HTTP (JSON-RPC 2.0) with bidirectional alias obfuscation (`bm-01`, `vps-01`, `ord-01`, masked IP tails `*.*.*.42`) and a strict **two-step unpaid-order guardrail** (`auto_pay=False` hardcoded).
 
 📚 **Full Documentation**: <a href="https://ovh-nexus.ellery.me" target="_blank" rel="noopener noreferrer"><strong>https://ovh-nexus.ellery.me</strong></a>
 

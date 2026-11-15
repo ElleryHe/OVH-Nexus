@@ -30,7 +30,8 @@
 - **独立服务器与 VPS 管控**：硬件资产清单、MRTG 流量图表、IPMI/KVM 远程控制台、自动化系统重装（支持软硬 RAID / Proxmox ZFS 及一键注入 SSH 公钥）、IP 边缘防火墙与永久 Anti-DDoS 缓解、VPS 实例一键重启。
 - **订单交付与续费到期总览**：实时追踪 OVH 官方 4 步硬件交付流水线（`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`）与全账户服务到期倒计时预警。
 - **全球实时库存矩阵与自动抢购队列**：免 API Key 拉取全球机房实时库存，自动展示商业型号（`KS-A`、`RISE-1`、`SCALE-a1`）、可读化硬件规格与精确到子配置的月付价格。
-- **公开货架 SKU 变动监控与通知中心**：免 API Key 追踪所有在架/预上机架型号上新与下架（内置防抖熔断机制），支持多实例 **Telegram 机器人**与 **SMTP 邮件**按需订阅 7 类事件。
+- **公开货架 SKU 变动监控与通知中心**：免 API Key 追踪所有在架/预上机架型号上新与下架（内置防抖熔断机制），支持多实例 **Telegram 机器人**与 **SMTP 邮件**按需订阅 8 类事件。
+- **MCP AI 网关与隐私安全沙盒 (`/api/mcp`)**：支持 Claude Code、Claude Desktop、Cursor 与 Antigravity 通过 Streamable HTTP (JSON-RPC 2.0) 接入，内置双向资产混淆引擎（`bm-01`、`vps-01`、`ord-01` 与掩码尾号 IP `*.*.*.42`）及**“只允许两步确认生成未付款订单、硬性禁止自动扣款”**（`auto_pay=False` 代码级锁死）财务防线。
 
 📚 **完整中文文档**：<a href="https://ovh-nexus.ellery.me/zh-cn/" target="_blank" rel="noopener noreferrer"><strong>https://ovh-nexus.ellery.me/zh-cn/</strong></a>
 

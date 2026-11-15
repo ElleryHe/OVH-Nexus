@@ -18,8 +18,9 @@ Closes #<!-- issue number if applicable -->
 
 ## Verification & Testing / 测试与验证
 
-- [ ] Backend unit tests pass (`pytest backend/tests/test_security.py`) / 后端单元测试全部通过
+- [ ] Backend unit tests pass (`pytest backend/tests/ -v`) / 后端安全与 MCP 网关单元测试全部通过
 - [ ] Frontend builds cleanly (`npm run build`) / 前端 TypeScript 与 Vite 构建无报错
+- [ ] Documentation site builds cleanly (`npm run build --prefix website`) / 三语文档站构建无报错
 - [ ] UI verified in both **Light** and **Dark** themes / 已在浅色与深色主题下验证界面显示
 - [ ] No real API keys, tokens, passwords, or private data are included in commits / 确认提交记录中不含任何真实密钥或敏感数据
 - [ ] Contribution complies with the **GNU AGPL v3.0** license / 确认贡献代码遵循 GNU AGPL v3.0 协议

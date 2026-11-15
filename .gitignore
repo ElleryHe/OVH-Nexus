@@ -37,7 +37,7 @@ lerna-debug.log*
 *.sln
 *.sw?
 
-# Python
+# Python & Test Caches
 __pycache__/
 *.py[cod]
 *$py.class
@@ -47,6 +47,9 @@ env/
 venv/
 ENV/
 .venv
+.pytest_cache/
+.coverage
+coverage.xml
 
 # IDEs
 .vscode/

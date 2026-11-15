@@ -111,6 +111,7 @@ export default defineConfig({
             { slug: 'features/auto-order-queue' },
             { slug: 'features/sku-watcher' },
             { slug: 'features/notification-center' },
+            { slug: 'features/mcp-gateway' },
           ],
         },
         {

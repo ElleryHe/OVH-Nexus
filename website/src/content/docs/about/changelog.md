@@ -3,11 +3,30 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.1.1]
+:::note[Latest Release: v1.2.0]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.2.0] - MCP AI Gateway, Bidirectional Privacy Shield & Unpaid Order Guardrails
+
+### Added
+
+- **Model Context Protocol (MCP) Streamable HTTP Gateway (`/api/mcp`)**:
+  - Built-in JSON-RPC 2.0 Streamable HTTP endpoint inspired by `ovh/ovhcloud-cli`, disabled by default and authenticated via an isolated high-entropy Bearer Token (`nxs_mcp_...`) with per-IP brute-force protection.
+  - **20 MCP Tools across 3 Configurable Permission Scopes**:
+    - `L1 Read-Only` (`11 tools`): Obfuscated account profiles, dedicated servers, VPS instances, IP Edge Firewall rules, service expiration countdowns, order delivery tracking, live datacenter stock, and SKU watcher changes.
+    - `L2 Unpaid Procurement` (`5 tools`): Two-step price quote and unpaid order creation (`order_quote` → `order_create_unpaid`), auto-order queue management, and stock monitor subscriptions.
+    - `L3 Reversible Operations` (`4 tools`): Dedicated server / VPS hardware reboot, stuck IPMI session reset, and IP Edge Firewall / Anti-DDoS mitigation updates.
+  - **L4 Hardcoded Financial & Destructive Redlines**:
+    - Unconditionally locks `auto_pay = False` and `quantity = 1` in code for all MCP orders and queue tasks, enforces a rolling hourly order limit, and permanently blocks OS reinstallation, service termination, raw IPMI console URLs, and credential mutations.
+- **Bidirectional Privacy Shield (`Balanced Mode`, `backend/mcp/privacy_shield.py`)**:
+  - Automatically pseudonymizes OVH account IDs (`acct-01`), dedicated server hostnames (`bm-01`), VPS instances (`vps-01`), public IPs (`ip-01`, masked as `*.*.*.42`), and order IDs (`ord-01`), while stripping `orderPassword` payment/invoice links and PII from AI context.
+- **MCP AI Gateway WebUI Console (`/mcp`) & Audit Event (`mcp.action`)**:
+  - Added a dedicated **MCP AI Gateway** page under the System sidebar group with token rotation/revocation, L1–L3 scope switches, multi-account visibility whitelist, one-click client config generators (Claude Code, Claude Desktop, Cursor, Antigravity), alias mapping viewer, and real-time `mcp.action` Notification Center alerts.
+
+---
 
 ## [1.1.1] - Backend Test Dependency Security Patch
 
