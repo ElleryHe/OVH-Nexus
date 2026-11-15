@@ -17,6 +17,7 @@ from .base import BaseNotifier
 from .events import (
     ALL_EVENTS,
     DEFAULT_CHANNEL_EVENTS,
+    EVENT_MCP_ACTION,
     EVENT_ORDER_DELIVERED,
     EVENT_ORDER_FAILED,
     EVENT_ORDER_SUCCESS,

@@ -23,6 +23,7 @@ import VPSMonitorPage from "./pages/VPSMonitorPage";
 import ServerControlPage from "./pages/ServerControlPage";
 import AccountManagementPage from "./pages/AccountManagementPage";
 import NotificationCenterPage from "./pages/NotificationCenterPage";
+import MCPGatewayPage from "./pages/MCPGatewayPage";
 import NotFound from "./pages/NotFound";
 import Layout from "./components/Layout";
 
@@ -68,6 +69,7 @@ const App = () => {
                       <Route path="account-management" element={<AccountManagementPage />} />
                       <Route path="history" element={<HistoryPage />} />
                       <Route path="logs" element={<LogsPage />} />
+                      <Route path="mcp" element={<MCPGatewayPage />} />
                       <Route path="notifications" element={<NotificationCenterPage />} />
                       <Route path="settings" element={<SettingsPage />} />
                       <Route path="api-accounts" element={<APIAccountsPage />} />

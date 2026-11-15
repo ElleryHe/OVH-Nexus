@@ -25,6 +25,7 @@ EVENT_ORDER_FAILED = "order.failed"
 EVENT_SKU_CHANGED = "sku.changed"
 EVENT_SERVICE_EXPIRING = "service.expiring"
 EVENT_ORDER_DELIVERED = "order.delivered"
+EVENT_MCP_ACTION = "mcp.action"
 
 ALL_EVENTS: List[Dict[str, Any]] = [
     {"key": EVENT_STOCK_AVAILABLE, "requiresApiKey": False, "defaultEnabled": True},
@@ -34,6 +35,7 @@ ALL_EVENTS: List[Dict[str, Any]] = [
     {"key": EVENT_SKU_CHANGED, "requiresApiKey": False, "defaultEnabled": True},
     {"key": EVENT_SERVICE_EXPIRING, "requiresApiKey": True, "defaultEnabled": False},
     {"key": EVENT_ORDER_DELIVERED, "requiresApiKey": True, "defaultEnabled": True},
+    {"key": EVENT_MCP_ACTION, "requiresApiKey": False, "defaultEnabled": True},
 ]
 
 DEFAULT_CHANNEL_EVENTS = [
@@ -42,6 +44,7 @@ DEFAULT_CHANNEL_EVENTS = [
     EVENT_ORDER_FAILED,
     EVENT_SKU_CHANGED,
     EVENT_ORDER_DELIVERED,
+    EVENT_MCP_ACTION,
 ]
 
 

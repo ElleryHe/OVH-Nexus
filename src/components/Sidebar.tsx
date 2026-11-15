@@ -24,6 +24,7 @@ import {
   Moon,
   Monitor,
   BellRing,
+  Bot,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -80,6 +81,7 @@ const Sidebar = ({ onToggle }: SidebarProps) => {
     {
       title: t('nav.group.system'),
       items: [
+        { path: "/mcp", icon: Bot, label: t('nav.mcp') },
         { path: "/notifications", icon: BellRing, label: t('nav.notifications') },
         { path: "/logs", icon: FileText, label: t('nav.logs') },
         { path: "/settings", icon: Settings, label: t('nav.settings') },

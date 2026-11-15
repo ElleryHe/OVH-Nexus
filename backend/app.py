@@ -101,7 +101,7 @@ CORS(app, resources={
     r"/api/*": {
         "origins": _cors_origins,
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        "allow_headers": ["Content-Type", "Authorization", "X-API-Key", "X-Internal-Token", "X-OVH-Account"],
+        "allow_headers": ["Content-Type", "Authorization", "X-API-Key", "X-Internal-Token", "X-OVH-Account", "X-MCP-Token"],
         "expose_headers": ["X-Cache-Warning"],
         "supports_credentials": True,
         "max_age": 600
@@ -112,7 +112,9 @@ CORS(app, resources={
 init_api_auth(app)
 
 from routes.cloud_fleet import cloud_fleet_bp  # noqa: E402
+from mcp import mcp_bp  # noqa: E402
 app.register_blueprint(cloud_fleet_bp)
+app.register_blueprint(mcp_bp)
 
 
 @app.route('/api/health', methods=['GET'])

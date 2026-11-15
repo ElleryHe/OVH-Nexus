@@ -106,6 +106,12 @@ const EVENT_DEFINITIONS = [
     desc: "名下独立服务器或 VPS 距离到期不足指定天数时推送提醒",
     requiresApiKey: true,
   },
+  {
+    key: "mcp.action",
+    label: "MCP AI 操作审计",
+    desc: "AI 客户端通过 MCP 网关触发 L2 免付下单/队列变更或 L3 运维操作时推送告警",
+    requiresApiKey: false,
+  },
 ];
 
 const PRODUCT_RANGES = [
@@ -123,6 +129,7 @@ const DEFAULT_EVENTS = [
   "order.success",
   "order.failed",
   "order.delivered",
+  "mcp.action",
 ];
 
 const NotificationCenterPage = () => {
