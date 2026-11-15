@@ -1,20 +1,28 @@
 """
 MCP Gateway Configuration & Token Management
 ============================================
-Persists configuration in backend/data/mcp_config.json (0600 permissions).
+- Persists configuration in `backend/data/mcp_config.json` (`0600` permissions).
+- Stores MCP Bearer Token strictly as an irreversible SHA-256 digest (`tokenHash`)
+  plus a redacted display preview (`maskedToken`). Plaintext `nxs_mcp_...` tokens
+  are never written to disk (and any legacy v1.2.0 plaintext `token` field is
+  automatically migrated to `tokenHash` and wiped on startup).
+- Enforces 2FA linkage: when panel TOTP 2FA is not enabled, the `operations` (L3)
+  scope is forcibly locked to `False` at runtime and cannot be enabled.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-import hmac
 import json
 import os
 import secrets
 import stat
 import threading
 from typing import Any, Dict, List, Optional
+
+from crypto_vault import hash_secret_token, verify_secret_token_hash
+from totp_service import is_totp_enabled
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -24,7 +32,8 @@ _config_lock = threading.RLock()
 
 DEFAULT_MCP_CONFIG: Dict[str, Any] = {
     "enabled": False,
-    "token": "",
+    "tokenHash": "",
+    "maskedToken": "",
     "scopes": {
         "read": True,
         "procurement": False,
@@ -67,13 +76,28 @@ def mask_mcp_token(token: str) -> str:
 def load_mcp_config() -> Dict[str, Any]:
     with _config_lock:
         cfg = deepcopy(DEFAULT_MCP_CONFIG)
+        needs_migration = False
         if os.path.exists(MCP_CONFIG_FILE):
             try:
                 with open(MCP_CONFIG_FILE, "r", encoding="utf-8") as f:
                     raw = json.load(f) or {}
                 if isinstance(raw, dict):
                     cfg["enabled"] = bool(raw.get("enabled", False))
-                    cfg["token"] = str(raw.get("token") or "").strip()
+
+                    # Migrate legacy v1.2.0 plaintext `token` field to irreversible SHA-256 `tokenHash`
+                    legacy_plain_token = str(raw.get("token") or "").strip()
+                    stored_hash = str(raw.get("tokenHash") or "").strip()
+                    stored_mask = str(raw.get("maskedToken") or "").strip()
+                    if legacy_plain_token:
+                        stored_hash = hash_secret_token(legacy_plain_token)
+                        stored_mask = mask_mcp_token(legacy_plain_token)
+                        needs_migration = True
+                    elif "token" in raw:
+                        needs_migration = True
+
+                    cfg["tokenHash"] = stored_hash
+                    cfg["maskedToken"] = stored_mask if stored_hash else ""
+
                     raw_scopes = raw.get("scopes") or {}
                     if isinstance(raw_scopes, dict):
                         cfg["scopes"] = {
@@ -94,8 +118,16 @@ def load_mcp_config() -> Dict[str, Any]:
                     cfg["createdAt"] = raw.get("createdAt")
                     cfg["updatedAt"] = raw.get("updatedAt")
                     cfg["tokenRotatedAt"] = raw.get("tokenRotatedAt")
+
+                    if needs_migration:
+                        save_mcp_config(cfg)
             except Exception:
                 pass
+
+        # Runtime security guardrail: L3 `operations` is forcibly disabled if 2FA is not enabled
+        if not is_totp_enabled():
+            cfg["scopes"]["operations"] = False
+
         return cfg
 
 
@@ -105,18 +137,30 @@ def save_mcp_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         if not cfg.get("createdAt"):
             cfg["createdAt"] = now
         cfg["updatedAt"] = now
-        _write_secure_json(MCP_CONFIG_FILE, cfg)
+
+        # Ensure plaintext `token` is never persisted to disk
+        disk_cfg = deepcopy(cfg)
+        plain_tok = str(disk_cfg.pop("token", "") or "").strip()
+        disk_cfg.pop("_newlyGeneratedPlaintextToken", None)
+        if plain_tok:
+            disk_cfg["tokenHash"] = hash_secret_token(plain_tok)
+            disk_cfg["maskedToken"] = mask_mcp_token(plain_tok)
+
+        _write_secure_json(MCP_CONFIG_FILE, disk_cfg)
         return cfg
 
 
 def get_public_mcp_config() -> Dict[str, Any]:
     cfg = load_mcp_config()
-    token = cfg.get("token") or ""
+    has_token = bool(cfg.get("tokenHash"))
+    totp_active = is_totp_enabled()
     return {
-        "enabled": bool(cfg.get("enabled") and bool(token)),
-        "hasToken": bool(token),
-        "maskedToken": mask_mcp_token(token),
+        "enabled": bool(cfg.get("enabled") and has_token),
+        "hasToken": has_token,
+        "maskedToken": cfg.get("maskedToken") or "",
         "scopes": deepcopy(cfg.get("scopes") or DEFAULT_MCP_CONFIG["scopes"]),
+        "totpEnabled": totp_active,
+        "operationsLockedByTotp": not totp_active,
         "allowAllAccounts": bool(cfg.get("allowAllAccounts", True)),
         "allowedAccountIds": list(cfg.get("allowedAccountIds") or []),
         "hourlyOrderLimit": int(cfg.get("hourlyOrderLimit", 5)),
@@ -125,6 +169,7 @@ def get_public_mcp_config() -> Dict[str, Any]:
         "updatedAt": cfg.get("updatedAt"),
         "hardBlocked": [
             "auto_pay",
+            "waive_retractation_period",
             "baremetal_reinstall",
             "vps_reinstall",
             "service_terminate",
@@ -137,20 +182,26 @@ def get_public_mcp_config() -> Dict[str, Any]:
 def update_mcp_config(patch: Dict[str, Any]) -> Dict[str, Any]:
     with _config_lock:
         cfg = load_mcp_config()
+        newly_minted_token: Optional[str] = None
         if "enabled" in patch:
             want_enable = bool(patch["enabled"])
-            if want_enable and not cfg.get("token"):
+            if want_enable and not cfg.get("tokenHash"):
                 # Automatically generate initial token when enabling for the first time
-                cfg["token"] = f"nxs_mcp_{secrets.token_urlsafe(32)}"
+                newly_minted_token = f"nxs_mcp_{secrets.token_urlsafe(32)}"
+                cfg["tokenHash"] = hash_secret_token(newly_minted_token)
+                cfg["maskedToken"] = mask_mcp_token(newly_minted_token)
                 cfg["tokenRotatedAt"] = _now_iso()
             cfg["enabled"] = want_enable
 
         if "scopes" in patch and isinstance(patch["scopes"], dict):
             s = patch["scopes"]
+            want_ops = bool(s.get("operations", cfg["scopes"].get("operations", False)))
+            if want_ops and not is_totp_enabled():
+                want_ops = False
             cfg["scopes"] = {
                 "read": bool(s.get("read", cfg["scopes"].get("read", True))),
                 "procurement": bool(s.get("procurement", cfg["scopes"].get("procurement", False))),
-                "operations": bool(s.get("operations", cfg["scopes"].get("operations", False))),
+                "operations": want_ops,
             }
 
         if "allowAllAccounts" in patch:
@@ -169,6 +220,8 @@ def update_mcp_config(patch: Dict[str, Any]) -> Dict[str, Any]:
             cfg["notifyOnMutation"] = bool(patch["notifyOnMutation"])
 
         save_mcp_config(cfg)
+        if newly_minted_token:
+            cfg["_newlyGeneratedPlaintextToken"] = newly_minted_token
         return cfg
 
 
@@ -176,7 +229,8 @@ def rotate_mcp_token() -> str:
     with _config_lock:
         cfg = load_mcp_config()
         new_token = f"nxs_mcp_{secrets.token_urlsafe(32)}"
-        cfg["token"] = new_token
+        cfg["tokenHash"] = hash_secret_token(new_token)
+        cfg["maskedToken"] = mask_mcp_token(new_token)
         cfg["tokenRotatedAt"] = _now_iso()
         save_mcp_config(cfg)
         return new_token
@@ -185,7 +239,8 @@ def rotate_mcp_token() -> str:
 def revoke_mcp_token() -> Dict[str, Any]:
     with _config_lock:
         cfg = load_mcp_config()
-        cfg["token"] = ""
+        cfg["tokenHash"] = ""
+        cfg["maskedToken"] = ""
         cfg["enabled"] = False
         cfg["tokenRotatedAt"] = _now_iso()
         save_mcp_config(cfg)
@@ -198,13 +253,15 @@ def verify_mcp_token(candidate: Optional[str]) -> bool:
     cfg = load_mcp_config()
     if not cfg.get("enabled"):
         return False
-    stored = (cfg.get("token") or "").strip()
-    if not stored or len(stored) < 20:
+    stored_hash = (cfg.get("tokenHash") or "").strip()
+    if not stored_hash:
         return False
     clean_candidate = str(candidate).strip()
     if clean_candidate.lower().startswith("bearer "):
         clean_candidate = clean_candidate[7:].strip()
-    return hmac.compare_digest(clean_candidate.encode("utf-8"), stored.encode("utf-8"))
+    if len(clean_candidate) < 20 or not clean_candidate.startswith("nxs_mcp_"):
+        return False
+    return verify_secret_token_hash(clean_candidate, stored_hash)
 
 
 def get_whitelisted_account_ids(

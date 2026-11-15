@@ -10,6 +10,7 @@ OVH Nexus se configure au démarrage du conteneur via les variables d'environnem
 | Variable | Requis | Défaut | Description |
 | :--- | :---: | :--- | :--- |
 | `API_SECRET_KEY` | **Oui** | *(aucun)* | Mot de passe de connexion WebUI et clé API locale (loopback). Doit comporter **au moins 12 caractères** et ne correspondre à aucun exemple faible connu. |
+| `DATA_ENCRYPTION_KEY` | **Oui** | *(aucun)* | Clé maîtresse indépendante de chiffrement au repos AES-256-GCM pour les secrets dans `./data/*.json`. Doit comporter **au moins 16 caractères** et être **différente de `API_SECRET_KEY`**. |
 | `DEFAULT_LOCALE` | Non | `en` | Langue par défaut de l'interface lors de la première visite (`en`, `fr` ou `zh-CN`). Modifiable à tout moment dans l'interface. |
 | `COOKIE_SECURE` | Non | `false` | Active l'attribut `Secure` sur le cookie `ovh_session`. Passez à `true` lorsque l'accès se fait en HTTPS derrière un reverse proxy. |
 | `SECRET_KEY` | Non | *(auto-généré)* | Clé de signature de session Flask. Si omise, une clé aléatoire de 32 octets est générée et persistée dans `/app/backend/data/session_secret` (`0600`). |

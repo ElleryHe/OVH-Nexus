@@ -20,9 +20,15 @@ from dotenv import load_dotenv
 # 加载 .env 文件
 load_dotenv()
 
-# 导入API认证中间件
+# 导入API认证中间件与静态加密金库
 from api_auth_middleware import init_api_auth
 from api_key_config import get_webhook_secret
+from crypto_vault import (
+    decrypt_accounts_data,
+    decrypt_config_dict,
+    encrypt_accounts_payload,
+    encrypt_config_dict,
+)
 
 # 导入服务器监控器与目录/通知/SKU监控模块
 from server_monitor import ServerMonitor
@@ -101,7 +107,7 @@ CORS(app, resources={
     r"/api/*": {
         "origins": _cors_origins,
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        "allow_headers": ["Content-Type", "Authorization", "X-API-Key", "X-Internal-Token", "X-OVH-Account", "X-MCP-Token"],
+        "allow_headers": ["Content-Type", "Authorization", "X-API-Key", "X-Internal-Token", "X-OVH-Account", "X-MCP-Token", "X-TOTP-Code"],
         "expose_headers": ["X-Cache-Warning"],
         "supports_credentials": True,
         "max_age": 600
@@ -200,24 +206,31 @@ def load_data():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
+                raw_cfg = json.load(f)
+            config, cfg_needs_migration = decrypt_config_dict(raw_cfg)
+            if cfg_needs_migration:
+                try:
+                    with open(CONFIG_FILE, 'w', encoding='utf-8') as wf:
+                        json.dump(encrypt_config_dict(config), wf, ensure_ascii=False, indent=2)
+                    print("已自动将 config.json 中的存量明文密钥迁移为 AES-256-GCM 密文")
+                except Exception as mig_err:
+                    print(f"迁移加密 config.json 失败: {mig_err}")
         except json.JSONDecodeError:
             print(f"警告: {CONFIG_FILE}文件格式不正确，使用默认值")
+        except Exception as e:
+            print(f"警告: {CONFIG_FILE}读取或解密失败: {e}")
     if os.path.exists(ACCOUNTS_FILE):
         try:
             with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
                 accounts_data = json.load(f)
                 accs = accounts_data.get("accounts")
-                if isinstance(accs, list):
-                    accounts = {a.get("id"): a for a in accs if a and a.get("id")}
-                elif isinstance(accs, dict):
-                    accounts = accs
+                accounts, acc_needs_migration = decrypt_accounts_data(accs)
                 loaded_default = accounts_data.get("defaultAccountId")
                 if loaded_default and loaded_default in accounts:
                     default_account_id = loaded_default
                 else:
                     default_account_id = next(iter(accounts), None)
-                # 清理旧字段：移除每个账户中的 tgToken / tgChatId（统一使用全局配置）
+                # 清理旧字段：移除每个账户中的 tgToken / tgChatId（统一使用全局配置），并自动迁移存量明文密钥
                 try:
                     changed = False
                     for k, v in list(accounts.items()):
@@ -228,12 +241,13 @@ def load_data():
                             after = (v.get('tgToken'), v.get('tgChatId'))
                             if before != after:
                                 changed = True
-                    if changed:
-                        # 回写清理后的文件
+                    if changed or acc_needs_migration:
+                        # 回写清理及加密后的文件
                         save_accounts()
-                        print("已清理accounts文件中的Telegram字段，改为使用全局配置")
+                        if acc_needs_migration:
+                            print("已自动将 accounts.json 中的存量明文凭据迁移为 AES-256-GCM 密文")
                 except Exception as e:
-                    print(f"清理账户字段失败: {e}")
+                    print(f"清理或迁移账户字段失败: {e}")
         except Exception as e:
             print(f"警告: {ACCOUNTS_FILE}文件读取失败: {e}")
 
@@ -250,10 +264,8 @@ def load_data():
         }
         default_account_id = aid
         try:
-            payload = {"accounts": list(accounts.values()), "defaultAccountId": default_account_id}
-            with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            print("已从config迁移创建默认账户")
+            save_accounts()
+            print("已从config迁移创建默认加密账户")
         except Exception as e:
             print(f"迁移保存账户失败: {e}")
     
@@ -506,7 +518,7 @@ def save_data(do_flush=True):
     global last_saved_ts
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+            json.dump(encrypt_config_dict(config), f, ensure_ascii=False, indent=2)
         if do_flush:
             flush_logs()
         with open(QUEUE_FILE, 'w', encoding='utf-8') as f:
@@ -548,7 +560,7 @@ def save_data(do_flush=True):
         logging.error(f"保存数据时出错: {str(e)}")
         print(f"保存数据时出错: {str(e)}")
         # 尝试单独保存每个文件
-        try_save_file(CONFIG_FILE, config)
+        try_save_file(CONFIG_FILE, encrypt_config_dict(config))
         try_save_file(LOGS_FILE, logs)
         try_save_file(QUEUE_FILE, queue)
         try_save_file(HISTORY_FILE, purchase_history)
@@ -592,20 +604,17 @@ def save_accounts():
             default_account_id = next(iter(accounts), None)
         elif not default_account_id and accounts:
             default_account_id = next(iter(accounts), None)
-        # 写入时剔除与通知无关的字段（统一使用全局TG配置）
-        sanitized_list = []
-        for acc in accounts.values():
+        # 写入时剔除与通知无关的字段（统一使用全局TG配置），并使用 AES-256-GCM 加密凭据
+        cleaned_dict = {}
+        for k, acc in accounts.items():
             a = dict(acc)
             a.pop('tgToken', None)
             a.pop('tgChatId', None)
-            sanitized_list.append(a)
-        payload = {
-            "accounts": sanitized_list,
-            "defaultAccountId": default_account_id,
-        }
+            cleaned_dict[k] = a
+        payload = encrypt_accounts_payload(cleaned_dict, default_account_id)
         with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        add_log("INFO", "账户配置已保存", "accounts")
+        add_log("INFO", "账户配置已加密保存", "accounts")
     except Exception as e:
         add_log("ERROR", f"保存账户配置失败: {str(e)}", "accounts")
 
@@ -1091,7 +1100,13 @@ def purchase_server(queue_item):
 
     # 每次加入购物车固定 1 台
     quantity = 1
-    auto_pay = queue_item.get("auto_pay", False)
+    auto_pay = bool(queue_item.get("auto_pay", queue_item.get("autoPay", False)))
+    waive_retractation_period = bool(
+        queue_item.get(
+            "waive_retractation_period",
+            queue_item.get("waiveRetractationPeriod", False),
+        )
+    )
     
     try:
         # Check availability with multi-DC and priority weights
@@ -1300,10 +1315,14 @@ def purchase_server(queue_item):
         except Exception as price_error:
             add_log("WARNING", f"获取价格信息时出错: {str(price_error)}，将继续结账流程", "purchase")
         
-        add_log("INFO", f"对购物车 {cart_id} 执行结账，自动付款: {auto_pay}", "purchase")
+        add_log(
+            "INFO",
+            f"对购物车 {cart_id} 执行结账，自动付款: {auto_pay}，放弃14天撤回权: {waive_retractation_period}",
+            "purchase",
+        )
         checkout_payload = {
-            "autoPayWithPreferredPaymentMethod": auto_pay, 
-            "waiveRetractationPeriod": True
+            "autoPayWithPreferredPaymentMethod": auto_pay,
+            "waiveRetractationPeriod": waive_retractation_period,
         }
         checkout_result = helper.post(f'/order/cart/{cart_id}/checkout', **checkout_payload)
         
@@ -3100,7 +3119,13 @@ def add_queue_item():
         "failureCount": 0,
         "nextAttemptAt": 0,
         "maxRetryCount": int(data.get("maxRetryCount", 50)),
-        "auto_pay": data.get("auto_pay", False),
+        "auto_pay": bool(data.get("auto_pay", data.get("autoPay", False))),
+        "waive_retractation_period": bool(
+            data.get(
+                "waive_retractation_period",
+                data.get("waiveRetractationPeriod", False),
+            )
+        ),
         "status": "running",  # 直接设置为 running
         "createdAt": datetime.now().isoformat(),
         "updatedAt": datetime.now().isoformat(),
@@ -3209,6 +3234,15 @@ def update_queue_item(id):
         except Exception:
             q = 1
         item["quantity"] = max(1, min(q, 100))
+    if "auto_pay" in data or "autoPay" in data:
+        item["auto_pay"] = bool(data.get("auto_pay", data.get("autoPay", False)))
+    if "waive_retractation_period" in data or "waiveRetractationPeriod" in data:
+        item["waive_retractation_period"] = bool(
+            data.get(
+                "waive_retractation_period",
+                data.get("waiveRetractationPeriod", False),
+            )
+        )
     item["updatedAt"] = datetime.now().isoformat()
     # 编辑后重置计数，以便按新配置重新调度
     item["retryCount"] = 0
@@ -4742,7 +4776,7 @@ def ensure_files_exist():
     # 检查并创建配置文件
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+            json.dump(encrypt_config_dict(config), f, ensure_ascii=False, indent=2)
         print(f"已创建默认 {CONFIG_FILE} 文件")
 
 # ==================== 配置绑定狙击系统 ====================
@@ -5597,7 +5631,14 @@ def quick_order():
             "lastCheckTime": 0,
             "quickOrder": True,  # 标记为快速下单
             "priority": 100,
-            "accountId": account_id
+            "accountId": account_id,
+            "auto_pay": bool(data.get("auto_pay", data.get("autoPay", False))),
+            "waive_retractation_period": bool(
+                data.get(
+                    "waive_retractation_period",
+                    data.get("waiveRetractationPeriod", False),
+                )
+            ),
         }
         
         # 将快速下单任务插入队列头部，提高优先级

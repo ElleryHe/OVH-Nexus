@@ -3,11 +3,33 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.2.0]
+:::note[当前最新版本：v1.2.1]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.2.1] - AES-256-GCM 磁盘静态加密、TOTP 2FA 分级安全门禁、欧盟 14 天撤回权保护与 Node 24 / Python 3.12 LTS 升级
+
+### 安全加固 (Security)
+
+- **本地磁盘敏感凭证静态加密 (`DATA_ENCRYPTION_KEY`, `backend/crypto_vault.py`)**：
+  - 新增必填且独立的环境变量 `DATA_ENCRYPTION_KEY`（长度不少于 16 位，缺失、弱密钥或与 `API_SECRET_KEY` 相同时启动期直接阻断报错）。
+  - 基于 `HKDF-SHA256` 密钥派生与 `AES-256-GCM` 认证加密算法（`enc:v1:<nonce>:<ciphertext>`），对 `./data/config.json`（`appKey`、`appSecret`、`consumerKey`、`tgToken`、`notifications.channels[*].config.token/password`）、`./data/accounts.json`、`./data/totp_config.json` 以及 `./data/session_secret` / `./data/webhook_secret` 全面施行落盘加密，并在启动时自动将历史明文配置无缝平滑迁移为密文。
+  - 升级 `./data/mcp_config.json` 存储结构，仅持久化不可逆的 `SHA-256` 哈希摘要（`tokenHash`）与脱敏预览（`maskedToken`），彻底消除磁盘明文 MCP Token。
+- **TOTP 双因素认证 (RFC 6238) 与分级高危操作安全门禁 (`backend/totp_service.py`)**：
+  - 原生实现 RFC 6238 TOTP 动态口令认证，支持离线二维码绑定、30 秒窗口防重放（`lastUsedStep`）以及 8 个一次性应急恢复码（`XXXX-XXXX`）。
+  - 全局强制高危门禁：**未绑定启用 2FA 时，所有高危操作路由一律返回 `403 TOTP_SETUP_REQUIRED` 拦截，且 MCP 网关 `L3`（可逆运维）被底层强制锁定关闭**。
+  - 双层 Step-Up 验证体验：`strict` 级（重装系统、服务退订销毁、过户转移、新增/编辑/删除 API 账户密钥、关闭 2FA）要求每次请求均附带最新动态码；`sudo` 级（独服/VPS 重启、救援模式、IPMI 控制台、边缘防火墙/网络变更、MCP 配置变更、开启自动扣款或放弃撤回权）验证一次后授予当前会话 **5 分钟免重复输入窗口**。
+- **欧盟 14 天消费者撤回权保护与支付风控 (`waiveRetractationPeriod` & `auto_pay`)**：
+  - 将下单引擎 `purchase_server()` 与抢购队列 `/api/queue` 中的 `waiveRetractationPeriod` 由原先的强制 `True` 改为**默认 `False`**（默认保留欧盟 14 天法定无理由撤回权），并在队列与服务器目录页提供任务级双开关（`auto_pay` + `waive_retractation_period`），开启任意一项均需通过 2FA Sudo 验证；MCP 工具层硬编码锁死两者为 `False`。
+
+### 变更与升级 (Changed)
+
+- 将容器构建基础镜像与 CI 运行时升级至 **Node 24 LTS (`node:24-alpine`)** 与 **Python 3.12 (`python:3.12-slim`)**。
+- 升级 GitHub Actions（`actions/setup-node@v7`、`actions/setup-python@v7`、`docker/setup-buildx-action@v4`、`peter-evans/dockerhub-description@v5`）与前端依赖（`lucide-react@^1.72.0`、`sonner@^2.0.8`、`autoprefixer@^10.6.2`、`@radix-ui/react-alert-dialog@^1.2.1`、`@radix-ui/react-tooltip@^1.4.1`、`wrangler@^4.160.1`、`qrcode@^1.5.4`），并将 `.github/dependabot.yml` 目标分支切换为 `develop` 及开启分组更新策略。
+
+---
 
 ## [1.2.0] - MCP AI 网关、双向隐私混淆护盾与“免付款下单”安全沙盒
 

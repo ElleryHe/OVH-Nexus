@@ -22,6 +22,9 @@ cat > .env << EOF
 # 必填：Web 控制台登录密码（至少 12 位随机字符）
 API_SECRET_KEY=$(openssl rand -hex 24)
 
+# 必填：独立的静态数据加密主密钥（AES-256-GCM 落盘加密，至少 16 位字符，且不得与 API_SECRET_KEY 相同）
+DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
 # 可选：默认界面语言 (en | fr | zh-CN)
 DEFAULT_LOCALE=zh-CN
 
@@ -30,8 +33,8 @@ COOKIE_SECURE=false
 EOF
 ```
 
-:::caution[强制强口令校验]
-OVH Nexus 在启动时会对 `API_SECRET_KEY` 进行严格校验。如果未配置、长度不足 12 位，或者直接使用了文档中的示例占位符（如 `请替换为您自己的高强度密码`、`replace-with-a-strong-random-secret`、`123456`），容器将拒绝启动并提示错误。
+:::caution[强制强口令与独立加密主密钥校验]
+OVH Nexus 在启动时会对 `API_SECRET_KEY`（不少于 12 位）与 `DATA_ENCRYPTION_KEY`（不少于 16 位，且不得与登录密码相同）进行严格校验。若未配置或使用示例占位符，容器将拒绝启动并提示错误。
 :::
 
 ## 2. 创建 `docker-compose.yml`
@@ -47,6 +50,7 @@ services:
       - DEBUG=false
       - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?请在 .env 中设置至少 12 位的强口令 API_SECRET_KEY}
+      - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?请在 .env 中设置至少 16 位的独立加密密钥 DATA_ENCRYPTION_KEY}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-zh-CN}
       - BIND_HOST=127.0.0.1

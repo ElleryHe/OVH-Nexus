@@ -37,6 +37,8 @@ interface QueueItem {
   purchased?: number;
   failureCount?: number;
   nextAttemptAt?: number;
+  auto_pay?: boolean;
+  waive_retractation_period?: boolean;
 }
 
 interface ServerOption {
@@ -91,6 +93,8 @@ const QueuePage = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false); // 清空确认对话框
   const [isGettingConfig, setIsGettingConfig] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [autoPay, setAutoPay] = useState<boolean>(false);
+  const [waiveRetractationPeriod, setWaiveRetractationPeriod] = useState<boolean>(false);
 
   const getAccountLabel = (id?: string) => {
     if (!id) return '默认账户';
@@ -165,6 +169,8 @@ const QueuePage = () => {
         retryInterval: retryInterval,
         options: selectedOptions,
         quantity: quantity,
+        auto_pay: autoPay,
+        waive_retractation_period: waiveRetractationPeriod,
       });
       toast.success(`已创建抢购任务，目标 ${quantity} 台`);
       fetchQueueItems(true);
@@ -174,6 +180,8 @@ const QueuePage = () => {
       setQuantity(1);
       setSelectedOptions([]);
       setOptionsInput('');
+      setAutoPay(false);
+      setWaiveRetractationPeriod(false);
     } catch (error) {
       console.error(`Error adding ${planCodeInput.trim()} to queue:`, error);
       toast.error("添加到队列失败");
@@ -188,6 +196,10 @@ const QueuePage = () => {
     setQuantity(Math.min(Math.max(item.quantity || 1, 1), 100));
     setSelectedOptions(Array.isArray(item.options) ? item.options : []);
     setOptionsInput((Array.isArray(item.options) ? item.options : []).join(', '));
+    setAutoPay(Boolean(item.auto_pay ?? item.autoPay ?? false));
+    setWaiveRetractationPeriod(
+      Boolean(item.waive_retractation_period ?? item.waiveRetractationPeriod ?? false)
+    );
     setTimeout(() => {
       if (Array.isArray(item.datacenters)) {
         setSelectedDatacenters(item.datacenters);
@@ -213,10 +225,14 @@ const QueuePage = () => {
         retryInterval,
         options: selectedOptions,
         quantity,
+        auto_pay: autoPay,
+        waive_retractation_period: waiveRetractationPeriod,
       });
       toast.success('队列已更新');
       setEditingItemId(null);
       setPlanCodeInput("");
+      setAutoPay(false);
+      setWaiveRetractationPeriod(false);
       fetchQueueItems(true);
     } catch (error) {
       console.error('更新队列失败', error);
@@ -854,6 +870,66 @@ const QueuePage = () => {
               </div>
             </div>
             </div>
+
+            {/* 支付策略与欧盟 14 天撤回权控制面板 */}
+            <div className="p-3.5 sm:p-4 rounded-lg border border-cyber-accent/25 bg-cyber-grid/10 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs sm:text-sm font-semibold text-cyber-text">
+                  支付与欧盟 14 天撤回权策略（默认关闭，开启任意一项需通过 2FA Sudo 验证）
+                </span>
+                <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  财务与消费者权益保护
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="flex items-start gap-2.5 p-3 rounded-md border border-cyber-grid bg-cyber-surface/70 cursor-pointer hover:border-cyber-accent/40 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={autoPay}
+                    onChange={(e) => setAutoPay(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-cyber-accent"
+                  />
+                  <div className="space-y-0.5 text-xs">
+                    <div className="font-semibold text-cyber-text flex items-center gap-1.5">
+                      <span>抢购命中后自动扣款 (Auto-Pay)</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                        需 2FA
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-cyber-muted leading-relaxed">
+                      默认关闭（仅生成待支付订单，最安全）。勾选后将调用 OVH 默认绑定的支付方式尝试自动付款扣费。
+                    </p>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-md border border-cyber-grid bg-cyber-surface/70 cursor-pointer hover:border-cyber-accent/40 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={waiveRetractationPeriod}
+                    onChange={(e) =>
+                      setWaiveRetractationPeriod(e.target.checked)
+                    }
+                    className="mt-0.5 h-4 w-4 accent-cyber-accent"
+                  />
+                  <div className="space-y-0.5 text-xs">
+                    <div className="font-semibold text-cyber-text flex items-center gap-1.5">
+                      <span>
+                        放弃欧盟 14 天无理由撤回权以加速交付 (
+                        <code>waiveRetractationPeriod</code>)
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                        需 2FA
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-cyber-muted leading-relaxed">
+                      默认关闭（保留欧盟消费者 14 天法定撤回权）。注意：根据 OVH 欧盟区规则，若保留 14 天撤回权，OVH 可能会在 14 天冷静期结束后才开始装机交付；若希望付款后立即装机且自愿放弃无理由撤回权，请勾选此项。
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+
             <div className="mt-4">
               <button
                 onClick={() => editingItemId ? updateQueueItem() : addQueueItem()}
@@ -938,6 +1014,26 @@ const QueuePage = () => {
                     )}
                     <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30 flex items-center gap-1">
                       <ShoppingCart size={12} /> {Math.min(item.purchased || 0, item.quantity || 0)} / {item.quantity || 0}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] rounded-md border ${
+                        item.auto_pay
+                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                          : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                      }`}
+                    >
+                      {item.auto_pay ? "⚡ 自动扣款" : "🛡️ 仅生成待付订单"}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] rounded-md border ${
+                        item.waive_retractation_period
+                          ? "bg-purple-500/15 text-purple-400 border-purple-500/30"
+                          : "bg-sky-500/15 text-sky-400 border-sky-500/30"
+                      }`}
+                    >
+                      {item.waive_retractation_period
+                        ? "⏩ 已放弃14天撤回权 (立即交付)"
+                        : "🇪🇺 保留欧盟14天撤回权"}
                     </span>
                   </div>
                   <p className="text-xs text-cyber-muted">

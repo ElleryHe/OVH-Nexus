@@ -1147,7 +1147,7 @@ def _handle_order_create_unpaid(args: Dict[str, Any], cfg: Dict[str, Any]) -> Tu
     # Re-verify account is still whitelisted
     _resolve_target_accounts(palias)
 
-    # SECURITY REDLINE: auto_pay is unconditionally False and quantity is unconditionally 1
+    # SECURITY REDLINE: auto_pay and waive_retractation_period are unconditionally False and quantity is unconditionally 1
     synthetic_task = {
         "id": f"mcp-order-{uuid.uuid4().hex[:8]}",
         "planCode": plan_code,
@@ -1155,6 +1155,7 @@ def _handle_order_create_unpaid(args: Dict[str, Any], cfg: Dict[str, Any]) -> Tu
         "options": options,
         "accountId": None if aid == "default" else aid,
         "auto_pay": False,
+        "waive_retractation_period": False,
         "quantity": 1,
         "purchased": 0,
         "retryCount": 1,
@@ -1216,7 +1217,7 @@ def _handle_queue_add(args: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[Dict[s
         raise ValueError("No whitelisted OVH account is available for queueing.")
     aid, palias, _ = targets[0]
 
-    # SECURITY REDLINE: Hardcode auto_pay=False and quantity=1
+    # SECURITY REDLINE: Hardcode auto_pay=False, waive_retractation_period=False, and quantity=1
     new_item = {
         "id": str(uuid.uuid4()),
         "planCode": plan_code,
@@ -1228,6 +1229,7 @@ def _handle_queue_add(args: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[Dict[s
         "retryCount": 0,
         "accountId": None if aid == "default" else aid,
         "auto_pay": False,
+        "waive_retractation_period": False,
         "quantity": 1,
         "purchased": 0,
         "source": "mcp",

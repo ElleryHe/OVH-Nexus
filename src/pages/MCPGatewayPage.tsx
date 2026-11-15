@@ -41,6 +41,8 @@ interface MCPSettings {
   revealedToken?: string;
   tokenRotatedAt: string | null;
   scopes: MCPScopes;
+  totpEnabled?: boolean;
+  operationsLockedByTotp?: boolean;
   allowedAccountIds: string[];
   allowAllAccounts: boolean;
   hourlyOrderLimit: number;
@@ -924,21 +926,37 @@ const MCPGatewayPage = () => {
                 {/* L3 Reversible Operations */}
                 <div className="p-3.5 rounded-lg border border-cyber-grid bg-cyber-bg/40 flex items-start justify-between gap-4">
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-bold px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/30">
                         L3 可逆运维
                       </span>
                       <span className="text-sm font-semibold text-cyber-text">
                         独服/VPS 重启、IPMI 会话重置与边缘防火墙管理 (4 个工具)
                       </span>
+                      {settings.operationsLockedByTotp && (
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                          <Lock size={11} />
+                          需先在系统设置启用 2FA
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-cyber-muted leading-relaxed">
                       允许 AI 通过混淆代号 (`bm-xx` / `vps-xx`) 执行不破坏磁盘数据的可逆运维操作。
+                      {settings.operationsLockedByTotp && (
+                        <span className="text-amber-400 ml-1">
+                          （当前面板尚未绑定 2FA 双因素认证，L3 运维层已被底层强制锁定关闭）
+                        </span>
+                      )}
                     </p>
                   </div>
                   <input
                     type="checkbox"
-                    checked={settings.scopes.operations}
+                    disabled={!!settings.operationsLockedByTotp}
+                    checked={
+                      settings.operationsLockedByTotp
+                        ? false
+                        : settings.scopes.operations
+                    }
                     onChange={(e) =>
                       setSettings((prev) => ({
                         ...prev,
@@ -948,7 +966,7 @@ const MCPGatewayPage = () => {
                         },
                       }))
                     }
-                    className="mt-1 h-4 w-4 accent-cyber-accent cursor-pointer"
+                    className="mt-1 h-4 w-4 accent-cyber-accent cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   />
                 </div>
 

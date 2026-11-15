@@ -8,6 +8,7 @@ services:
       - DEBUG=false
       - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
+      - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
       - BIND_HOST=127.0.0.1

@@ -10,6 +10,7 @@ import { LocaleProvider } from "./context/LocaleContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { ToastProvider } from "./components/ToastContainer";
 import PasswordGate from "./components/PasswordGate";
+import TotpStepUpModal from "./components/TotpStepUpModal";
 import Dashboard from "./pages/Dashboard";
 import ServersPage from "./pages/ServersPage";
 import QueuePage from "./pages/QueuePage";
@@ -76,6 +77,7 @@ const App = () => {
                       <Route path="*" element={<NotFound />} />
                     </Route>
                   </Routes>
+                  <TotpStepUpModal />
                 </BrowserRouter>
                 <Toaster />
                 <SonnerToaster />

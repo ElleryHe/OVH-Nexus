@@ -22,6 +22,9 @@ cat > .env << EOF
 # Required: Console login password (at least 12 characters)
 API_SECRET_KEY=$(openssl rand -hex 24)
 
+# Required: Independent master key for AES-256-GCM at-rest secret encryption (at least 16 characters)
+DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
 # Optional: Default WebUI locale (en | fr | zh-CN)
 DEFAULT_LOCALE=en
 
@@ -30,8 +33,8 @@ COOKIE_SECURE=false
 EOF
 ```
 
-:::caution[Strong Password Required]
-OVH Nexus validates `API_SECRET_KEY` at startup. If it is empty, shorter than 12 characters, or matches a known placeholder (such as `replace-with-a-strong-random-secret`, `123456`, or `password`), the backend will refuse to start.
+:::caution[Strong Password & Independent Encryption Key Required]
+OVH Nexus validates both `API_SECRET_KEY` (>= 12 chars) and `DATA_ENCRYPTION_KEY` (>= 16 chars, must be different from `API_SECRET_KEY`) at startup. If either is missing or weak, the backend will refuse to start.
 :::
 
 ## 2. Create `docker-compose.yml`
@@ -47,6 +50,7 @@ services:
       - DEBUG=false
       - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
+      - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
       - BIND_HOST=127.0.0.1

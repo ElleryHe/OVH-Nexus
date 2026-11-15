@@ -99,6 +99,12 @@ interface ServerPlan {
 const ServersPage = () => {
   const isMobile = useIsMobile();
   const [showBatchMonitorDialog, setShowBatchMonitorDialog] = useState(false);
+  const [pendingQueueTarget, setPendingQueueTarget] = useState<{
+    server: ServerPlan;
+    datacenters: string[];
+  } | null>(null);
+  const [queueAutoPay, setQueueAutoPay] = useState(false);
+  const [queueWaiveRetractation, setQueueWaiveRetractation] = useState(false);
   const { isAuthenticated } = useAPI();
   const [servers, setServers] = useState<ServerPlan[]>([]);
   const [filteredServers, setFilteredServers] = useState<ServerPlan[]>([]);
@@ -1036,8 +1042,8 @@ const ServersPage = () => {
     return selectedOptions[serverPlanCode]?.includes(optionValue) || false;
   };
 
-  // 添加到抢购队列的函数，支持多数据中心
-  const addToQueue = async (server: ServerPlan, datacenters: string[]) => {
+  // 添加到抢购队列的函数（先弹出支付与欧盟 14 天撤回权策略确认弹窗）
+  const addToQueue = (server: ServerPlan, datacenters: string[]) => {
     if (!isAuthenticated) {
       toast.error("请先配置 API 设置");
       return;
@@ -1047,6 +1053,15 @@ const ServersPage = () => {
       toast.error("请至少选择一个数据中心");
       return;
     }
+
+    setQueueAutoPay(false);
+    setQueueWaiveRetractation(false);
+    setPendingQueueTarget({ server, datacenters });
+  };
+
+  const confirmAddToQueue = async () => {
+    if (!pendingQueueTarget) return;
+    const { server, datacenters } = pendingQueueTarget;
     
     try {
       // 获取用户选择的配置选项
@@ -1085,18 +1100,18 @@ const ServersPage = () => {
       };
       
       // 处理所有选中的选项
-      const selectedOptionDetails = userSelectedOptions.map(categorizeOption).filter(Boolean);
-      
-      console.log("用户选择的配置详情:", formattedOptions);
-      console.log("提交的配置选项:", userSelectedOptions);
+      userSelectedOptions.map(categorizeOption).filter(Boolean);
 
       const apiDatacenters = datacenters.map(dc => convertDisplayDcToApiDc(dc));
       await api.post(`/queue`, {
         planCode: server.planCode,
         datacenters: apiDatacenters,
         options: userSelectedOptions,
+        auto_pay: queueAutoPay,
+        waive_retractation_period: queueWaiveRetractation,
       });
       
+      setPendingQueueTarget(null);
       // 构建成功消息，包含用户选择的配置详情
       let successMessage = `已将 ${server.planCode} 添加到 ${datacenters.length} 个数据中心的抢购队列`;
       
@@ -2609,6 +2624,95 @@ const ServersPage = () => {
         )}
         </>
       ) : null}
+
+      {/* 抢购任务支付与欧盟 14 天撤回权策略确认弹窗 */}
+      <AlertDialog
+        open={!!pendingQueueTarget}
+        onOpenChange={(open) => {
+          if (!open) setPendingQueueTarget(null);
+        }}
+      >
+        <AlertDialogContent className="bg-cyber-surface border border-cyber-accent/40 text-cyber-text max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-base font-bold text-cyber-text">
+              创建抢购队列任务 — {pendingQueueTarget?.server.planCode}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 pt-2 text-xs text-cyber-muted">
+                <div>
+                  已选机房优先级：
+                  <span className="ml-1 font-mono text-cyber-accent">
+                    {pendingQueueTarget?.datacenters
+                      .map((d) => d.toUpperCase())
+                      .join(" > ")}
+                  </span>
+                </div>
+
+                <div className="space-y-2.5 pt-1">
+                  <label className="flex items-start gap-2.5 p-3 rounded-md border border-cyber-grid bg-cyber-bg/60 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={queueAutoPay}
+                      onChange={(e) => setQueueAutoPay(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 accent-cyber-accent"
+                    />
+                    <div className="space-y-0.5">
+                      <div className="font-semibold text-cyber-text flex items-center gap-1.5">
+                        <span>抢购命中后自动扣款 (Auto-Pay)</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                          需 2FA
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-cyber-muted leading-relaxed">
+                        默认关闭（仅生成未付款订单，需手动前往官网或面板付款）。勾选后将调用 OVH 默认支付方式尝试自动扣款。
+                      </p>
+                    </div>
+                  </label>
+
+                  <label className="flex items-start gap-2.5 p-3 rounded-md border border-cyber-grid bg-cyber-bg/60 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={queueWaiveRetractation}
+                      onChange={(e) =>
+                        setQueueWaiveRetractation(e.target.checked)
+                      }
+                      className="mt-0.5 h-4 w-4 accent-cyber-accent"
+                    />
+                    <div className="space-y-0.5">
+                      <div className="font-semibold text-cyber-text flex items-center gap-1.5">
+                        <span>
+                          放弃欧盟 14 天无理由撤回权以加速交付 (
+                          <code>waiveRetractationPeriod</code>)
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                          需 2FA
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-cyber-muted leading-relaxed">
+                        默认关闭（保留欧盟消费者 14 天法定撤回权）。注意：若保留 14 天撤回权，OVH 可能会在 14 天冷静期结束后才开始装机交付；若希望付款后立即装机且自愿放弃无理由撤回权，请勾选此项。
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text text-xs">
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                confirmAddToQueue();
+              }}
+              className="bg-cyber-accent text-white hover:opacity-90 text-xs font-semibold"
+            >
+              确认加入抢购队列
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
