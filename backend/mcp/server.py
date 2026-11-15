@@ -119,7 +119,7 @@ def _handle_single_jsonrpc(msg: Dict[str, Any], ip: str) -> Optional[Dict[str, A
                 },
                 "serverInfo": {
                     "name": "ovh-nexus-mcp",
-                    "version": "1.2.1",
+                    "version": "1.2.2",
                 },
                 "instructions": (
                     "OVH Nexus MCP Gateway (Privacy-Shielded & No-Auto-Pay Enforced). "

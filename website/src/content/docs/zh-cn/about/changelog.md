@@ -3,11 +3,20 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.2.1]
+:::note[当前最新版本：v1.2.2]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.2.2] - 依赖基线升级与 Dependabot 跨大版本治理加固
+
+### 变更与升级 (Changed)
+
+- 升级后端依赖基线（`backend/requirements.txt` 中 `cryptography>=50.0.2`、`backend/requirements-dev.txt` 中 `pytest>=9.2.0`）与在线文档门户框架（`website/package.json` 中 `@astrojs/starlight@^0.42.11`）。
+- 完善 `.github/dependabot.yml` 中前端（`/`）与文档站（`/website`）的 `ignore` 策略，显式锁定 `react` / `react-dom`（`<19.0.0`）、`tailwindcss`（`<4.0.0`）与 `recharts`（`<3.0.0`）大版本边界，并全局屏蔽非安全类的 `semver-major` 跨大版本自动 PR。
+
+---
 
 ## [1.2.1] - AES-256-GCM 磁盘静态加密、TOTP 2FA 分级安全门禁、欧盟 14 天撤回权保护与 Node 24 / Python 3.12 LTS 升级
 

@@ -3,11 +3,20 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.2.1]
+:::note[Latest Release: v1.2.2]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.2.2] - Dependency Baseline Updates & Dependabot Governance Hardening
+
+### Changed
+
+- Upgraded backend dependencies (`cryptography>=50.0.2` in `backend/requirements.txt`, `pytest>=9.2.0` in `backend/requirements-dev.txt`) and documentation portal framework (`@astrojs/starlight@^0.42.11` in `website/package.json`).
+- Hardened `.github/dependabot.yml` ignore rules for `npm` (`/` and `/website`), explicitly locking major-version boundaries for `react` / `react-dom` (`<19.0.0`), `tailwindcss` (`<4.0.0`), and `recharts` (`<3.0.0`) while suppressing routine breaking `semver-major` PRs.
+
+---
 
 ## [1.2.1] - AES-256-GCM At-Rest Vault, TOTP 2FA Gatekeeper, EU 14-Day Retraction Opt-In & Node 24 / Python 3.12 LTS
 
