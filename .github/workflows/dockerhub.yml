@@ -54,7 +54,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract Docker Metadata
+      - name: Extract Docker Metadata & OCI Labels
         id: meta_single
         uses: docker/metadata-action@v5
         with:
@@ -63,6 +63,13 @@ jobs:
             type=raw,value=${{ steps.vars.outputs.version }}
             type=raw,value=${{ steps.vars.outputs.major_minor }}
             type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=OVH Nexus
+            org.opencontainers.image.description=Self-hosted OVHcloud control, automated bare-metal/VPS procurement & privacy-shielded MCP AI gateway console
+            org.opencontainers.image.url=https://ovh-nexus.ellery.me
+            org.opencontainers.image.documentation=https://ovh-nexus.ellery.me
+            org.opencontainers.image.source=https://github.com/ElleryHe/OVH-Nexus
+            org.opencontainers.image.licenses=AGPL-3.0-only
 
       - name: Build and Push Multi-Arch Image
         uses: docker/build-push-action@v5
@@ -75,6 +82,28 @@ jobs:
           labels: ${{ steps.meta_single.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Prepare README for Docker Hub Overview
+        if: github.event_name != 'pull_request'
+        run: |
+          sed \
+            -e 's|src="./public/favicon.svg"|src="https://raw.githubusercontent.com/ElleryHe/OVH-Nexus/main/public/favicon.svg"|g' \
+            -e 's|href="./README.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/README.md"|g' \
+            -e 's|href="./docs/README.fr.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/docs/README.fr.md"|g' \
+            -e 's|href="./docs/README.zh-CN.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/docs/README.zh-CN.md"|g' \
+            -e 's|href="./LICENSE"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/LICENSE"|g' \
+            README.md > /tmp/DOCKERHUB_README.md
+
+      - name: Sync Description & README to Docker Hub
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/ovh-nexus
+          short-description: "Self-hosted OVHcloud control, automated bare-metal/VPS procurement & privacy-shielded MCP AI gateway"
+          readme-filepath: /tmp/DOCKERHUB_README.md
 
       - name: Create Git Tag and Publish GitHub Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

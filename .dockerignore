@@ -1,56 +1,55 @@
-# 依赖
+# Dependencies & caches
 node_modules/
 backend/venv/
 backend/__pycache__/
+**/__pycache__/
+.pytest_cache/
+.coverage
+coverage.xml
 
-# 构建产物
+# Build artifacts
 dist/
 build/
 .vite/
+.astro/
+.wrangler/
 
-# 缓存（排除内容，保留目录）
+# Runtime & host-mounted volumes (never include local runtime state in image context)
+data/
+cache/
+logs/
+backend/data/
 backend/cache/*
 !backend/cache/.gitkeep
-
-# 日志（排除内容，保留目录）
 backend/logs/*
 !backend/logs/.gitkeep
 *.log
 
-# 数据目录（不排除，需要复制）
-# backend/data 保留，会被复制到镜像
-
-# 开发文件
+# Development & IDE files
 .git/
+.github/
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
-
-# 临时文件
 *.tmp
 *.bak
 *~
 .DS_Store
 Thumbs.db
 
-# 环境变量（Docker 使用环境变量）
+# Environment files
 .env
 backend/.env
-backend/data/
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 
-# 测试和文档
+# Documentation site, tests & non-runtime markdown
 website/
 docs/
 backend/tests/
 *.md
 !README.md
-
-# 其他
 .gitignore
 LICENSE
-
