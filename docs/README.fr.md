@@ -30,7 +30,8 @@
 - **Contrôle des Serveurs Dédiés & VPS** : Inventaire matériel, trafic MRTG, console IPMI/KVM, réinstallation OS automatisée (RAID/ZFS, injection de clés SSH), pare-feu IP Edge & mitigation Anti-DDoS, et gestion VPS.
 - **Commandes, Livraison & Renouvellements** : Suivi en direct des 4 étapes de livraison (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) et matrice d’expiration des services.
 - **Disponibilité en Direct & File d’Achat Auto** : Stock en temps réel enrichi avec les noms commerciaux (`KS-A`, `RISE-1`, `SCALE-a1`), spécifications lisibles et tarification mensuelle exacte par configuration.
-- **Veille SKU & Centre de Notifications** : Détection sans clé API des nouveaux modèles ou retraits de serveurs, et alertes multi-canaux (**Telegram Bot** et **Email SMTP**) sur 7 événements.
+- **Veille SKU & Centre de Notifications** : Détection sans clé API des nouveaux modèles ou retraits de serveurs, et alertes multi-canaux (**Telegram Bot** et **Email SMTP**) sur 8 événements.
+- **Passerelle IA MCP & Sandbox de Confidentialité (`/api/mcp`)** : Connectez Claude Code, Claude Desktop, Cursor ou Antigravity via Streamable HTTP (JSON-RPC 2.0) avec pseudonymisation bidirectionnelle (`bm-01`, `vps-01`, `ord-01`, IP masquées `*.*.*.42`) et **interdiction stricte du paiement automatique** (`auto_pay=False` verrouillé en dur).
 
 📚 **Documentation complète (Français)** : <a href="https://ovh-nexus.ellery.me/fr/" target="_blank" rel="noopener noreferrer"><strong>https://ovh-nexus.ellery.me/fr/</strong></a>
 
