@@ -119,7 +119,7 @@ def _handle_single_jsonrpc(msg: Dict[str, Any], ip: str) -> Optional[Dict[str, A
                 },
                 "serverInfo": {
                     "name": "ovh-nexus-mcp",
-                    "version": "1.2.0",
+                    "version": "1.2.1",
                 },
                 "instructions": (
                     "OVH Nexus MCP Gateway (Privacy-Shielded & No-Auto-Pay Enforced). "
@@ -230,7 +230,7 @@ def handle_mcp_streamable_http():
         return jsonify({}), 200
 
     cfg = load_mcp_config()
-    if not cfg.get("enabled") or not cfg.get("token"):
+    if not cfg.get("enabled") or not cfg.get("tokenHash"):
         return (
             jsonify({
                 "jsonrpc": "2.0",
@@ -326,12 +326,11 @@ def manage_mcp_settings():
         return jsonify({"status": "success", "data": pub})
 
     body = request.get_json(silent=True) or {}
-    was_without_token = not load_mcp_config().get("token")
     updated = update_mcp_config(body)
     pub = get_public_mcp_config()
     # If enabling for the first time auto-created a token, reveal it once so the user can copy it
-    if was_without_token and updated.get("token"):
-        pub["revealedToken"] = updated["token"]
+    if updated.get("_newlyGeneratedPlaintextToken"):
+        pub["revealedToken"] = updated["_newlyGeneratedPlaintextToken"]
     return jsonify({"status": "success", "data": pub})
 
 

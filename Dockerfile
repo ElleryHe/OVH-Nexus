@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY eslint.config.js ./
 
 RUN npm run build
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="OVH Nexus" \
       org.opencontainers.image.description="Self-hosted OVHcloud control, automated bare-metal/VPS procurement & privacy-shielded MCP AI gateway console" \

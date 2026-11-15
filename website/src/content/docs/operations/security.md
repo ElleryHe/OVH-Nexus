@@ -18,14 +18,23 @@ OVH Nexus is designed to manage high-value cloud infrastructure and billing acco
    - Header-based `X-API-Key` authentication is restricted exclusively to direct loopback connections (`127.0.0.1` / `::1`) without `X-Forwarded-For` or `X-Real-IP` headers (`_is_direct_loopback()`). External requests passing through Nginx must authenticate via session cookie.
 5. **Constant-Time Secret Comparison**:
    - All password, internal token (`INTERNAL_TOKEN`), API key, and Telegram webhook token comparisons use `hmac.compare_digest()` to prevent timing side-channel attacks.
-6. **File Permission Hardening (`0600`)**:
+6. **File Permission Hardening (`0600`) & AES-256-GCM At-Rest Vault**:
    - At startup, `app.py` sets `os.umask(0o077)` and tightens all existing files in `/app/backend/data` to `0600` (`rw-------`).
-7. **Anti-Indexing (`robots.txt`)**:
+   - All sensitive secrets on disk (`appKey`, `appSecret`, `consumerKey`, `tgToken`, SMTP passwords, 2FA seeds, `session_secret`, and `webhook_secret`) are encrypted at rest (`enc:v1:<nonce>:<ciphertext>`) using `HKDF-SHA256` and `AES-256-GCM` derived from your independent `DATA_ENCRYPTION_KEY`. MCP Bearer tokens are stored strictly as irreversible `SHA-256` hashes (`tokenHash`).
+7. **RFC 6238 TOTP Two-Factor Authentication & Tiered High-Risk Gatekeeper**:
+   - **Mandatory 2FA for High-Risk Actions**: Until 2FA is enabled in **Settings → Two-Factor Authentication**, all high-risk operations (server reboot/reinstall/termination/ownership transfer, IPMI console, firewall mutations, API credential changes, enabling `auto_pay` / `waiveRetractationPeriod`, and MCP `L3` tools) are locked (`403 TOTP_SETUP_REQUIRED`).
+   - **Two-Tier Step-Up Verification**:
+     - **`strict` Tier**: Irreversible actions (OS reinstall, service termination, ownership transfer, API key mutations, 2FA disable) require a fresh 6-digit TOTP or recovery code on every request (with 30s anti-replay enforcement).
+     - **`sudo` Tier**: Reversible operational actions (server/VPS reboot, rescue mode, IPMI console, firewall/network changes, MCP config, enabling `auto_pay` or `waiveRetractationPeriod`) grant a **5-minute Sudo window** after verifying once.
+8. **Consumer Protection (`waiveRetractationPeriod = False` by Default)**:
+   - Both `auto_pay` and `waiveRetractationPeriod` default to `False` across all procurement queues and quick-orders, preserving the EU 14-day statutory right of withdrawal unless explicitly opted in (with 2FA Sudo verification).
+9. **Anti-Indexing (`robots.txt`)**:
    - The console's built-in `robots.txt` serves `Disallow: /` so search engines do not index self-hosted login pages.
 
 ## Production Hardening Checklist
 
-- [ ] Generate a random `API_SECRET_KEY` of at least 24 bytes (`openssl rand -hex 24`).
+- [ ] Generate a random `API_SECRET_KEY` (`openssl rand -hex 24`) and an independent `DATA_ENCRYPTION_KEY` (`openssl rand -hex 32`).
+- [ ] Enable **TOTP Two-Factor Authentication (2FA)** immediately after first login in **Settings** and store your 8 single-use recovery codes offline.
 - [ ] Bind the Docker container port to localhost (`127.0.0.1:20000:80`) and expose it through an HTTPS reverse proxy (Caddy, Nginx, or Cloudflare Tunnel).
 - [ ] Set `COOKIE_SECURE=true` in `.env` when serving over HTTPS.
 - [ ] Keep `DEBUG=false` in production (note that even if `ENABLE_API_KEY_AUTH=false` is set accidentally, OVH Nexus ignores it and enforces authentication whenever `DEBUG=false`).

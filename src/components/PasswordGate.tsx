@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useState } from 'react';
 import { authApi } from '@/utils/apiClient';
 import { useLocale, Locale } from '@/context/LocaleContext';
 import { useTheme, ThemeMode } from '@/context/ThemeContext';
-import { Sun, Moon, Monitor } from 'lucide-react';
+import { Sun, Moon, Monitor, ShieldCheck, ArrowLeft } from 'lucide-react';
 import { NexusLogo } from './NexusLogo';
 
 interface PasswordGateProps {
@@ -26,6 +26,8 @@ const THEME_OPTIONS: { mode: ThemeMode; icon: any; key: string }[] = [
 const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
   const [state, setState] = useState<GateState>('checking');
   const [password, setPassword] = useState('');
+  const [requireTotp, setRequireTotp] = useState(false);
+  const [totpCode, setTotpCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const { locale, setLocale, t } = useLocale();
@@ -47,7 +49,11 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
   }, []);
 
   useEffect(() => {
-    const reset = () => setState('out');
+    const reset = () => {
+      setState('out');
+      setRequireTotp(false);
+      setTotpCode('');
+    };
     window.addEventListener('auth:expired', reset);
     window.addEventListener('auth:logout', reset);
     return () => {
@@ -62,15 +68,33 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
       setError(t('auth.error.empty'));
       return;
     }
+    if (requireTotp && !totpCode.trim()) {
+      setError(t('auth.totpEmpty'));
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await authApi.post('/auth/login', { password });
+      const payload: Record<string, string> = { password };
+      if (requireTotp && totpCode.trim()) {
+        payload.totpCode = totpCode.trim();
+      }
+      const res = await authApi.post('/auth/login', payload);
+      if (res.data?.requireTotp && !res.data?.authenticated) {
+        setRequireTotp(true);
+        setTotpCode('');
+        return;
+      }
       setPassword('');
+      setTotpCode('');
+      setRequireTotp(false);
       setState('in');
     } catch (err: any) {
+      const serverMsg = err?.response?.data?.message;
       if (err?.response?.status === 429) {
-        setError(err.response.data?.message || t('auth.error.invalid'));
+        setError(serverMsg || t('auth.error.invalid'));
+      } else if (requireTotp && serverMsg) {
+        setError(serverMsg);
       } else {
         setError(t('auth.error.invalid'));
       }
@@ -149,22 +173,56 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
               {t('brand.subtitle')}
             </p>
             <p className="text-xs text-cyber-muted pt-1">
-              {t('auth.subtitle')}
+              {requireTotp ? t('auth.totpPrompt') : t('auth.subtitle')}
             </p>
           </div>
 
-          <div className="space-y-2">
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="cyber-input w-full py-2.5"
-              placeholder={t('auth.placeholder')}
-              autoFocus
-              autoComplete="current-password"
-            />
-            {error && <p className="text-xs text-rose-500">{error}</p>}
-          </div>
+          {!requireTotp ? (
+            <div className="space-y-2">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="cyber-input w-full py-2.5"
+                placeholder={t('auth.placeholder')}
+                autoFocus
+                autoComplete="current-password"
+              />
+              {error && <p className="text-xs text-rose-500">{error}</p>}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-cyber-accent bg-cyber-accent/10 border border-cyber-accent/25 rounded-md px-3 py-2">
+                <span className="inline-flex items-center gap-1.5 font-semibold">
+                  <ShieldCheck size={14} />
+                  <span>2FA TOTP 二次认证</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRequireTotp(false);
+                    setTotpCode('');
+                    setError('');
+                  }}
+                  className="inline-flex items-center gap-1 text-cyber-muted hover:text-cyber-text"
+                >
+                  <ArrowLeft size={12} />
+                  <span>{t('auth.backToPassword')}</span>
+                </button>
+              </div>
+              <input
+                type="text"
+                inputMode="text"
+                autoComplete="one-time-code"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                className="cyber-input w-full py-2.5 text-center font-mono text-base tracking-widest"
+                placeholder={t('auth.totpPlaceholder')}
+                autoFocus
+              />
+              {error && <p className="text-xs text-rose-500">{error}</p>}
+            </div>
+          )}
 
           <button
             type="submit"

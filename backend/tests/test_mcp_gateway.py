@@ -11,8 +11,10 @@ from mcp import audit as mcp_audit  # noqa: E402
 from mcp import config as mcp_cfg  # noqa: E402
 from mcp import privacy_shield as mcp_shield  # noqa: E402
 from mcp import server as mcp_srv  # noqa: E402
+import totp_service as TOTP  # noqa: E402
 
 PASSWORD = os.environ["API_SECRET_KEY"]
+TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
 
 @pytest.fixture()
@@ -22,14 +24,17 @@ def client():
 
 @pytest.fixture(autouse=True)
 def reset_mcp_and_app_state(tmp_path, monkeypatch):
-    # Isolate MCP config, aliases, and audit files per test in tmp_path
+    # Isolate MCP config, aliases, audit, and TOTP files per test in tmp_path
     cfg_file = str(tmp_path / "mcp_config.json")
     aliases_file = str(tmp_path / "mcp_aliases.json")
     audit_file = str(tmp_path / "mcp_audit.json")
+    totp_file = str(tmp_path / "totp_config.json")
 
     monkeypatch.setattr(mcp_cfg, "MCP_CONFIG_FILE", cfg_file)
     monkeypatch.setattr(mcp_audit, "AUDIT_FILE", audit_file)
     monkeypatch.setattr(mcp_shield.privacy_shield, "_storage_path", aliases_file)
+    monkeypatch.setattr(TOTP, "TOTP_CONFIG_FILE", totp_file)
+    TOTP._totp_failures.clear()
     mcp_shield.privacy_shield.reload()
     mcp_audit.reset_quotes_and_rate_limits_for_test()
     mcp_srv._mcp_attempts.clear()
@@ -54,9 +59,19 @@ def reset_mcp_and_app_state(tmp_path, monkeypatch):
 
 
 def login(client, ip="127.0.0.1"):
+    TOTP.save_totp_state({
+        "enabled": True,
+        "secret": TEST_TOTP_SECRET,
+        "pendingSecret": "",
+        "recoveryCodeHashes": [],
+        "lastUsedStep": 0,
+        "enabledAt": "2026-11-15T00:00:00Z",
+        "updatedAt": None,
+    })
+    code, _ = TOTP.compute_current_totp(TEST_TOTP_SECRET)
     return client.post(
         "/api/auth/login",
-        json={"password": PASSWORD},
+        json={"password": PASSWORD, "totpCode": code},
         environ_base={"REMOTE_ADDR": ip},
     )
 

@@ -4,3 +4,4 @@ python-dotenv==1.2.4
 ovh==1.2.0
 requests==2.34.2
 tenacity==9.2.1
+cryptography>=44.0.0

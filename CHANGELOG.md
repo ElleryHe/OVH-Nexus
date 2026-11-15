@@ -9,6 +9,26 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.2.1] - 2026-11-15
+
+### Security
+- **At-Rest Secret Encryption (`DATA_ENCRYPTION_KEY`, `backend/crypto_vault.py`)**:
+  - Added a mandatory, independent `DATA_ENCRYPTION_KEY` environment variable (`>= 16` chars, fail-fast on startup if missing, weak, or identical to `API_SECRET_KEY`).
+  - Encrypts all sensitive secrets at rest in `./data/config.json` (`appKey`, `appSecret`, `consumerKey`, `tgToken`, `notifications.channels[*].config.token/password`), `./data/accounts.json`, `./data/totp_config.json`, and `./data/session_secret` / `./data/webhook_secret` using `HKDF-SHA256` key derivation and `AES-256-GCM` authenticated encryption (`enc:v1:<nonce>:<ciphertext>`), with automatic in-place migration of existing plaintext files.
+  - Upgraded `./data/mcp_config.json` to persist only an irreversible `SHA-256` `tokenHash` and redacted `maskedToken` preview, wiping plaintext MCP Bearer tokens from disk.
+- **TOTP Two-Factor Authentication (RFC 6238) & Tiered High-Risk Gatekeeper (`backend/totp_service.py`)**:
+  - Added native RFC 6238 TOTP 2FA with offline QR code enrollment, 30-second anti-replay window (`lastUsedStep`), and 8 single-use emergency recovery codes (`XXXX-XXXX`).
+  - Enforced a global high-risk operation gatekeeper: **when 2FA is not enabled, all high-risk routes return `403 TOTP_SETUP_REQUIRED` and MCP `L3` (`operations`) is forcibly locked to `False`**.
+  - Implemented two-tier step-up verification (`strict` fresh TOTP required on every call for OS reinstall, service termination, ownership transfer, API credential mutation, and 2FA disable; `sudo` 5-minute session window for server/VPS reboot, rescue mode, IPMI console, firewall/network changes, MCP governance, and enabling `auto_pay` / `waiveRetractationPeriod`).
+- **Consumer Protection & Payment Guardrails (`waiveRetractationPeriod` & `auto_pay`)**:
+  - Changed `waiveRetractationPeriod` in `purchase_server()` and `/api/queue` from hardcoded `True` to an explicit opt-in defaulting to `False` (preserving the EU 14-day statutory right of withdrawal by default), with per-task dual switches (`auto_pay` + `waive_retractation_period`) in the WebUI and hardcoded `False` in MCP tools.
+
+### Changed
+- Upgraded container base images and CI workflow runtimes to **Node 24 LTS (`node:24-alpine`)** and **Python 3.12 (`python:3.12-slim`)**.
+- Upgraded GitHub Actions (`actions/setup-node@v7`, `actions/setup-python@v7`, `docker/setup-buildx-action@v4`, `peter-evans/dockerhub-description@v5`) and npm dependencies (`lucide-react@^1.72.0`, `sonner@^2.0.8`, `autoprefixer@^10.6.2`, `@radix-ui/react-alert-dialog@^1.2.1`, `@radix-ui/react-tooltip@^1.4.1`, `wrangler@^4.160.1`, `qrcode@^1.5.4`), and refined `.github/dependabot.yml` to target `develop` with grouped minor/patch updates.
+
+---
+
 ## [1.2.0] - 2026-11-15
 
 ### Added

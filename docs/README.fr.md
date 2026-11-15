@@ -50,6 +50,9 @@ cat > .env << EOF
 # Obligatoire : Mot de passe de connexion (au moins 12 caractères)
 API_SECRET_KEY=$(openssl rand -hex 24)
 
+# Obligatoire : Clé maîtresse indépendante de chiffrement au repos AES-256-GCM (au moins 16 caractères)
+DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
 # Optionnel : Langue par défaut de l'interface (en | fr | zh-CN)
 DEFAULT_LOCALE=fr
 
@@ -71,6 +74,7 @@ services:
       - DEBUG=false
       - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Veuillez définir une clé API_SECRET_KEY robuste dans .env}
+      - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Veuillez définir une clé DATA_ENCRYPTION_KEY indépendante (min. 16 caractères) dans .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-fr}
       - BIND_HOST=127.0.0.1

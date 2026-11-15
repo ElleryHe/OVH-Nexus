@@ -51,6 +51,9 @@ cat > .env << EOF
 # Required: Console login password / API secret key (at least 12 characters)
 API_SECRET_KEY=$(openssl rand -hex 24)
 
+# Required: Independent master key for AES-256-GCM at-rest secret encryption (at least 16 characters)
+DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
 # Optional: Default WebUI locale (en | fr | zh-CN)
 DEFAULT_LOCALE=en
 
@@ -72,6 +75,7 @@ services:
       - DEBUG=false
       - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
+      - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
       - BIND_HOST=127.0.0.1

@@ -6,9 +6,11 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as A  # noqa: E402  (环境变量由 conftest 注入)
+import totp_service as TOTP  # noqa: E402
 
 PASSWORD = os.environ['API_SECRET_KEY']
 WEBHOOK_SECRET = A.get_webhook_secret()
+TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
 
 @pytest.fixture()
@@ -17,7 +19,10 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
+def reset_state(tmp_path, monkeypatch):
+    totp_file = str(tmp_path / "totp_config.json")
+    monkeypatch.setattr(TOTP, "TOTP_CONFIG_FILE", totp_file)
+    TOTP._totp_failures.clear()
     A.config.update({
         'appKey': '', 'appSecret': '', 'consumerKey': '',
         'endpoint': 'ovh-eu', 'tgToken': '', 'tgChatId': '',
@@ -36,6 +41,37 @@ def login(client, ip='127.0.0.1'):
         json={'password': PASSWORD},
         environ_base={'REMOTE_ADDR': ip},
     )
+
+
+def enable_totp_and_login(client, ip='127.0.0.1', step_base=100_000):
+    """Helper to bind 2FA and log in with an active Sudo window for tests that exercise protected routes."""
+    TOTP.save_totp_state({
+        "enabled": True,
+        "secret": TEST_TOTP_SECRET,
+        "pendingSecret": "",
+        "recoveryCodeHashes": [],
+        "lastUsedStep": 0,
+        "enabledAt": "2026-11-15T00:00:00Z",
+        "updatedAt": None,
+    })
+    code, _ = TOTP.compute_current_totp(TEST_TOTP_SECRET)
+    return client.post(
+        '/api/auth/login',
+        json={'password': PASSWORD, 'totpCode': code},
+        environ_base={'REMOTE_ADDR': ip},
+    )
+
+
+def fresh_totp_headers(step_offset=1):
+    """Generate a non-replayed TOTP code header by advancing a step offset."""
+    st = TOTP.load_totp_state()
+    next_step = max(int(st.get("lastUsedStep") or 0) + 1, int(__import__("time").time() // 30) + step_offset)
+    # Reset lastUsedStep slightly behind next_step so next_step is within current window [now-1, now+1]
+    now_step = int(__import__("time").time() // 30)
+    st["lastUsedStep"] = now_step - 2
+    TOTP.save_totp_state(st)
+    code = TOTP.compute_totp_at_step(TEST_TOTP_SECRET, now_step)
+    return {"X-TOTP-Code": code}
 
 
 def test_unauthenticated_settings_blocked(client):
@@ -238,7 +274,7 @@ def test_default_account_and_headerless_fallback(client, monkeypatch):
         'appKey': 'AK2', 'appSecret': 'AS2', 'consumerKey': 'CK2',
         'endpoint': 'ovh-us', 'zone': 'US',
     }
-    login(client)
+    enable_totp_and_login(client)
 
     # Without explicit defaultAccountId, falls back to first account
     r = client.get('/api/accounts')
@@ -255,8 +291,8 @@ def test_default_account_and_headerless_fallback(client, monkeypatch):
     # Explicit argument overrides default
     assert A.get_current_account_config('acc1')['id'] == 'acc1'
 
-    # Deleting default account moves default to remaining first account
-    r = client.delete('/api/accounts/acc2')
+    # Deleting default account (strict tier -> requires fresh TOTP header) moves default to remaining first account
+    r = client.delete('/api/accounts/acc2', headers=fresh_totp_headers())
     assert r.status_code == 200
     assert r.get_json()['defaultAccountId'] == 'acc1'
     assert A.get_current_account_config()['id'] == 'acc1'
@@ -361,10 +397,10 @@ def test_edit_account_validates_credentials_and_rejects_mismatch(client, monkeyp
         'appKey': 'OLD-AK', 'appSecret': 'OLD-AS', 'consumerKey': 'OLD-CK',
         'endpoint': 'ovh-eu', 'zone': 'IE',
     }
-    login(client)
+    enable_totp_and_login(client)
 
-    # Editing metadata without credentials skips /me and preserves credentials
-    r = client.post('/api/accounts', json={'id': 'acc1', 'alias': 'new-alias', 'zone': 'FR'})
+    # Editing metadata without credentials skips /me and preserves credentials (still strict /api/accounts POST)
+    r = client.post('/api/accounts', json={'id': 'acc1', 'alias': 'new-alias', 'zone': 'FR'}, headers=fresh_totp_headers())
     assert r.status_code == 200
     assert A.accounts['acc1']['alias'] == 'new-alias'
     assert A.accounts['acc1']['zone'] == 'FR'
@@ -381,7 +417,7 @@ def test_edit_account_validates_credentials_and_rejects_mismatch(client, monkeyp
     r = client.post('/api/accounts', json={
         'id': 'acc1',
         'appKey': 'NEW-AK', 'appSecret': 'NEW-AS', 'consumerKey': 'NEW-CK',
-    })
+    }, headers=fresh_totp_headers())
     assert r.status_code == 400
     assert '另一个OVH账户' in r.get_json()['error']
     assert A.accounts['acc1']['appKey'] == 'OLD-AK'
@@ -397,7 +433,7 @@ def test_edit_account_validates_credentials_and_rejects_mismatch(client, monkeyp
     r = client.post('/api/accounts', json={
         'id': 'acc1',
         'appKey': 'NEW-AK', 'appSecret': 'NEW-AS', 'consumerKey': 'NEW-CK',
-    })
+    }, headers=fresh_totp_headers())
     assert r.status_code == 200
     assert A.accounts['acc1']['appKey'] == 'NEW-AK'
     assert A.accounts['acc1']['alias'] == 'new-alias'
@@ -434,7 +470,7 @@ def test_telegram_settings_clear_chat_id_and_clear_telegram(client, monkeypatch)
 def test_cloud_fleet_endpoints_and_default_locale(client, monkeypatch):
     import routes.cloud_fleet as CF
 
-    login(client)
+    enable_totp_and_login(client)
 
     # 1. Verify defaultLocale is exposed in /api/endpoint-config and /api/settings
     r_cfg = client.get('/api/endpoint-config')

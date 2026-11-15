@@ -10,6 +10,7 @@ OVH Nexus 在容器启动时通过 `.env` 文件或 `docker-compose.yml` 中的 
 | 变量名 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
 | `API_SECRET_KEY` | **是** | *(无)* | Web 控制台登录密码及本机回环脚本 API 密钥。**长度必须不少于 12 位**，且不得使用文档中的示例占位符或常见弱口令。 |
+| `DATA_ENCRYPTION_KEY` | **是** | *(无)* | 独立的静态数据加密主密钥（HKDF-SHA256 + AES-256-GCM），用于落盘加密 `./data/*.json` 中的所有 OVH API 密钥、Telegram/SMTP 凭证与 2FA 种子。**长度必须不少于 16 位**，且**严禁与 `API_SECRET_KEY` 相同**。 |
 | `DEFAULT_LOCALE` | 否 | `en` | 首次访问 Web 控制台时的默认界面语言（可选 `en`、`fr`、`zh-CN`）。用户也可随时在界面内手动切换。 |
 | `COOKIE_SECURE` | 否 | `false` | 是否为 `ovh_session` 会话 Cookie 启用 `Secure` 属性。通过 HTTPS 反向代理访问时请设为 `true`。 |
 | `SECRET_KEY` | 否 | *(自动生成)* | Flask 会话签名密钥。若未显式设置，首次启动时会自动生成 32 字节强随机密钥并持久化保存在 `/app/backend/data/session_secret`（权限 `0600`）。 |

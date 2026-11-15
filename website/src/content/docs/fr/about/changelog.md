@@ -3,11 +3,32 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.2.0]
+:::note[Dernière version : v1.2.1]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.2.1] - Chiffrement au Repos AES-256-GCM, 2FA TOTP, Droit de Rétractation UE 14 Jours & Node 24 / Python 3.12 LTS
+
+### Sécurité (Security)
+
+- **Chiffrement des Secrets au Repos (`DATA_ENCRYPTION_KEY`, `backend/crypto_vault.py`)** :
+  - Ajout d'une variable d'environnement obligatoire et indépendante `DATA_ENCRYPTION_KEY` (`>= 16` caractères, arrêt immédiat au démarrage si absente, faible ou identique à `API_SECRET_KEY`).
+  - Chiffrement de tous les secrets stockés sur disque dans `./data/config.json`, `./data/accounts.json`, `./data/totp_config.json`, `./data/session_secret` et `./data/webhook_secret` via `HKDF-SHA256` + `AES-256-GCM` (`enc:v1:<nonce>:<ciphertext>`), avec migration automatique des fichiers en clair existants.
+  - Mise à niveau de `./data/mcp_config.json` pour ne stocker qu'une empreinte irréversible `SHA-256` (`tokenHash`) et un aperçu masqué (`maskedToken`).
+- **Authentification à Deux Facteurs TOTP (RFC 6238) & Contrôle d'Accès par Niveau (`backend/totp_service.py`)** :
+  - Prise en charge native du 2FA TOTP RFC 6238 avec QR code hors ligne, protection anti-rejeu de 30 secondes et 8 codes de récupération à usage unique (`XXXX-XXXX`).
+  - **Lorsque le 2FA n'est pas activé, toutes les opérations à haut risque renvoient `403 TOTP_SETUP_REQUIRED` et le niveau MCP `L3` (`operations`) est verrouillé sur `False`**.
+  - Vérification à deux niveaux : niveau `strict` (code TOTP frais requis à chaque appel pour réinstallation OS, résiliation, transfert de propriété, modification des clés API, désactivation 2FA) et niveau `sudo` (fenêtre de 5 minutes pour redémarrage serveur/VPS, mode rescue, console IPMI, pare-feu, configuration MCP et activation de `auto_pay` / `waiveRetractationPeriod`).
+- **Protection du Droit de Rétractation UE de 14 Jours (`waiveRetractationPeriod` & `auto_pay`)** :
+  - Passage de `waiveRetractationPeriod` à `False` par défaut dans `purchase_server()` et `/api/queue` afin de préserver par défaut le droit légal de rétractation européen de 14 jours, avec interrupteurs dédiés par tâche dans l'interface web.
+
+### Modifié (Changed)
+
+- Mise à niveau des images de base Docker et de la CI vers **Node 24 LTS (`node:24-alpine`)** et **Python 3.12 (`python:3.12-slim`)**, ainsi que des GitHub Actions et dépendances npm.
+
+---
 
 ## [1.2.0] - Passerelle IA MCP, Bouclier de Confidentialité & Commandes Non Payées
 

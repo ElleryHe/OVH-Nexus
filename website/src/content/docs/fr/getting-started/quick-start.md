@@ -22,6 +22,9 @@ cat > .env << EOF
 # Obligatoire : Mot de passe de la console (au moins 12 caractères)
 API_SECRET_KEY=$(openssl rand -hex 24)
 
+# Obligatoire : Clé maîtresse indépendante de chiffrement au repos AES-256-GCM (au moins 16 caractères)
+DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
 # Optionnel : Langue par défaut de l'interface (en | fr | zh-CN)
 DEFAULT_LOCALE=fr
 
@@ -30,8 +33,8 @@ COOKIE_SECURE=false
 EOF
 ```
 
-:::caution[Mot de passe robuste obligatoire]
-OVH Nexus vérifie `API_SECRET_KEY` au démarrage. Si la clé est vide, comporte moins de 12 caractères ou correspond à une valeur d'exemple connue (`votre-cle-secrete-robuste`, `replace-with-a-strong-random-secret`, `123456`), le conteneur refusera de démarrer.
+:::caution[Mot de passe robuste & clé de chiffrement indépendante obligatoires]
+OVH Nexus vérifie `API_SECRET_KEY` (>= 12 caractères) et `DATA_ENCRYPTION_KEY` (>= 16 caractères, distincte de `API_SECRET_KEY`) au démarrage.
 :::
 
 ## 2. Créer `docker-compose.yml`
@@ -47,6 +50,7 @@ services:
       - DEBUG=false
       - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Veuillez définir une clé API_SECRET_KEY robuste dans .env}
+      - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Veuillez définir une clé DATA_ENCRYPTION_KEY indépendante (min. 16 caractères) dans .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-fr}
       - BIND_HOST=127.0.0.1
