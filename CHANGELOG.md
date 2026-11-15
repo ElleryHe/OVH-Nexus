@@ -9,6 +9,14 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.2.2] - 2026-11-15
+
+### Changed
+- Upgraded backend dependencies (`cryptography>=50.0.2` in `backend/requirements.txt`, `pytest>=9.2.0` in `backend/requirements-dev.txt`) and documentation portal framework (`@astrojs/starlight@^0.42.11` in `website/package.json`).
+- Hardened `.github/dependabot.yml` ignore rules for `npm` (`/` and `/website`), explicitly locking major-version boundaries for `react` / `react-dom` (`<19.0.0`), `tailwindcss` (`<4.0.0`), and `recharts` (`<3.0.0`) while suppressing non-security `semver-major` PRs.
+
+---
+
 ## [1.2.1] - 2026-11-15
 
 ### Security

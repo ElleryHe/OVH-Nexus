@@ -15,6 +15,25 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Lock React 18 ecosystem (prevent partial or breaking React 19 upgrades)
+      - dependency-name: "react"
+        versions: [">= 19.0.0"]
+      - dependency-name: "react-dom"
+        versions: [">= 19.0.0"]
+      - dependency-name: "@types/react"
+        versions: [">= 19.0.0"]
+      - dependency-name: "@types/react-dom"
+        versions: [">= 19.0.0"]
+      # Lock Tailwind CSS v3 & Recharts v2 (prevent breaking v4 / v3 major rewrites)
+      - dependency-name: "tailwindcss"
+        versions: [">= 4.0.0"]
+      - dependency-name: "recharts"
+        versions: [">= 3.0.0"]
+      # Ignore routine breaking major version jumps across all frontend packages
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   # 2. Documentation Portal (npm - Astro Starlight)
   - package-ecosystem: "npm"
@@ -31,6 +50,10 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   # 3. Python Backend & Test Suite (pip)
   - package-ecosystem: "pip"

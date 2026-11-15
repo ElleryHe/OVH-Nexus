@@ -3,11 +3,20 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.2.1]
+:::note[Dernière version : v1.2.2]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.2.2] - Mise à Jour des Dépendances & Gouvernance Dependabot
+
+### Modifié (Changed)
+
+- Mise à niveau des dépendances backend (`cryptography>=50.0.2` dans `backend/requirements.txt`, `pytest>=9.2.0` dans `backend/requirements-dev.txt`) et du portail de documentation (`@astrojs/starlight@^0.42.11` dans `website/package.json`).
+- Renforcement des règles `ignore` dans `.github/dependabot.yml` (`/` et `/website`) pour verrouiller les versions majeures de `react` / `react-dom` (`<19.0.0`), `tailwindcss` (`<4.0.0`) et `recharts` (`<3.0.0`), tout en filtrant les mises à jour `semver-major` automatiques non liées à la sécurité.
+
+---
 
 ## [1.2.1] - Chiffrement au Repos AES-256-GCM, 2FA TOTP, Droit de Rétractation UE 14 Jours & Node 24 / Python 3.12 LTS
 
