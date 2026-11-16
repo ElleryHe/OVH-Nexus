@@ -5,14 +5,14 @@ description: 免 API Key 实时追踪 OVHcloud 全量货架（含未开售预上
 
 每当 OVHcloud 准备推出新一代服务器或限量闪购机型（例如 `27skle01-v1`、`27risele01-v1`）时，机房往往会提前数小时甚至数天将机器上架，并把新 SKU 写入公开接口 `/dedicated/server/datacenter/availabilities`（此时状态通常为 `unavailable` 预上架未开售）。
 
-**公开货架 SKU 变动监控（`backend/sku_watcher.py`）** 全天候在后台扫描全量公开货架，让您在新机型正式开售前第一时间捕获情报并提前建好抢购任务。
+**公开货架 SKU 变动监控（`internal/monitor`）** 全天候在后台扫描全量公开货架，让您在新机型正式开售前第一时间捕获情报并提前建好采购任务。
 
 ## 四重防误报与防抖熔断机制
 
-由于 OVHcloud 公共接口偶尔会出现 CDN 缓存回退或临时返回残缺数据，为避免产生大量“假下架/假上新”刷屏告警，`SkuWatcher` 内置了四层防误报引擎：
+由于 OVHcloud 公共接口偶尔会出现 CDN 缓存回退或临时返回残缺数据，为避免产生大量“假下架/假上新”刷屏告警，监控引擎内置了四层防误报机制：
 
 1. **首轮基线静默初始化 (`initialized: false → true`)**：
-   - 首次启动（或切换监控的 OVH 区域端点）时，`SkuWatcher` 仅将当前货架上的全部 SKU 记录到 `data/sku_snapshot.json` 作为基准快照，**绝不发送首轮刷屏通知**。
+   - 首次启动（或切换监控的 OVH 区域端点）时，系统仅将当前货架上的全部 SKU 记录到 `/data/nexus.db`（`sku_watcher_state`）作为基准快照，**绝不发送首轮刷屏通知**。
 2. **连续 2 轮缺失确认下架 (`missingCounts >= 2`)**：
    - 当某个已知 SKU 在单次扫描中消失时，不会立即判定为下架，而是将其缺失计数 `missingCounts` 记为 `1`。
    - 只有当该 SKU **连续第 2 轮扫描仍然缺失**（`missingCounts >= 2`）时，才会正式触发 `sku.changed`（`SKU 下架`）事件；若次轮恢复出现，则计数自动归零。
@@ -35,4 +35,4 @@ description: 免 API Key 实时追踪 OVHcloud 全量货架（含未开售预上
 
 ## 查看最近 SKU 变动时间线
 
-在 **通知中心（`/notifications`）** 与 **实时库存矩阵（`/ovh-availability`）** 页面底部，均内置了 **最近货架 SKU 变动时间线**（持久化于 `data/sku_changes.json`，保留最近 200 条记录），清晰展示变动时间、变动类型徽标（`新上机架`、`确认下架`、`新增子配置`、`移除子配置`）、友好商业型号、内存/存储可读规格与参考月付价格。
+在 **通知中心（`/notifications`）** 与 **实时库存矩阵（`/ovh-availability`）** 页面底部，均内置了 **最近货架 SKU 变动时间线**（持久化于 `/data/nexus.db`，保留最近 200 条记录），清晰展示变动时间、变动类型徽标（`新上机架`、`确认下架`、`新增子配置`、`移除子配置`）、友好商业型号、内存/存储可读规格与参考月付价格。

@@ -3,7 +3,7 @@ title: Orders & Live Delivery Pipeline
 description: Track OVHcloud orders, retrieve payment links, and monitor the 4-stage hardware delivery pipeline.
 ---
 
-After an order is placed (either automatically by OVH Nexus's queue sniper or manually in the OVHcloud Manager), the **History & Orders** page (`/history`) lets you track the real-time status of your OVHcloud orders directly via `/me/order`.
+After an order is placed (either automatically by OVH Nexus's purchase queue or manually in the OVHcloud Manager), the **History & Orders** page (`/history`) lets you track the real-time status of your OVHcloud orders directly via `/me/order`.
 
 ## Syncing Official OVHcloud Orders
 

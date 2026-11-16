@@ -13,7 +13,7 @@ Une clé API OVHcloud n'est requise que pour les fonctionnalités liées à vos 
 
 ### L'achat automatisé débite-t-il automatiquement ma carte bancaire ou mon compte PayPal ?
 
-Par défaut, OVH Nexus génère un bon de commande officiel via `/order/cart/{cartId}/checkout` avec `autoPayWithPreferredPaymentMethod: false`. Cela réserve l'allocation du serveur et vous envoie immédiatement une notification `order.success` contenant le **lien officiel de paiement OVHcloud**, vous permettant de vérifier et de régler la commande dans votre navigateur.
+Par défaut, OVH Nexus génère un bon de commande officiel via `/order/cart/{cartId}/checkout` avec `auto_pay=false` et `waive_retractation_period=false` (sauf activation explicite avec vérification 2FA Sudo sur une tâche de file). Cela réserve l'allocation du serveur et vous envoie immédiatement une notification `order.success` contenant le **lien officiel de paiement OVHcloud**, vous permettant de vérifier et de régler la commande dans votre navigateur.
 
 ---
 
@@ -21,7 +21,7 @@ Par défaut, OVH Nexus génère un bon de commande officiel via `/order/cart/{ca
 
 Lorsque les ingénieurs d'OVHcloud mettent en baie une toute nouvelle référence de serveur (par exemple `27skle01-v1`) dans `/dedicated/server/datacenter/availabilities`, elle apparaît souvent dans le flux de disponibilité des datacenters avant qu'OVHcloud ne publie son tarif commercial dans `/order/catalog/public/eco` ou `/baremetal`.
 
-Pendant cette phase de pré-lancement, OVH Nexus utilise son analyseur déterministe (`infer_plan_from_code`) pour déduire la gamme commerciale (`KS-LE-1`) et les spécifications RAM/stockage, puis affiche automatiquement le prix mensuel dès son ajout au catalogue public.
+Pendant cette phase de pré-lancement, OVH Nexus utilise son analyseur déterministe (`internal/catalog`) pour déduire la gamme commerciale (`KS-LE-1`) et les spécifications RAM/stockage, puis affiche automatiquement le prix mensuel dès son ajout au catalogue public.
 
 ---
 

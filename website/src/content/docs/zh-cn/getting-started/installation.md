@@ -12,18 +12,18 @@ description: Docker 镜像版本标签说明、多架构支持、平滑升级与
 | 标签格式 | 示例 | 说明 |
 | :--- | :--- | :--- |
 | `latest` | `elleryhe/ovh-nexus:latest` | `main` 分支最新发布的稳定版镜像。 |
-| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.2.0` | 固定语义化版本号镜像，适合对稳定性要求极高的生产环境锁定版本。 |
-| `MAJOR.MINOR` | `elleryhe/ovh-nexus:1.2` | 自动跟随 `1.2.x` 系列的最新补丁版本。 |
+| `MAJOR.MINOR.PATCH` | `elleryhe/ovh-nexus:1.3.0` | 固定语义化版本号镜像，适合对稳定性要求极高的生产环境锁定版本。 |
+| `MAJOR.MINOR` | `elleryhe/ovh-nexus:1.3` | 自动跟随 `1.3.x` 系列的最新补丁版本。 |
 
 如需固定镜像版本，只需在 `.env` 中指定 `DOCKER_IMAGE`：
 
 ```ini
-DOCKER_IMAGE=elleryhe/ovh-nexus:1.2.0
+DOCKER_IMAGE=elleryhe/ovh-nexus:1.3.0
 ```
 
 ## 平滑升级容器
 
-由于所有持久化数据均保存在宿主机的 `./data`、`./logs` 和 `./cache` 挂载目录中，升级镜像不会丢失任何账户凭据、通知渠道、监控队列或历史记录：
+由于所有持久化数据均集中存储在单一挂载卷 `./data:/data` 中的 SQLite WAL 数据库（`/data/nexus.db`）内，升级镜像仅需数秒，且完整保留您的账户凭据、2FA 配置、通知渠道、采购队列、日志与 SKU 历史记录：
 
 ```bash
 # 1. 拉取最新镜像
@@ -33,13 +33,13 @@ docker compose pull
 docker compose up -d
 ```
 
-:::note[自动配置结构迁移]
-当从旧版本升级时，`NotificationHub` 会在启动时自动检测旧版字段（例如 `config.json` 中的 `tgToken` 与 `tgChatId`），并将其无损迁移为标准的多通道 Telegram 通知实例，无需手动重填。
+:::note[自动非 Root 初始化 (`su-exec`、`PUID`/`PGID`)]
+容器启动时，`/usr/local/bin/docker-entrypoint.sh` 会自动初始化 `/data` 目录（权限 `0700`）并通过 `su-exec` 就地降权至 `PUID:PGID`（默认 `65532:65532`），无需在宿主机手动执行 `chown` 修改 `./data` 权限。Linux 非 Root 宿主机用户可在 `.env` 中按需指定 `PUID`/`PGID`；在 Kubernetes `runAsNonRoot: true` 模式下亦可直接平滑运行。
 :::
 
 ## 从源码本地构建
 
-如果您希望自行编译镜像或进行二次开发：
+如果您希望自行编译三阶段静态 Go 镜像（`node:24-alpine` + `golang:1.27-alpine` -> `alpine:3.24`）或进行二次开发：
 
 ```bash
 git clone https://github.com/ElleryHe/OVH-Nexus.git
@@ -47,18 +47,18 @@ cd OVH-Nexus
 
 # 复制并配置环境变量
 cp .env.example .env
-# 编辑 .env 并填入高强度 API_SECRET_KEY
+# 编辑 .env 并填入高强度 API_SECRET_KEY 与 DATA_ENCRYPTION_KEY
 
-# 本地构建并启动
+# 本地构建并启动（启动脚本将自动初始化 ./data 目录权限）
 docker build -t elleryhe/ovh-nexus:local .
 DOCKER_IMAGE=elleryhe/ovh-nexus:local docker compose up -d
 ```
 
 ## 仅监听本机回环地址
 
-如果 OVH Nexus 部署在公网服务器上并配合本机反向代理（Nginx 或 Caddy）使用，建议在 `docker-compose.yml` 中将端口绑定限制在 `127.0.0.1`，避免 `20000` 端口直接暴露到公网：
+如果 OVH Nexus 部署在公网服务器上并配合本机反向代理（Caddy 或 Nginx）使用，建议在 `docker-compose.yml` 中将端口绑定限制在 `127.0.0.1`，避免 `20000` 端口直接暴露到公网：
 
 ```yaml
     ports:
-      - "127.0.0.1:20000:80"
+      - "127.0.0.1:20000:8080"
 ```

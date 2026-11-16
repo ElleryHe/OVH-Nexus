@@ -3,7 +3,7 @@ title: Matrice de Disponibilité en Direct & Tarification
 description: Consultez le stock bare-metal OVHcloud en temps réel, les spécifications matérielles lisibles et le prix mensuel exact par configuration.
 ---
 
-La **Matrice de Disponibilité OVH en Direct** (`/ovh-availability`) interroge l'API publique `/dedicated/server/datacenter/availabilities` d'OVHcloud et enrichit chaque résultat grâce à `CatalogService` (`/order/catalog/public/eco` et `/order/catalog/public/baremetal`).
+La **Matrice de Disponibilité OVH en Direct** (`/ovh-availability`) interroge l'API publique `/dedicated/server/datacenter/availabilities` d'OVHcloud et enrichit chaque résultat grâce à `internal/catalog` (`/order/catalog/public/eco` et `/order/catalog/public/baremetal`).
 
 :::tip[Aucune clé API requise]
 L'API de disponibilité ainsi que les catalogues Eco et Baremetal sont des points de terminaison publics d'OVHcloud. Vous pouvez consulter les stocks et les tarifs dans tous les datacenters immédiatement après le déploiement d'OVH Nexus.
@@ -14,7 +14,7 @@ L'API de disponibilité ainsi que les catalogues Eco et Baremetal sont des point
 Les réponses brutes d'OVHcloud n'exposent que des codes techniques tels que `24ska01`, `memory: ram-64g-ecc-3200` et `storage: raid-r1-2x480ssd-s10-2x6000sa`. OVH Nexus les traduit automatiquement en informations claires :
 
 1. **Résolution du Nom Commercial** :
-   - Associe chaque `planCode` aux catalogues publics Eco (`Kimsufi`, `So you Start`, `Rise`) et Baremetal (`Advance`, `Scale`, `High Grade`) mis en cache sur disque pendant 12 heures (`cache/`).
+   - Associe chaque `planCode` aux catalogues publics Eco (`Kimsufi`, `So you Start`, `Rise`) et Baremetal (`Advance`, `Scale`, `High Grade`) mis en cache pendant 12 heures.
    - Pour les nouveaux modèles récemment rackés mais pas encore publiés dans le catalogue commercial (ex. `27skle01-v1`), utilise un analyseur déterministe (`KS-LE-1`, `KS-A`, `RISE-1`, `SCALE-a1`).
    - Fusionne automatiquement les variantes régionales APAC (`-sgp`, `-syd`, `-mum`, `-apac`) et les suffixes de version (`-v1`, `-v2`).
 2. **Traduction Localisée des Spécifications (`en` / `fr` / `zh-CN`)** :

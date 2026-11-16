@@ -3,17 +3,18 @@ services:
     image: ${DOCKER_IMAGE:-elleryhe/ovh-nexus:latest}
     container_name: ovh-nexus
     ports:
-      - "20000:80"
+      - "20000:8080"
     environment:
-      - DEBUG=false
-      - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
       - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
-      - BIND_HOST=127.0.0.1
+      - TZ=${TZ:-UTC}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - PUID=${PUID:-65532}
+      - PGID=${PGID:-65532}
+    # Entrypoint automatically initializes /data (0700) and drops privileges via su-exec to PUID:PGID
     volumes:
-      - ./data:/app/backend/data
-      - ./logs:/app/backend/logs
-      - ./cache:/app/backend/cache
+      - ./data:/data
     restart: unless-stopped

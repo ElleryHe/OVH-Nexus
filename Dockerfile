@@ -17,7 +17,20 @@ COPY eslint.config.js ./
 
 RUN npm run build
 
-FROM python:3.12-slim
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS go-builder
+
+WORKDIR /src/server
+
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+
+COPY server/ ./
+COPY --from=frontend-builder /app/dist ./internal/webui/dist
+
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/ovh-nexus ./cmd/ovh-nexus
+
+FROM alpine:3.24
 
 LABEL org.opencontainers.image.title="OVH Nexus" \
       org.opencontainers.image.description="Self-hosted OVHcloud control, automated bare-metal/VPS procurement & privacy-shielded MCP AI gateway console" \
@@ -26,45 +39,25 @@ LABEL org.opencontainers.image.title="OVH Nexus" \
       org.opencontainers.image.source="https://github.com/ElleryHe/OVH-Nexus" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 
-WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata su-exec && \
+    addgroup -g 65532 -S nexus && \
+    adduser -u 65532 -S -G nexus nexus && \
+    mkdir -p /data && \
+    chown -R 65532:65532 /data
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends nginx ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+COPY --from=go-builder /out/ovh-nexus /usr/local/bin/ovh-nexus
+COPY --chmod=0755 docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# Boot entrypoint initializes /data ownership (PUID:PGID) and drops privileges via su-exec
+ENV PORT=8080 \
+    DATA_DIR=/data \
+    TZ=UTC \
+    PUID=65532 \
+    PGID=65532
 
-COPY backend/*.py /app/backend/
-COPY backend/routes /app/backend/routes
-COPY backend/notifications /app/backend/notifications
-COPY backend/mcp /app/backend/mcp
+EXPOSE 8080
 
-RUN mkdir -p /app/backend/data /app/backend/cache /app/backend/logs
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1
 
-COPY --from=frontend-builder /app/dist /usr/share/nginx/html
-COPY nginx/nginx.conf /etc/nginx/nginx.conf
-
-RUN printf '#!/bin/sh\n\
-set -e\n\
-export PORT="${PORT:-19998}"\n\
-cd /app/backend && python app.py &\n\
-APP_PID=$!\n\
-nginx -g "daemon off;" &\n\
-NGINX_PID=$!\n\
-trap "kill -TERM $APP_PID $NGINX_PID 2>/dev/null || true; exit 0" INT TERM\n\
-while kill -0 "$APP_PID" 2>/dev/null && kill -0 "$NGINX_PID" 2>/dev/null; do\n\
-  sleep 2\n\
-done\n\
-kill -TERM "$APP_PID" "$NGINX_PID" 2>/dev/null || true\n\
-exit 1\n' > /start.sh && chmod +x /start.sh
-
-EXPOSE 80
-
-ENV PYTHONUNBUFFERED=1
-ENV PORT=19998
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:80/api/health', timeout=4)" || exit 1
-
-CMD ["/start.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

@@ -3,11 +3,55 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.2.3]
+:::note[当前最新版本：v1.3.0]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.3.0] - Go 1.27 单静态二进制架构、SQLite WAL 持久化与 SSE 实时结构化日志
+
+:::caution[v1.3.0 破坏性变更提示]
+`v1.3.0` 引入了 Go 单静态二进制运行时（监听 `:8080`）、内嵌 SQLite WAL 数据库（`/data/nexus.db`，**不支持**从 `<= v1.2.3` 的 JSON 状态文件自动迁移）、纯出站通知中心与全标准化英文 `slog` 日志架构。从 `<= v1.2.3` 升级前请务必阅读下方的**破坏性变更**说明。
+:::
+
+### 破坏性变更 (Breaking Changes)
+
+- **容器监听端口与单卷持久化布局 (`docker-compose.yml`)**：
+  - 容器内部 HTTP 监听端口由 `:80` 变更为 `:8080`（`ports: ["20000:8080"]`），原有指向容器 `:80` 端口的映射或反向代理目标需同步调整为 `:8080`。
+  - 所有持久化目录统一整合为单个 `./data:/data` 挂载卷，移除独立的 `logs`/`cache` 挂载以及旧版环境变量 `BIND_HOST`、`DEBUG` 和 `ENABLE_API_KEY_AUTH`。
+- **内嵌 SQLite WAL 存储 (`/data/nexus.db` — 需使用全新 `./data` 目录)**：
+  - 使用单文件 `/data/nexus.db` 取代分散的 JSON 状态文件；**不提供从 `<= v1.2.3` JSON 文件的自动迁移**。从旧版本升级时须初始化全新干净的 `./data` 目录，并重新绑定 2FA（TOTP）与 OVHcloud API 账户凭据。
+- **纯出站通知中心**：
+  - 移除入站 Telegram Webhook 回调路由（`/api/telegram/*`），聚焦纯出站消息推送（Telegram Bot API 与 SMTP 邮件），支持通过可选 `panelUrl` 携带控制台直达链接。
+- **全标准化英文结构化日志**：
+  - 以标准化英文 `slog` 结构化日志（UTC RFC3339 时间戳）取代本地化非结构化文本日志，并提供 SSE 实时推流端点（`/api/logs/stream`）。
+
+### 变更与优化 (Changed)
+
+- **Go 1.27 单静态二进制架构 (`server/`)**：
+  - 全面采用 **Go 1.27 单静态二进制**（`CGO_ENABLED=0`），基于 `net/http`、`chi/v5` 与 `github.com/ovh/go-ovh` 构建，并通过 `//go:embed` 将 React SPA 直接内嵌至可执行文件中。
+  - 原生在 `:8080` 端口提供不可变资源缓存、CSP 安全响应头、Gzip 压缩以及 Slowloris / 请求洪水防御（`ReadHeaderTimeout: 5s`、`ReadTimeout: 15s`、`WriteTimeout: 120s`、`IdleTimeout: 60s`、`2 MB` 请求体上限）。
+- **极致精简非 Root 容器（约 `20 MB`，`su-exec` 启动降权、`PUID`/`PGID`）**：
+  - 更新三阶段 `Dockerfile`（`node:24-alpine` -> `golang:1.27-alpine` -> `alpine:3.24`），内置 `su-exec` 与 `/usr/local/bin/docker-entrypoint.sh`，启动时自动初始化 `/data`（`0700`）并就地降权至 `PUID:PGID`（默认 `65532:65532`，消除首次部署宿主机 `./data` 权限报错，同时无缝兼容 Kubernetes `runAsNonRoot: true`）。
+  - 精简 `docker-compose.yml`，端口映射调整为 `"20000:8080"`，仅需挂载**单个持久化卷 `./data:/data`**，支持可选 `PUID`/`PGID` 环境变量透传。
+- **纯 Go 内嵌 SQLite WAL 数据库 (`/data/nexus.db`)**：
+  - 将账户注册表、TOTP 2FA 状态、采购队列、订单历史、独服/VPS 库存订阅、SKU 基线与时间线、通知渠道、MCP 配置/代号/审计与系统日志统一收纳至单文件 ACID 数据库 `/data/nexus.db`（`modernc.org/sqlite`，`WAL` 模式，目录 `0700` / 文件 `0600` 权限）。
+  - 延续字段级 `HKDF-SHA256` + `AES-256-GCM` 静态加密（`enc:v1:...`）保护所有 API 密钥、Telegram Token、SMTP 密码与 TOTP 种子，MCP Bearer 令牌与应急恢复码均以 `SHA-256` 哈希保存。
+- **统一快捷下单路径与纯出站多语通知中心**：
+  - 统一快捷下单端点为 `/api/orders/quick-order`（默认 `auto_pay=false` 且 `waive_retractation_period=false`）。
+  - 精简**通知中心**为纯出站推送引擎（Telegram Bot API 与 SMTP 邮件），新增独立**通知语言选择 (`locale`：`en`、`fr`、`zh-CN`)** 与容器 `TZ` 时区支持（默认 `UTC`）。
+
+### 新增功能 (Added)
+
+- **全标准化英文 `log/slog` 日志中枢与 SSE 实时控制台 (`/logs`)**：
+  - 统一通过 14 个规范 `source` 模块（`server`、`http`、`auth`、`totp`、`vault`、`ovh`、`catalog`、`queue`、`stock-monitor`、`vps-monitor`、`sku-watcher`、`fleet`、`notify`、`mcp`）输出标准化英文结构化日志，并自动脱敏敏感凭据。
+  - 数据库内置 **10,000 条滚动环形日志缓冲区**（`system_logs`），支持 **Server-Sent Events 实时推流 (`GET /api/logs/stream`)** 与 **`.jsonl` / `.log` 一键导出**（`GET /api/logs/export`）。
+  - 全面升级 `LogsPage.tsx`：三语界面自适应、模块/级别/关键词多维筛选、结构化属性标签展示与本地时区时间格式化。
+- **可信代理 IP 解析 (`TRUSTED_PROXIES`) 与时区配置 (`TZ`)**：
+  - 新增 `TRUSTED_PROXIES` IP/CIDR 白名单校验，仅采信来自受信任反向代理的 `X-Forwarded-For` / `X-Real-IP` 请求头；新增 `TZ` 时区配置。
+
+---
 
 ## [1.2.3] - 响应式侧边栏布局修复、首次部署 OVH API 引导闭环、2FA 状态同步与文档站 SEO 增强
 
@@ -20,7 +64,7 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
   - 在左侧主导航新增 **「OVH API 账户」(`/api-accounts`)** 入口，并在「系统与安全设置」(`/settings`) 中增加多账户管理卡片跳转。
   - 将顶部「立即配置 API」按钮直连 `/api-accounts` 填写表单，在配置页自动隐藏重复提示条并支持一键收起关闭，同时补齐首次绑定 2FA 的前置引导提示。
 - **2FA (TOTP) 绑定后状态同步修复**：
-  - 统一后端 `/api/auth/totp/status` 与 `/api/auth/totp/activate` 返回的 `totpEnabled` / `enabled` 字段及中文错误提示字段（`message`），修复绑定验证成功后前端仍显示“未启用”的问题。
+  - 统一后端 `/api/auth/totp/status` 与 `/api/auth/totp/activate` 返回的 `totpEnabled` / `enabled` 字段及错误提示字段（`message`），修复绑定验证成功后前端仍显示“未启用”的问题。
 
 ### 新增功能 (Added)
 
@@ -33,30 +77,29 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
 
 ### 变更与升级 (Changed)
 
-- 升级后端依赖基线（`backend/requirements.txt` 中 `cryptography>=50.0.2`、`backend/requirements-dev.txt` 中 `pytest>=9.2.0`）与在线文档门户框架（`website/package.json` 中 `@astrojs/starlight@^0.42.11`）。
+- 升级安全与文档门户依赖基线（`website/package.json` 中 `@astrojs/starlight@^0.42.11`）。
 - 完善 `.github/dependabot.yml` 中前端（`/`）与文档站（`/website`）的 `ignore` 策略，显式锁定 `react` / `react-dom`（`<19.0.0`）、`tailwindcss`（`<4.0.0`）与 `recharts`（`<3.0.0`）大版本边界，并全局屏蔽非安全类的 `semver-major` 跨大版本自动 PR。
 
 ---
 
-## [1.2.1] - AES-256-GCM 磁盘静态加密、TOTP 2FA 分级安全门禁、欧盟 14 天撤回权保护与 Node 24 / Python 3.12 LTS 升级
+## [1.2.1] - AES-256-GCM 磁盘静态加密、TOTP 2FA 分级安全门禁、欧盟 14 天撤回权保护与 Node 24 LTS 升级
 
 ### 安全加固 (Security)
 
-- **本地磁盘敏感凭证静态加密 (`DATA_ENCRYPTION_KEY`, `backend/crypto_vault.py`)**：
+- **本地磁盘敏感凭证静态加密 (`DATA_ENCRYPTION_KEY`)**：
   - 新增必填且独立的环境变量 `DATA_ENCRYPTION_KEY`（长度不少于 16 位，缺失、弱密钥或与 `API_SECRET_KEY` 相同时启动期直接阻断报错）。
-  - 基于 `HKDF-SHA256` 密钥派生与 `AES-256-GCM` 认证加密算法（`enc:v1:<nonce>:<ciphertext>`），对 `./data/config.json`（`appKey`、`appSecret`、`consumerKey`、`tgToken`、`notifications.channels[*].config.token/password`）、`./data/accounts.json`、`./data/totp_config.json` 以及 `./data/session_secret` / `./data/webhook_secret` 全面施行落盘加密，并在启动时自动将历史明文配置无缝平滑迁移为密文。
-  - 升级 `./data/mcp_config.json` 存储结构，仅持久化不可逆的 `SHA-256` 哈希摘要（`tokenHash`）与脱敏预览（`maskedToken`），彻底消除磁盘明文 MCP Token。
-- **TOTP 双因素认证 (RFC 6238) 与分级高危操作安全门禁 (`backend/totp_service.py`)**：
+  - 基于 `HKDF-SHA256` 密钥派生与 `AES-256-GCM` 认证加密算法（`enc:v1:<nonce>:<ciphertext>`），对所有敏感凭据（`appKey`、`appSecret`、`consumerKey`、Telegram Bot Token、SMTP 密码、TOTP 种子及会话密钥）全面施行落盘加密。
+  - 升级 MCP 令牌存储结构，仅持久化不可逆的 `SHA-256` 哈希摘要（`tokenHash`）与脱敏预览（`maskedToken`）。
+- **TOTP 双因素认证 (RFC 6238) 与分级高危操作安全门禁**：
   - 原生实现 RFC 6238 TOTP 动态口令认证，支持离线二维码绑定、30 秒窗口防重放（`lastUsedStep`）以及 8 个一次性应急恢复码（`XXXX-XXXX`）。
   - 全局强制高危门禁：**未绑定启用 2FA 时，所有高危操作路由一律返回 `403 TOTP_SETUP_REQUIRED` 拦截，且 MCP 网关 `L3`（可逆运维）被底层强制锁定关闭**。
   - 双层 Step-Up 验证体验：`strict` 级（重装系统、服务退订销毁、过户转移、新增/编辑/删除 API 账户密钥、关闭 2FA）要求每次请求均附带最新动态码；`sudo` 级（独服/VPS 重启、救援模式、IPMI 控制台、边缘防火墙/网络变更、MCP 配置变更、开启自动扣款或放弃撤回权）验证一次后授予当前会话 **5 分钟免重复输入窗口**。
 - **欧盟 14 天消费者撤回权保护与支付风控 (`waiveRetractationPeriod` & `auto_pay`)**：
-  - 将下单引擎 `purchase_server()` 与抢购队列 `/api/queue` 中的 `waiveRetractationPeriod` 由原先的强制 `True` 改为**默认 `False`**（默认保留欧盟 14 天法定无理由撤回权），并在队列与服务器目录页提供任务级双开关（`auto_pay` + `waive_retractation_period`），开启任意一项均需通过 2FA Sudo 验证；MCP 工具层硬编码锁死两者为 `False`。
+  - 将下单引擎与采购队列中的 `waiveRetractationPeriod` 设为**默认 `false`**（默认保留欧盟 14 天法定无理由撤回权），并在队列与服务器目录页提供任务级双开关（`auto_pay` + `waive_retractation_period`），开启任意一项均需通过 2FA Sudo 验证；MCP 工具层硬编码锁死两者为 `false`。
 
 ### 变更与升级 (Changed)
 
-- 将容器构建基础镜像与 CI 运行时升级至 **Node 24 LTS (`node:24-alpine`)** 与 **Python 3.12 (`python:3.12-slim`)**。
-- 升级 GitHub Actions（`actions/setup-node@v7`、`actions/setup-python@v7`、`docker/setup-buildx-action@v4`、`peter-evans/dockerhub-description@v5`）与前端依赖（`lucide-react@^1.72.0`、`sonner@^2.0.8`、`autoprefixer@^10.6.2`、`@radix-ui/react-alert-dialog@^1.2.1`、`@radix-ui/react-tooltip@^1.4.1`、`wrangler@^4.160.1`、`qrcode@^1.5.4`），并将 `.github/dependabot.yml` 目标分支切换为 `develop` 及开启分组更新策略。
+- 将容器构建基础镜像与 CI 运行时升级至 **Node 24 LTS (`node:24-alpine`)**，升级 GitHub Actions（`actions/setup-node@v7`、`docker/setup-buildx-action@v4`、`peter-evans/dockerhub-description@v5`）与前端依赖（`lucide-react@^1.72.0`、`sonner@^2.0.8`、`autoprefixer@^10.6.2`、`@radix-ui/react-alert-dialog@^1.2.1`、`@radix-ui/react-tooltip@^1.4.1`、`wrangler@^4.160.1`、`qrcode@^1.5.4`），并将 `.github/dependabot.yml` 目标分支切换为 `develop` 及开启分组更新策略。
 
 ---
 
@@ -68,23 +111,22 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
   - 对标官方 `ovh/ovhcloud-cli` 交互范式，内置遵循 JSON-RPC 2.0 标准的无状态 Streamable HTTP 端点；默认安全关闭，采用与 WebUI 登录密码彻底隔离的专属高熵令牌（`nxs_mcp_...`）鉴权，并内置按 IP 防爆破限流。
   - **三级可配置权限沙盒（共 20 个 MCP 工具）**：
     - `L1 只读查询`（11 个工具）：脱敏后的多账户画像、独服列表与详情、VPS 列表、边缘防火墙状态、服务到期倒计时、订单 4 步交付进度、全球机房实时库存与 SKU 上新变动。
-    - `L2 免付采购`（5 个工具）：两步确认生成【未付款订单】（`order_quote` 签发 5 分钟报价单 → 用户确认后调用 `order_create_unpaid`）、抢购队列管理与库存监控订阅。
+    - `L2 免付采购`（5 个工具）：两步确认生成【未付款订单】（`order_quote` 签发 5 分钟报价单 → 用户确认后调用 `order_create_unpaid`）、采购队列管理与库存监控订阅。
     - `L3 可逆运维`（4 个工具）：独服/VPS 硬件重启、重置卡死的 IPMI 会话、边缘防火墙规则与永久防洪开关。
   - **L4 代码级永久财务与高危红线**：
-    - 在后端代码层无条件锁死 `auto_pay = False` 与 `quantity = 1`（绝不触发自动扣款），内置每小时下单速率限制，并永久封禁重装系统、退订销毁服务、读取带令牌的 KVM 远程控制台链接及修改 SSH/API 密钥。
-- **双向隐私混淆护盾 (`Balanced Shield`, `backend/mcp/privacy_shield.py`)**：
+    - 在后端代码层无条件锁死 `auto_pay = false` 与 `quantity = 1`（绝不触发自动扣款），内置每小时下单速率限制，并永久封禁重装系统、退订销毁服务、读取带令牌的 KVM 远程控制台链接及修改 SSH/API 密钥。
+- **双向隐私混淆护盾 (`Balanced Shield`)**：
   - 自动将 OVH 账户（`acct-01`）、包含 IP 段的独服主机名（`bm-01`）、VPS（`vps-01`）、公网 IP（`ip-01`，仅保留末段尾号 `*.*.*.42`）与订单号（`ord-01`）映射为持久化代号，并彻底剥离含 `orderPassword` 的付款链接与个人敏感信息。
 - **WebUI「MCP AI 网关」控制台 (`/mcp`) 与通知中心审计事件 (`mcp.action`)**：
   - 在侧边栏「账户与系统」分组新增 **MCP AI 网关** 页面，支持令牌轮换/吊销、L1–L3 权限开关、多账户可见性白名单、一键复制客户端配置（Claude Code、Claude Desktop、Cursor、Antigravity）、隐私混淆映射表查阅，以及 L2/L3 写操作实时触发 `mcp.action` 通知告警。
 
 ---
 
-## [1.1.1] - 后端测试依赖安全补丁
+## [1.1.1] - 测试依赖安全补丁
 
 ### 安全修复 (Security)
 
-- **后端测试依赖升级 (`CVE-2025-71176` / `GHSA-6w46-j5rx-g56g`)**：
-  - 将 `backend/requirements-dev.txt` 中的 `pytest` 由 `8.4.2` 升级至 `>=9.0.3`，修复 UNIX 临时目录处理安全漏洞（`CVE-2025-71176`），实现全仓 npm 与 pip 依赖的 GitHub Dependabot 告警彻底清零（0 Open Alerts）。
+- 修复上游测试依赖安全漏洞 `CVE-2025-71176`（`GHSA-6w46-j5rx-g56g`），实现全仓依赖 Dependabot 告警清零。
 
 ---
 
@@ -99,7 +141,7 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
 ### 新增功能 (Added)
 
 - **三语高清系统架构图**：
-  - 为英、法、中三语《项目简介》页面新增本地化高清系统架构图（`architecture-en.jpg`、`architecture-fr.jpg`、`architecture-zh.jpg`）。
+  - 为英、法、中三语《项目简介》页面新增本地化高清系统架构图。
 - **文档站首页版权底栏与外链新窗口跳转**：
   - 在文档站首页底部新增年份自动更新的版权与协议底栏（`© <年份> OVH-Nexus · AGPL-3.0`），并为所有外站链接自动启用新窗口打开（`target="_blank"`）。
 
@@ -132,23 +174,5 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
 
 ### 新增功能 (Added)
 
-- **独立服务器与云资产深度管控**：
-  - 独立服务器硬件详情、MRTG 实时网卡流量图表、IPMI/KVM 远程控制台（`SOL`、`KVM`、`xterm.js`）及电源/救援模式控制。
-  - 自动化系统重装（`/dedicated/server/{serviceName}/install/start`），支持软/硬 RAID 自定义分区、Proxmox VE ZFS 根文件系统模板，以及一键注入账户 SSH 公钥（`/me/sshKey`）。
-  - IP 边缘防火墙（`/ip/{ip}/firewall`）规则编排与永久 VAC Anti-DDoS 缓解开关（`/ip/{ip}/mitigation`）。
-- **已购 VPS 实例管控**：
-  - 一屏查看名下所有已购 VPS（`/vps`）的机型配额、IPv4/IPv6 地址、运行状态与到期日，并支持一键重启（`/vps/{serviceName}/reboot`）。
-- **订单实时交付流水线与到期续费矩阵**：
-  - 同步 OVHcloud 官方订单（`/me/order`）、提取付款链接与 PDF 账单，并实时展示 4 步硬件交付流水线（`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`）。
-  - 汇总全账户独服与 VPS 到期倒计时（`/serviceInfos`），提供 `<= 7 天` 紧急红色告警与 `<= 30 天` 临期黄色提醒。
-- **全球实时库存矩阵、目录服务与配置级定价**：
-  - 免 API Key 拉取并缓存公开 Eco + Baremetal 目录（12 小时 TTL），内置未开售新机型确定性名称推导引擎。
-  - 内存与存储规格本地化可读格式转换（`DDR4/DDR5 ECC`、`NVMe/SSD/SATA`、`软/硬 RAID`）以及精确到硬件子配置（`FQN`）的月付价格计算与价格排序。
-- **公开货架 SKU 变动监控**：
-  - 免 API Key 后台货架扫描引擎（`SkuWatcher`），内置首轮基线静默、连续 2 轮缺失确认下架、单轮骤降 >30% 熔断防抖及区域后缀去重。
-- **可插拔多通道通知中心**：
-  - 支持同时配置多个 **Telegram 机器人**与 **SMTP 邮件**（`SSL/TLS`、`STARTTLS`、`Plain` 及响应式 HTML 邮件模板），按需独立订阅 7 类细粒度事件。
-- **多账户架构、安全加固与三语自适应主题**：
-  - 多账户注册表（`ovh-eu`、`ovh-ca`、`ovh-us`）与 `X-OVH-Account` 请求级隔离。
-  - 启动期强制校验 `API_SECRET_KEY`、`HttpOnly` 会话 Cookie、防暴力破解限流、敏感凭据掩码（`****`）及 `0600` 数据权限收紧。
-  - 内置 **简体中文 (`zh-CN`)**、**English (`en`)**、**Français (`fr`)** 三语无缝切换与纯粹白/中性碳黑 + OVHcloud 品牌蓝自适应主题。
+- **独立服务器、VPS、订单交付流水线、续费矩阵、实时库存与价格、公开货架 SKU 监控及多通道通知中心**：
+  - 首个公开正式版发布，集成多账户管理、MRTG 流量、IPMI/KVM、自动化系统重装、IP 边缘防火墙、4 步硬件交付追踪、到期倒计时、FQN 配置级定价、SKU 防误报监控、Telegram/SMTP 通知与中英法三语自适应明暗主题。

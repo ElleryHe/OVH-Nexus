@@ -19,4 +19,4 @@ Dans la page **Moniteur VPS** (`/vps-monitor`), ouvrez l'onglet **Mes VPS Achet�
 Dans l'onglet **Surveillance Stock VPS**, vous pouvez suivre sans clé API la disponibilité des offres VPS publiques OVHcloud (`/order/catalog/public/vps`) :
 
 - Visualisez quelles zones géographiques disposent actuellement de stock (`available` vs `out-of-stock`) pour chaque `planCode` VPS.
-- Créez des abonnements de surveillance (`data/vps_subscriptions.json`) afin qu'OVH Nexus vérifie périodiquement les offres choisies en tâche de fond et envoie une alerte via le **Centre de Notifications** dès le retour en stock.
+- Créez des abonnements de surveillance (persistés dans `/data/nexus.db` · `vps_subscriptions`) afin qu'OVH Nexus vérifie périodiquement les offres choisies en tâche de fond et envoie une alerte via le **Centre de Notifications** dès le retour en stock.

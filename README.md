@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>OVHcloud Control &amp; Procurement Console</strong><br/>
-  Unified Cloud Fleet Management, Live Order &amp; Delivery Tracking, and Automated Bare-Metal / VPS Procurement.
+  Unified Cloud Fleet Management, Live Order &amp; Delivery Tracking, Automated Bare-Metal / VPS Procurement, and Privacy-Shielded MCP AI Gateway.
 </p>
 
 <p align="center">
@@ -26,13 +26,15 @@
 
 ## Overview
 
-**OVH Nexus** is a self-hosted, multi-account web console built for OVHcloud users (`ovh-eu`, `ovh-ca`, and `ovh-us`). It unifies **day-to-day cloud infrastructure operations** with **real-time datacenter stock monitoring, public SKU change tracking, and automated bare-metal/VPS procurement** in a single container.
+**OVH Nexus** is a self-hosted, multi-account web console built for OVHcloud users (`ovh-eu`, `ovh-ca`, and `ovh-us`). Compiled as a **single static Go binary** (`~20 MB` non-root Alpine container with an embedded React SPA and pure-Go SQLite WAL storage), it unifies **day-to-day cloud infrastructure operations** with **real-time datacenter stock monitoring, public SKU change tracking, and automated bare-metal/VPS procurement**.
 
 - **Dedicated Server & VPS Fleet Control**: Hardware inventory, MRTG traffic telemetry, IPMI/KVM console, automated OS reinstallation with custom RAID/ZFS & SSH key injection, IP Edge Firewall & permanent Anti-DDoS mitigation, and VPS lifecycle control.
 - **Orders, Delivery & Renewal Matrix**: Live 4-stage order delivery tracking (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) and unified service expiration countdowns across all accounts.
 - **Live Availability Matrix & Auto-Order Queue**: Real-time stock across global datacenters enriched with commercial model names (`KS-A`, `RISE-1`, `SCALE-a1`), readable hardware specs, and exact configuration-level monthly pricing.
-- **Public SKU Watcher & Pluggable Notification Center**: Track newly racked or removed server SKUs without an API key, and dispatch alerts via multi-instance **Telegram Bots** and **SMTP Email** across 8 fine-grained events.
-- **MCP AI Gateway & Privacy Sandbox (`/api/mcp`)**: Connect Claude Code, Claude Desktop, Cursor, or Antigravity via Streamable HTTP (JSON-RPC 2.0) with bidirectional alias obfuscation (`bm-01`, `vps-01`, `ord-01`, masked IP tails `*.*.*.42`) and a strict **two-step unpaid-order guardrail** (`auto_pay=False` hardcoded).
+- **Public SKU Watcher & Outbound Notification Center**: Track newly racked or removed server SKUs without an API key, and dispatch alerts via multi-instance **Telegram Bots** and **SMTP Email** across 8 fine-grained events with localized templates (`en` / `fr` / `zh-CN`).
+- **Real-Time Observability & SSE Log Console (`/logs`)**: 100% standardized English structured logging (`log/slog`) with a 10,000-row SQLite ring buffer, Server-Sent Events live streaming, module/level/keyword filters, secret redaction, and `.jsonl`/`.log` export.
+- **MCP AI Gateway & Privacy Sandbox (`/api/mcp`)**: Connect Claude Code, Claude Desktop, Cursor, or Antigravity via Streamable HTTP (JSON-RPC 2.0) with bidirectional alias obfuscation (`bm-01`, `vps-01`, `ord-01`, masked IP tails `*.*.*.42`) and a strict **two-step unpaid-order guardrail** (`auto_pay=false` hardcoded).
+- **Hardened Single-Binary Security**: Native Slowloris timeouts, `HKDF-SHA256` + `AES-256-GCM` at-rest credential encryption in SQLite (`/data/nexus.db`), RFC 6238 TOTP 2FA (`strict` / `sudo` gatekeeper), and trusted-proxy rate limiting.
 
 📚 **Full Documentation**: <a href="https://ovh-nexus.ellery.me" target="_blank" rel="noopener noreferrer"><strong>https://ovh-nexus.ellery.me</strong></a>
 
@@ -40,27 +42,42 @@
 
 ## Quick Start (Docker Compose)
 
-OVH Nexus is distributed as an all-in-one multi-arch Docker image (`elleryhe/ovh-nexus:latest`) bundling the React frontend (served by Nginx) and the Python backend. No Git clone is required to deploy.
+OVH Nexus is distributed as a hardened multi-arch Docker image (`elleryhe/ovh-nexus:latest`) containing a single static Go binary (`alpine:3.24`, listening on port `8080`, automatically initializing `/data` and dropping privileges via `su-exec` to non-root `PUID:PGID`, default `65532:65532`). No Git clone is required to deploy.
 
 ### 1. Create a Working Directory & `.env`
 
 ```bash
-mkdir -p ovh-nexus && cd ovh-nexus
+mkdir -p ovh-nexus/data && cd ovh-nexus
 
 cat > .env << EOF
-# Required: Console login password / API secret key (at least 12 characters)
+# Required: Console login password / loopback API secret key (at least 12 characters)
 API_SECRET_KEY=$(openssl rand -hex 24)
 
 # Required: Independent master key for AES-256-GCM at-rest secret encryption (at least 16 characters)
 DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
+# Optional: Set to true when serving behind an HTTPS reverse proxy
+COOKIE_SECURE=false
+
 # Optional: Default WebUI locale (en | fr | zh-CN)
 DEFAULT_LOCALE=en
 
-# Optional: Set to true when serving behind an HTTPS reverse proxy
-COOKIE_SECURE=false
+# Optional: Container timezone for schedules & notification timestamps (default UTC)
+TZ=UTC
+
+# Optional: Backend log level (DEBUG | INFO | WARNING | ERROR)
+LOG_LEVEL=INFO
+
+# Optional: Comma-separated trusted proxy IPs/CIDRs for X-Forwarded-For / X-Real-IP
+TRUSTED_PROXIES=
+
+# Optional: Non-root UID/GID for /data ownership and su-exec privilege drop (default 65532:65532)
+PUID=65532
+PGID=65532
 EOF
 ```
+
+> **Note**: No manual host `chown` on `./data` is required. On container boot, the entrypoint automatically initializes `/data` (`0700`) and drops privileges in-place via `su-exec` to `PUID:PGID` (`65532:65532` by default, or any host UID/GID you set for non-root Linux users). Kubernetes `runAsNonRoot: true` is also supported cleanly when started directly as a non-root UID.
 
 ### 2. Create `docker-compose.yml`
 
@@ -70,19 +87,19 @@ services:
     image: ${DOCKER_IMAGE:-elleryhe/ovh-nexus:latest}
     container_name: ovh-nexus
     ports:
-      - "20000:80"
+      - "20000:8080"
     environment:
-      - DEBUG=false
-      - ENABLE_API_KEY_AUTH=true
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
       - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
-      - BIND_HOST=127.0.0.1
+      - TZ=${TZ:-UTC}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - PUID=${PUID:-65532}
+      - PGID=${PGID:-65532}
     volumes:
-      - ./data:/app/backend/data
-      - ./logs:/app/backend/logs
-      - ./cache:/app/backend/cache
+      - ./data:/data
     restart: unless-stopped
 ```
 
@@ -110,6 +127,6 @@ Open `http://localhost:20000` and sign in with the `API_SECRET_KEY` generated in
 
 ## License & Disclaimer
 
-Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE](./LICENSE), [CONTRIBUTING.md](./CONTRIBUTING.md), and [SECURITY.md](./SECURITY.md).
+Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE](./LICENSE), [CHANGELOG.md](./CHANGELOG.md), [CONTRIBUTING.md](./CONTRIBUTING.md), and [SECURITY.md](./SECURITY.md).
 
 > **OVH Nexus** is an independent open-source project and is **not affiliated with, endorsed by, or sponsored by OVH SAS / OVHcloud**. "OVH" and "OVHcloud" are registered trademarks of OVH SAS.

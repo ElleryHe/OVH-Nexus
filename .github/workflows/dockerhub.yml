@@ -91,6 +91,9 @@ jobs:
             -e 's|href="./README.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/README.md"|g' \
             -e 's|href="./docs/README.fr.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/docs/README.fr.md"|g' \
             -e 's|href="./docs/README.zh-CN.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/docs/README.zh-CN.md"|g' \
+            -e 's|href="./CHANGELOG.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/CHANGELOG.md"|g' \
+            -e 's|href="./CONTRIBUTING.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/CONTRIBUTING.md"|g' \
+            -e 's|href="./SECURITY.md"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/SECURITY.md"|g' \
             -e 's|href="./LICENSE"|href="https://github.com/ElleryHe/OVH-Nexus/blob/main/LICENSE"|g' \
             README.md > /tmp/DOCKERHUB_README.md
 

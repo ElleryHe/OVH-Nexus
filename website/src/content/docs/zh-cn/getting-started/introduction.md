@@ -12,15 +12,15 @@ description: 了解 OVH Nexus 的系统架构、核心能力与支持的 OVHclou
 OVH Nexus 在单一控制台内打通了完整生命周期：
 
 1. **免 API Key 公共情报监控**：无需配置任何 OVHcloud API 密钥，即可直接查看全球机房实时库存、精确到子配置的月付价格、消费者友好型号（`KS-A`、`RISE-1`、`SCALE-a1`）以及公开货架 SKU 上新/下架变动时间线。
-2. **毫秒级自动化采购**：支持按型号（`planCode` + 机房 + 附加组件）加入抢购队列，或直接从实时库存矩阵一键狙击指定硬件子配置（`FQN`），在补货瞬间自动创建购物车并生成订单。
+2. **高响应自动化采购**：支持按型号（`planCode` + 机房 + 附加组件）加入采购队列，或直接从实时库存矩阵一键创建指定硬件子配置（`FQN`）监控与自动下单任务，在补货瞬间自动创建购物车并生成订单。
 3. **订单与装机交付可视化**：订单生成后，直接在面板内获取官方支付链接，并实时追踪 4 步硬件交付流水线（`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`）。
 4. **已购资产深度运维**：集中管控名下所有已购独立服务器与 VPS——支持自定义软硬 RAID / Proxmox ZFS 自动化重装系统、一键注入账户 SSH 公钥、打开 IPMI/KVM 远程终端、配置 IP 边缘防火墙与永久 Anti-DDoS 缓解，以及监控全账户到期续费状态。
 
 ## 系统架构
 
-OVH Nexus 通过单容器镜像（`elleryhe/ovh-nexus`）分发，内部集成 Nginx 与 Python 后端：
+OVH Nexus 编译为单一静态 **Go 1.27 二进制文件**（`CGO_ENABLED=0`），内嵌 React SPA 前端与纯 Go SQLite WAL 存储引擎（`elleryhe/ovh-nexus`）：
 
-![OVH Nexus — 单容器系统架构图](../../../../assets/architecture-zh.jpg)
+![OVH Nexus v1.3.0 — Go 单静态二进制系统架构图](../../../../assets/architecture-zh.svg)
 
 ## 支持的 OVHcloud 区域
 

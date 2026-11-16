@@ -7,7 +7,7 @@ OVH Nexus permet d'enregistrer et de basculer instantanément entre plusieurs co
 
 ## Fonctionnement de l'Isolation Multi-Comptes
 
-- **Registre de Comptes Persistant (`data/accounts.json`)** : Stocke l'alias de chaque compte, son endpoint (`ovh-eu`, `ovh-ca`, `ovh-us`), sa filiale (`FR`, `IE`, `CA`, `US`, etc.) et ses clés API avec des permissions fichier `0600`.
+- **Registre de Comptes Persistant (`/data/nexus.db` · `ovh_accounts`)** : Stocke l'alias de chaque compte, son endpoint (`ovh-eu`, `ovh-ca`, `ovh-us`), sa filiale (`FR`, `IE`, `CA`, `US`, etc.) et ses clés API chiffrées via `AES-256-GCM` dans la base SQLite WAL (`0600`).
 - **Sélection par Requête (`X-OVH-Account`)** : Lorsque vous changez de compte actif dans la barre supérieure ou sur la page **Comptes API**, le frontend joint l'en-tête `X-OVH-Account: <account-id>` aux requêtes API afin que les opérations sur les serveurs, les réinstallations OS et les commandes s'exécutent sur le compte sélectionné.
 - **Isolation du Cache par Compte** : Les listes de serveurs dédiés et leurs métadonnées sont mises en cache séparément par identifiant de compte, évitant tout mélange de flotte lors du changement de compte.
 

@@ -13,7 +13,7 @@ An OVHcloud API key is only required for account-specific features: **Dedicated 
 
 ### Will automated ordering charge my credit card or PayPal automatically?
 
-By default, OVH Nexus generates an official order via `/order/cart/{cartId}/checkout` with `autoPayWithPreferredPaymentMethod: false` (unless auto-pay is explicitly requested/supported by your account setup). This locks in the server allocation and sends you an `order.success` notification containing the **official OVHcloud payment link** so you can review and complete payment in your browser.
+By default, OVH Nexus generates an official order via `/order/cart/{cartId}/checkout` with `auto_pay=false` and `waive_retractation_period=false` (unless explicitly opted in with 2FA Sudo verification on a queue task). This locks in the server allocation and sends you an `order.success` notification containing the **official OVHcloud payment link** so you can review and complete payment in your browser.
 
 ---
 
@@ -21,7 +21,7 @@ By default, OVH Nexus generates an official order via `/order/cart/{cartId}/chec
 
 When OVHcloud engineers first register a brand-new server code (for example `27skle01-v1`) in `/dedicated/server/datacenter/availabilities`, it often appears in the datacenter availability feed before OVHcloud publishes its commercial pricing in `/order/catalog/public/eco` or `/baremetal`.
 
-During this pre-release window, OVH Nexus uses its deterministic fallback parser (`infer_plan_from_code`) to infer the commercial family (`KS-LE-1`) and hardware specs (`64 GB DDR4 ECC`, `2 × 512 GB NVMe`), and automatically fills in the monthly price once OVHcloud adds the plan to the public catalog.
+During this pre-release window, OVH Nexus uses its deterministic fallback parser (`internal/catalog`) to infer the commercial family (`KS-LE-1`) and hardware specs (`64 GB DDR4 ECC`, `2 × 512 GB NVMe`), and automatically fills in the monthly price once OVHcloud adds the plan to the public catalog.
 
 ---
 

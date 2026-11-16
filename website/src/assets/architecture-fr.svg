@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="OVH Nexus v1.3.0 Architecture Binaire Statique Unique Go">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#0050D7"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="720" rx="16" fill="#f8fafc"/>
+
+  <!-- Titre -->
+  <text x="600" y="42" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="24" font-weight="700" fill="#0f172a">
+    OVH Nexus v1.3.0 — Architecture Binaire Statique Unique Go
+  </text>
+
+  <!-- Clients -->
+  <rect x="110" y="68" width="440" height="68" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="330" y="97" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" fill="#0f172a">
+    Navigateur Web (React SPA)
+  </text>
+  <text x="330" y="121" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#334155">
+    HTTP/HTTPS (:20000 &#8594; :8080) &#183; Journaux SSE en direct
+  </text>
+
+  <rect x="650" y="68" width="440" height="68" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="870" y="97" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" fill="#0f172a">
+    Client IA MCP (Claude / Cursor / Antigravity)
+  </text>
+  <text x="870" y="121" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#334155">
+    POST /api/mcp (Jeton Bearer &#183; JSON-RPC 2.0)
+  </text>
+
+  <line x1="330" y1="136" x2="330" y2="170" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="870" y1="136" x2="870" y2="170" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Conteneur Docker -->
+  <rect x="60" y="174" width="1080" height="394" rx="14" fill="#ffffff" stroke="#0f172a" stroke-width="2"/>
+  <text x="84" y="202" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700" fill="#0f172a">
+    Conteneur Docker (elleryhe/ovh-nexus) &#183; Alpine 3.24 &#183; Non-Root UID 65532 &#183; ~20 Mo
+  </text>
+
+  <!-- Binaire Statique Go -->
+  <rect x="86" y="216" width="1028" height="334" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.5"/>
+  <text x="108" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#1e3a8a">
+    Binaire Statique Unique Go 1.27 (/usr/local/bin/ovh-nexus, CGO_ENABLED=0)
+  </text>
+
+  <!-- Couche HTTP & Securite -->
+  <rect x="108" y="256" width="984" height="74" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+  <text x="600" y="282" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#0f172a">
+    Serveur net/http + chi Durci (:8080) &#183; //go:embed dist (SPA + Gzip + CSP)
+  </text>
+  <text x="600" y="308" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#334155">
+    Protection Slowloris &amp; Limite 2 Mo &#183; Session HttpOnly + Limitation de D&#233;bit &#183; TOTP RFC 6238 (strict / sudo)
+  </text>
+
+  <!-- Modules -->
+  <rect x="108" y="344" width="316" height="96" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+  <text x="266" y="370" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#0f172a">
+    API REST &amp; Multi-Comptes
+  </text>
+  <text x="266" y="394" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#334155">
+    Pool go-ovh (eu / ca / us)
+  </text>
+  <text x="266" y="416" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#334155">
+    D&#233;di&#233;s, VPS, Commandes &amp; Catalogue
+  </text>
+
+  <rect x="442" y="344" width="316" height="96" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+  <text x="600" y="370" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#0f172a">
+    Goroutines &amp; Notifications
+  </text>
+  <text x="600" y="394" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#334155">
+    Stock, VPS, Veille SKU &amp; File d'Achat
+  </text>
+  <text x="600" y="416" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#334155">
+    Telegram &amp; SMTP Sortants (en/fr/zh)
+  </text>
+
+  <rect x="776" y="344" width="316" height="96" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+  <text x="934" y="370" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#0f172a">
+    Passerelle MCP &amp; Observabilit&#233;
+  </text>
+  <text x="934" y="394" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#334155">
+    20 Outils + Bouclier de Confidentialit&#233;
+  </text>
+  <text x="934" y="416" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#334155">
+    Journaux log/slog Anglais + Flux SSE
+  </text>
+
+  <!-- Coffre & SQLite -->
+  <rect x="108" y="454" width="482" height="78" rx="8" fill="#e0e7ff" stroke="#4f46e5" stroke-width="1.2"/>
+  <text x="349" y="482" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#1e1b4b">
+    Coffre Cryptographique (HKDF-SHA256 + AES-256-GCM)
+  </text>
+  <text x="349" y="508" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#312e81">
+    Chiffrement enc:v1:... &#183; Empreintes SHA-256 des Jetons
+  </text>
+
+  <rect x="610" y="454" width="482" height="78" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.2"/>
+  <text x="851" y="482" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="700" fill="#14532d">
+    SQLite Pur Go en Mode WAL (/data/nexus.db, 0600)
+  </text>
+  <text x="851" y="508" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="12.5" fill="#166534">
+    Persistance ACID &#183; Tampon Circulaire 10 000 Journaux
+  </text>
+
+  <!-- Connexions Externes -->
+  <line x1="225" y1="568" x2="225" y2="610" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="600" y1="568" x2="600" y2="610" stroke="#0050D7" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <line x1="975" y1="568" x2="975" y2="610" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="60" y="614" width="330" height="76" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+  <text x="225" y="644" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700" fill="#0f172a">
+    Volume Persistant Unique
+  </text>
+  <text x="225" y="668" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#334155">
+    ./data:/data (UID 65532)
+  </text>
+
+  <rect x="435" y="614" width="330" height="76" rx="10" fill="#dbeafe" stroke="#0050D7" stroke-width="1.5"/>
+  <text x="600" y="644" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700" fill="#0f172a">
+    APIs Officielles OVHcloud
+  </text>
+  <text x="600" y="668" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#334155">
+    ovh-eu &#183; ovh-ca &#183; ovh-us
+  </text>
+
+  <rect x="810" y="614" width="330" height="76" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+  <text x="975" y="644" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700" fill="#0f172a">
+    Notifications Sortantes
+  </text>
+  <text x="975" y="668" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#334155">
+    API Bot Telegram &amp; Relais SMTP
+  </text>
+</svg>

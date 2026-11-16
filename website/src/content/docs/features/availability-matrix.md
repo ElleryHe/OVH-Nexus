@@ -3,7 +3,7 @@ title: Live Availability Matrix & Pricing
 description: Inspect real-time OVHcloud bare-metal stock, human-readable hardware specs, and exact configuration-level monthly pricing.
 ---
 
-The **OVH Live Availability Matrix** (`/ovh-availability`) queries OVHcloud's public `/dedicated/server/datacenter/availabilities` API and enriches every result with `CatalogService` (`/order/catalog/public/eco` and `/order/catalog/public/baremetal`).
+The **OVH Live Availability Matrix** (`/ovh-availability`) queries OVHcloud's public `/dedicated/server/datacenter/availabilities` API and enriches every result with `internal/catalog` (`/order/catalog/public/eco` and `/order/catalog/public/baremetal`).
 
 :::tip[No API Key Required]
 Both the availability endpoint and the public Eco/Baremetal catalogs are public OVHcloud endpoints. You can browse live stock and prices across all datacenters immediately after deploying OVH Nexus.
@@ -14,7 +14,7 @@ Both the availability endpoint and the public Eco/Baremetal catalogs are public 
 Raw OVHcloud availability records only expose internal codes such as `24ska01`, `memory: ram-64g-ecc-3200`, and `storage: raid-r1-2x480ssd-s10-2x6000sa`. OVH Nexus automatically translates these into readable specifications:
 
 1. **Commercial Model Name Resolution**:
-   - Matches each `planCode` against the cached Eco (`Kimsufi`, `So you Start`, `Rise`) and Baremetal (`Advance`, `Scale`, `High Grade`) catalogs (12-hour disk cache in `cache/`).
+   - Matches each `planCode` against the cached Eco (`Kimsufi`, `So you Start`, `Rise`) and Baremetal (`Advance`, `Scale`, `High Grade`) catalogs (12-hour TTL cache).
    - For newly racked or unreleased SKUs not yet present in the public catalog (e.g., `27skle01-v1`), falls back to a deterministic rule parser (`KS-LE-1`, `KS-A`, `RISE-1`, `SCALE-a1`).
    - Automatically merges APAC regional suffix variants (`-sgp`, `-syd`, `-mum`, `-apac`) and version suffixes (`-v1`, `-v2`).
 2. **Localized Hardware Spec Translation (`en` / `fr` / `zh-CN`)**:

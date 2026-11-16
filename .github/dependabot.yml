@@ -55,27 +55,25 @@ updates:
         update-types:
           - "version-update:semver-major"
 
-  # 3. Python Backend & Test Suite (pip)
-  - package-ecosystem: "pip"
-    directory: "/backend"
+  # 3. Go Backend & Embedded Server (gomod)
+  - package-ecosystem: "gomod"
+    directory: "/server"
     target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 3
     commit-message:
-      prefix: "chore(deps-backend)"
+      prefix: "chore(deps-go)"
     groups:
-      backend-minor-and-patch:
+      gomod-minor-and-patch:
         update-types:
           - "minor"
           - "patch"
     ignore:
-      # Ignore non-security floor bumps on pytest >= constraint
-      - dependency-name: "pytest"
+      - dependency-name: "*"
         update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
+          - "version-update:semver-major"
 
   # 4. Container Base Images (Dockerfile)
   - package-ecosystem: "docker"
@@ -87,11 +85,15 @@ updates:
     commit-message:
       prefix: "chore(deps-docker)"
     ignore:
-      # Keep LTS base images (node:24-alpine, python:3.12-slim) without bleeding-edge major jumps
+      # Keep LTS/pinned base images (node:24-alpine, golang:1.27-alpine, alpine:3.24) without bleeding-edge major/minor jumps
       - dependency-name: "node"
         update-types:
           - "version-update:semver-major"
-      - dependency-name: "python"
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "alpine"
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"

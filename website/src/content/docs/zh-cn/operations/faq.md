@@ -13,7 +13,7 @@ description: 关于 OVH Nexus、API 密钥要求、自动抢购扣款、预上�
 
 ### 自动抢购成功时会自动从我的信用卡或 PayPal 扣款吗？
 
-默认情况下，OVH Nexus 调用 `/order/cart/{cartId}/checkout` 时使用安全结算模式（生成正式订单以锁死库存配额，而不会未经确认直接静默扣刷您的信用卡）。下单成功后，系统会立即通过**通知中心**向您推送 `order.success` 通知，内含 **OVHcloud 官方一键付款链接**，您只需点开链接确认无误后完成支付即可。
+默认情况下，OVH Nexus 调用 `/order/cart/{cartId}/checkout` 时以安全结算模式（`auto_pay=false` 且 `waive_retractation_period=false`）生成正式订单以锁死库存配额，同时保留欧盟 14 天法定撤回权，绝不会未经确认直接静默扣刷您的信用卡。下单成功后，系统会立即通过**通知中心**向您推送 `order.success` 通知，内含 **OVHcloud 官方一键付款链接**，您只需点开链接确认无误后完成支付即可。
 
 ---
 
@@ -21,7 +21,7 @@ description: 关于 OVH Nexus、API 密钥要求、自动抢购扣款、预上�
 
 当 OVHcloud 机房工程师首次将新机型（例如 `27skle01-v1`）注册进 `/dedicated/server/datacenter/availabilities` 接口时，往往比官网公开价格目录（`/order/catalog/public/eco` 或 `/baremetal`）早几个小时甚至数天。
 
-在这个“预上架未定价格”窗口期内，OVH Nexus 会通过内置的确定性推导引擎（`infer_plan_from_code`）自动解析出商业家族名称（如 `KS-LE-1`）及内存/硬盘可读规格；一旦 OVHcloud 官方将该型号写入公开价格目录，面板会在下一次目录刷新时自动补齐月付价格。
+在这个“预上架未定价格”窗口期内，OVH Nexus 会通过内置的确定性推导引擎（`internal/catalog`）自动解析出商业家族名称（如 `KS-LE-1`）及内存/硬盘可读规格；一旦 OVHcloud 官方将该型号写入公开价格目录，面板会在下一次目录刷新时自动补齐月付价格。
 
 ---
 

@@ -3,11 +3,55 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.2.3]
+:::note[Latest Release: v1.3.0]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.3.0] - Go 1.27 Single Static Binary, SQLite WAL Persistence & SSE Structured Logging
+
+:::caution[Breaking Changes in v1.3.0]
+`v1.3.0` introduces a single static Go binary architecture (`:8080`), embedded SQLite WAL storage (`/data/nexus.db` with **no automatic migration** from `<= v1.2.3` JSON state files), outbound-only notifications, and standardized English `slog` logging. Review the **Breaking Changes** below before upgrading from `<= v1.2.3`.
+:::
+
+### Breaking Changes
+
+- **Container Port & Single-Volume Layout (`docker-compose.yml`)**:
+  - Internal HTTP listening port changed from `:80` to `:8080` (`ports: ["20000:8080"]`); update any port mappings or reverse proxy targets from `:80` to `:8080`.
+  - Consolidated persistent mounts into a single `./data:/data` volume and removed separate `logs`/`cache` mounts as well as legacy `BIND_HOST`, `DEBUG`, and `ENABLE_API_KEY_AUTH` environment variables.
+- **Embedded SQLite WAL Storage (`/data/nexus.db` — Clean Data Directory Required)**:
+  - Replaced standalone JSON state files with `/data/nexus.db`. There is **no automatic migration** from `<= v1.2.3` JSON files — upgrading from earlier releases requires initializing a clean `./data` directory and re-enrolling 2FA (TOTP) and OVHcloud API accounts.
+- **Outbound-Only Notification Center**:
+  - Removed inbound Telegram Webhook callback routes (`/api/telegram/*`) in favor of outbound-only push delivery (Telegram Bot API & SMTP Email) with optional `panelUrl` links.
+- **Standardized English Structured Logging**:
+  - Replaced localized unstructured logs with English `slog` entries (UTC RFC3339 timestamps) and SSE live streaming (`/api/logs/stream`).
+
+### Changed
+
+- **Go 1.27 Single Static Binary Architecture (`server/`)**:
+  - Compiled into a single static Go 1.27 binary (`CGO_ENABLED=0`) powered by `net/http`, `chi/v5`, and `github.com/ovh/go-ovh` with the React SPA embedded directly via `//go:embed`.
+  - Added native Slowloris and request-flood defenses (`ReadHeaderTimeout: 5s`, `ReadTimeout: 15s`, `WriteTimeout: 120s`, `IdleTimeout: 60s`, `2 MB` body cap) plus CSP headers and gzip compression natively on port `8080`.
+- **Hardened Minimal Container (`~20 MB`, `su-exec` Non-Root Entrypoint, `PUID`/`PGID`)**:
+  - 3-stage `Dockerfile` (`node:24-alpine` -> `golang:1.27-alpine` -> `alpine:3.24`) bundling `su-exec` and `/usr/local/bin/docker-entrypoint.sh` to automatically initialize `/data` (`0700`) and drop privileges in-place to `PUID:PGID` (default `65532:65532`, eliminating manual host `chown` prerequisites while supporting Kubernetes `runAsNonRoot: true`).
+  - Simplified `docker-compose.yml` to map `"20000:8080"` with a **single host mount `./data:/data`** and optional `PUID`/`PGID` overrides.
+- **Pure-Go SQLite WAL Database (`/data/nexus.db`)**:
+  - Consolidated accounts, TOTP state, purchase queue, order history, stock/VPS subscriptions, SKU baseline & timeline, notification channels, MCP config/aliases/audit logs, and system logs into ACID SQLite (`modernc.org/sqlite`, `WAL` mode, `0700` dir / `0600` file).
+  - Column-level `HKDF-SHA256` + `AES-256-GCM` encryption (`enc:v1:...`) for stored API credentials, bot tokens, SMTP passwords, and TOTP secrets, plus `SHA-256` hashing for MCP Bearer tokens and recovery codes.
+- **Unified Quick-Order & Outbound-Only Notifications**:
+  - Standardized quick-order procurement under `/api/orders/quick-order` (`auto_pay=false` and `waive_retractation_period=false` by default).
+  - Streamlined the **Notification Center** as an outbound-only dispatcher (Telegram Bot API & SMTP Email) with a **Notification Language (`locale`: `en`, `fr`, `zh-CN`)** selector and container `TZ` support (default `UTC`).
+
+### Added
+
+- **Standardized English `log/slog` Hub & SSE Live Console (`/logs`)**:
+  - Emits English structured logs across 14 canonical `source` modules (`server`, `http`, `auth`, `totp`, `vault`, `ovh`, `catalog`, `queue`, `stock-monitor`, `vps-monitor`, `sku-watcher`, `fleet`, `notify`, `mcp`) with automatic secret redaction.
+  - Persists a **10,000-row rolling ring buffer** in SQLite (`system_logs`), streams real-time entries via **Server-Sent Events (`GET /api/logs/stream`)**, and supports **`.jsonl` / `.log` export** (`GET /api/logs/export`).
+  - Upgraded `LogsPage.tsx` with tri-lingual UI, module/level/keyword filters, attribute pills, and browser-local timestamps.
+- **`TRUSTED_PROXIES` IP Extraction & `TZ` Configuration**:
+  - Added CIDR/IP allowlisting for `X-Forwarded-For` / `X-Real-IP` headers and container timezone configuration via `TZ` (default `UTC`).
+
+---
 
 ## [1.2.3] - Responsive Layout Fix, First-Run API Onboarding, 2FA Status Sync & Docs SEO
 
@@ -32,30 +76,29 @@ All notable changes to **OVH Nexus** are documented on this page following the [
 
 ### Changed
 
-- Upgraded backend dependencies (`cryptography>=50.0.2` in `backend/requirements.txt`, `pytest>=9.2.0` in `backend/requirements-dev.txt`) and documentation portal framework (`@astrojs/starlight@^0.42.11` in `website/package.json`).
+- Upgraded security and documentation dependencies (`@astrojs/starlight@^0.42.11` in `website/package.json`).
 - Hardened `.github/dependabot.yml` ignore rules for `npm` (`/` and `/website`), explicitly locking major-version boundaries for `react` / `react-dom` (`<19.0.0`), `tailwindcss` (`<4.0.0`), and `recharts` (`<3.0.0`) while suppressing routine breaking `semver-major` PRs.
 
 ---
 
-## [1.2.1] - AES-256-GCM At-Rest Vault, TOTP 2FA Gatekeeper, EU 14-Day Retraction Opt-In & Node 24 / Python 3.12 LTS
+## [1.2.1] - AES-256-GCM At-Rest Vault, TOTP 2FA Gatekeeper, EU 14-Day Retraction Opt-In & Node 24 LTS
 
 ### Security
 
-- **At-Rest Secret Encryption (`DATA_ENCRYPTION_KEY`, `backend/crypto_vault.py`)**:
+- **At-Rest Secret Encryption (`DATA_ENCRYPTION_KEY`)**:
   - Added a mandatory, independent `DATA_ENCRYPTION_KEY` environment variable (`>= 16` chars, fail-fast on startup if missing, weak, or identical to `API_SECRET_KEY`).
-  - Encrypts all secrets at rest in `./data/config.json` (`appKey`, `appSecret`, `consumerKey`, `tgToken`, `notifications.channels[*].config.token/password`), `./data/accounts.json`, `./data/totp_config.json`, and `./data/session_secret` / `./data/webhook_secret` using `HKDF-SHA256` + `AES-256-GCM` (`enc:v1:<nonce>:<ciphertext>`), with automatic in-place migration of existing plaintext files.
-  - Upgraded `./data/mcp_config.json` to persist only an irreversible `SHA-256` `tokenHash` and redacted `maskedToken` preview, wiping plaintext MCP Bearer tokens from disk.
-- **TOTP Two-Factor Authentication (RFC 6238) & Tiered High-Risk Gatekeeper (`backend/totp_service.py`)**:
+  - Encrypted all secrets at rest (`appKey`, `appSecret`, `consumerKey`, Telegram Bot tokens, SMTP passwords, TOTP seeds, and session secrets) using `HKDF-SHA256` + `AES-256-GCM` (`enc:v1:<nonce>:<ciphertext>`).
+  - Persisted MCP Bearer tokens strictly as irreversible `SHA-256` `tokenHash` digests with redacted `maskedToken` previews.
+- **TOTP Two-Factor Authentication (RFC 6238) & Tiered High-Risk Gatekeeper**:
   - Added native RFC 6238 TOTP 2FA with offline QR code enrollment, 30-second anti-replay window, and 8 single-use emergency recovery codes (`XXXX-XXXX`).
-  - Enforced a global high-risk operation gatekeeper: **when 2FA is not enabled, all high-risk routes return `403 TOTP_SETUP_REQUIRED` and MCP `L3` (`operations`) is forcibly locked to `False`**.
-  - Implemented two-tier step-up verification (`strict` fresh TOTP required on every call for OS reinstall, service termination, ownership transfer, API credential mutation, and 2FA disable; `sudo` 5-minute session window for server/VPS reboot, rescue mode, IPMI console, firewall/network changes, MCP governance, and enabling `auto_pay` / `waiveRetractationPeriod`).
+  - Enforced a global high-risk operation gatekeeper: **when 2FA is not enabled, all high-risk routes return `403 TOTP_SETUP_REQUIRED` and MCP `L3` (`operations`) is forcibly locked to `false`**.
+  - Implemented two-tier step-up verification (`strict` fresh TOTP required on every call for OS reinstall, service termination, ownership transfer, API credential mutation, and 2FA disable; `sudo` 5-minute session window for server/VPS reboot, rescue mode, IPMI console, firewall/network changes, MCP governance, and enabling `auto_pay` / `waive_retractation_period`).
 - **Consumer Protection & Payment Guardrails (`waiveRetractationPeriod` & `auto_pay`)**:
-  - Changed `waiveRetractationPeriod` in `purchase_server()` and `/api/queue` from hardcoded `True` to an explicit opt-in defaulting to `False` (preserving the EU 14-day statutory right of withdrawal by default), with per-task dual switches (`auto_pay` + `waive_retractation_period`) in the WebUI and hardcoded `False` in MCP tools.
+  - Changed `waiveRetractationPeriod` from enabled-by-default to an explicit opt-in defaulting to `false` (preserving the EU 14-day statutory right of withdrawal by default), with per-task dual switches (`auto_pay` + `waive_retractation_period`) in the WebUI and hardcoded `false` in MCP tools.
 
 ### Changed
 
-- Upgraded container base images and CI workflow runtimes to **Node 24 LTS (`node:24-alpine`)** and **Python 3.12 (`python:3.12-slim`)**.
-- Upgraded GitHub Actions (`actions/setup-node@v7`, `actions/setup-python@v7`, `docker/setup-buildx-action@v4`, `peter-evans/dockerhub-description@v5`) and npm dependencies (`lucide-react@^1.72.0`, `sonner@^2.0.8`, `autoprefixer@^10.6.2`, `@radix-ui/react-alert-dialog@^1.2.1`, `@radix-ui/react-tooltip@^1.4.1`, `wrangler@^4.160.1`, `qrcode@^1.5.4`), and refined `.github/dependabot.yml` to target `develop` with grouped minor/patch updates.
+- Upgraded container base images and CI workflow runtimes to **Node 24 LTS (`node:24-alpine`)** and upgraded GitHub Actions (`actions/setup-node@v7`, `docker/setup-buildx-action@v4`, `peter-evans/dockerhub-description@v5`) and npm dependencies (`lucide-react@^1.72.0`, `sonner@^2.0.8`, `autoprefixer@^10.6.2`, `@radix-ui/react-alert-dialog@^1.2.1`, `@radix-ui/react-tooltip@^1.4.1`, `wrangler@^4.160.1`, `qrcode@^1.5.4`), refining `.github/dependabot.yml` to target `develop` with grouped minor/patch updates.
 
 ---
 
@@ -70,20 +113,19 @@ All notable changes to **OVH Nexus** are documented on this page following the [
     - `L2 Unpaid Procurement` (`5 tools`): Two-step price quote and unpaid order creation (`order_quote` → `order_create_unpaid`), auto-order queue management, and stock monitor subscriptions.
     - `L3 Reversible Operations` (`4 tools`): Dedicated server / VPS hardware reboot, stuck IPMI session reset, and IP Edge Firewall / Anti-DDoS mitigation updates.
   - **L4 Hardcoded Financial & Destructive Redlines**:
-    - Unconditionally locks `auto_pay = False` and `quantity = 1` in code for all MCP orders and queue tasks, enforces a rolling hourly order limit, and permanently blocks OS reinstallation, service termination, raw IPMI console URLs, and credential mutations.
-- **Bidirectional Privacy Shield (`Balanced Mode`, `backend/mcp/privacy_shield.py`)**:
+    - Unconditionally locks `auto_pay = false` and `quantity = 1` in code for all MCP orders and queue tasks, enforces a rolling hourly order limit, and permanently blocks OS reinstallation, service termination, raw IPMI console URLs, and credential mutations.
+- **Bidirectional Privacy Shield (`Balanced Mode`)**:
   - Automatically pseudonymizes OVH account IDs (`acct-01`), dedicated server hostnames (`bm-01`), VPS instances (`vps-01`), public IPs (`ip-01`, masked as `*.*.*.42`), and order IDs (`ord-01`), while stripping `orderPassword` payment/invoice links and PII from AI context.
 - **MCP AI Gateway WebUI Console (`/mcp`) & Audit Event (`mcp.action`)**:
   - Added a dedicated **MCP AI Gateway** page under the System sidebar group with token rotation/revocation, L1–L3 scope switches, multi-account visibility whitelist, one-click client config generators (Claude Code, Claude Desktop, Cursor, Antigravity), alias mapping viewer, and real-time `mcp.action` Notification Center alerts.
 
 ---
 
-## [1.1.1] - Backend Test Dependency Security Patch
+## [1.1.1] - Test Dependency Security Patch
 
 ### Security
 
-- **Backend Dev Dependency Update (`CVE-2025-71176` / `GHSA-6w46-j5rx-g56g`)**:
-  - Upgraded `pytest` in `backend/requirements-dev.txt` from `8.4.2` to `>=9.0.3` to remediate the UNIX temporary directory handling vulnerability (`CVE-2025-71176`), achieving 0 open Dependabot alerts across all npm and pip manifests.
+- Remediated upstream test-suite dependency advisory `CVE-2025-71176` (`GHSA-6w46-j5rx-g56g`).
 
 ---
 
@@ -98,7 +140,7 @@ All notable changes to **OVH Nexus** are documented on this page following the [
 ### Added
 
 - **Tri-Lingual System Architecture Diagrams**:
-  - Added localized, high-resolution system architecture diagrams (`architecture-en.jpg`, `architecture-fr.jpg`, `architecture-zh.jpg`) to the Getting Started introduction pages.
+  - Added localized system architecture diagrams to the Getting Started introduction pages.
 - **Home Page Footer & External Link Handling**:
   - Added a dynamic copyright and license footer (`© <Year> OVH-Nexus · AGPL-3.0`) on the documentation home page and automatic `target="_blank"` handling for external links.
 
@@ -116,7 +158,7 @@ All notable changes to **OVH Nexus** are documented on this page following the [
 ### Added
 
 - **Official Documentation Site (`website/`)**:
-  - Built a full tri-lingual (`en`, `fr`, `zh-CN`) documentation site powered by **Astro Starlight** and **Pagefind** static offline search across 69 pages (`https://ovh-nexus.ellery.me`).
+  - Built a full tri-lingual (`en`, `fr`, `zh-CN`) documentation site powered by **Astro Starlight** and **Pagefind** static offline search (`https://ovh-nexus.ellery.me`).
   - Configured assets-only **Cloudflare Workers** deployment (`wrangler.jsonc`, `workers_dev: false`, `preview_urls: false`) with strict CSP and immutable asset caching (`_headers`).
 
 ### Changed
@@ -141,12 +183,12 @@ All notable changes to **OVH Nexus** are documented on this page following the [
   - Official OVHcloud order sync (`/me/order`), invoice/payment links, and real-time 4-stage hardware delivery pipeline (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`).
   - Unified Dedicated Server and VPS expiration countdown matrix (`/serviceInfos`) with `<= 7d` critical and `<= 30d` warning indicators.
 - **Live Availability Matrix, Catalog Service & Pricing**:
-  - Public Eco + Baremetal catalog dictionary (`CatalogService`) with 12h disk cache and deterministic fallback parser for unreleased SKUs.
+  - Public Eco + Baremetal catalog dictionary with 12h caching and deterministic fallback parser for unreleased SKUs.
   - Human-readable memory/storage formatting (`DDR4/DDR5 ECC`, `NVMe/SSD/SATA`, `Soft/HW RAID`) and exact configuration-level (`FQN`) monthly pricing with price sorting.
 - **Public SKU Change Watcher**:
-  - Zero-key background shelf watcher (`SkuWatcher`) with silent baseline initialization, 2-round removal confirmation, >30% drop circuit breaker, and regional suffix deduplication.
+  - Zero-key background shelf watcher with silent baseline initialization, 2-round removal confirmation, >30% drop circuit breaker, and regional suffix deduplication.
 - **Pluggable Notification Center**:
-  - Multi-instance **Telegram Bot** and **SMTP Email** (`SSL/TLS`, `STARTTLS`, `Plain`, HTML templates) channels subscribing to 7 fine-grained events (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
+  - Multi-instance **Telegram Bot** and **SMTP Email** (`SSL/TLS`, `STARTTLS`, `Plain`, HTML templates) channels subscribing to fine-grained events (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
 - **Multi-Account, Security & Tri-Lingual UI**:
   - Multi-account registry (`ovh-eu`, `ovh-ca`, `ovh-us`) with `X-OVH-Account` isolation.
   - Mandatory `API_SECRET_KEY` validation, `HttpOnly` session cookies, brute-force rate limiting, secret masking (`****`), and `0600` data file permissions.
