@@ -296,6 +296,7 @@ def init_api_auth(app):
         enabled = bool(st.get('enabled') and st.get('secret'))
         return jsonify({
             'enabled': enabled,
+            'totpEnabled': enabled,
             'hasPendingSetup': bool(st.get('pendingSecret') and not enabled),
             'recoveryCodesRemaining': len(st.get('recoveryCodeHashes') or []) if enabled else 0,
             'enabledAt': st.get('enabledAt') if enabled else None,
@@ -305,11 +306,14 @@ def init_api_auth(app):
 
     @app.route('/api/auth/totp/setup', methods=['POST'])
     def totp_setup_endpoint():
+        payload = request.get_json(silent=True) or {}
+        account_name = str(payload.get('accountName') or 'Admin').strip() or 'Admin'
         try:
-            data = begin_totp_setup(account_name='Admin')
+            data = begin_totp_setup(account_name=account_name)
             return jsonify({'success': True, **data})
         except ValueError as exc:
-            return jsonify({'success': False, 'error': str(exc)}), 400
+            msg = str(exc)
+            return jsonify({'success': False, 'error': msg, 'message': msg}), 400
 
     @app.route('/api/auth/totp/activate', methods=['POST'])
     def totp_activate_endpoint():
@@ -322,19 +326,23 @@ def init_api_auth(app):
             return jsonify({
                 'success': True,
                 **result,
+                'totpEnabled': True,
                 'sudoActive': True,
                 'sudoExpiresAt': session['sudo_until'],
             })
         except ValueError as exc:
-            return jsonify({'success': False, 'error': str(exc)}), 400
+            msg = str(exc)
+            return jsonify({'success': False, 'error': msg, 'message': msg}), 400
 
     @app.route('/api/auth/totp/verify-sudo', methods=['POST'])
     def totp_verify_sudo_endpoint():
         if not is_totp_enabled():
+            msg = '尚未启用 2FA 双因素认证'
             return jsonify({
                 'success': False,
                 'code': 'TOTP_SETUP_REQUIRED',
-                'error': '尚未启用 2FA 双因素认证',
+                'error': msg,
+                'message': msg,
             }), 400
         payload = request.get_json(silent=True) or {}
         code = str(payload.get('code') or payload.get('totpCode') or '').strip()
@@ -344,6 +352,7 @@ def init_api_auth(app):
                 'success': False,
                 'code': status_code,
                 'error': msg,
+                'message': msg,
             }), 403
         now_int = int(time.time())
         session['sudo_until'] = now_int + SUDO_DURATION_SECONDS
@@ -359,7 +368,12 @@ def init_api_auth(app):
         # Note: `strict` TOTP verification is already enforced by `before_request`
         disable_totp()
         session.pop('sudo_until', None)
-        return jsonify({'success': True, 'enabled': False, 'message': '已关闭 2FA 双因素认证'})
+        return jsonify({
+            'success': True,
+            'enabled': False,
+            'totpEnabled': False,
+            'message': '已关闭 2FA 双因素认证',
+        })
 
     @app.route('/api/auth/totp/recovery-codes/regenerate', methods=['POST'])
     def totp_regenerate_recovery_endpoint():
@@ -372,7 +386,8 @@ def init_api_auth(app):
                 'recoveryCodesRemaining': len(codes),
             })
         except ValueError as exc:
-            return jsonify({'success': False, 'error': str(exc)}), 400
+            msg = str(exc)
+            return jsonify({'success': False, 'error': msg, 'message': msg}), 400
 
     @app.before_request
     def verify_api_key():

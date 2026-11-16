@@ -3,11 +3,29 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.2.2]
+:::note[Dernière version : v1.2.3]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.2.3] - Correctif d'Affichage Responsive, Configuration API Initiale, Synchronisation 2FA & SEO
+
+### Corrigé (Fixed)
+
+- **Sélecteurs Tailwind CSS v3 & Navigation Latérale** :
+  - Verrouillage de `"postcss-selector-parser": "^6.1.6"` dans `package.json` pour restaurer les sélecteurs responsives (`lg:block`, `md:flex-row`) et ajout d'une barre supérieure dédiée sous `1024px`.
+- **Parcours Initial des Comptes API OVH (`/api-accounts`)** :
+  - Ajout de **Comptes API OVH** dans le menu latéral, redirection directe de la bannière d'accueil vers `/api-accounts` avec bouton de fermeture rapide, et rappel explicite d'activation 2FA.
+- **Synchronisation d'État 2FA (TOTP)** :
+  - Harmonisation du champ `totpEnabled` et des messages d'erreur sur `/api/auth/totp/*` pour refléter immédiatement l'activation du 2FA dans l'interface.
+
+### Ajouté (Added)
+
+- **SEO du Portail Documentaire (`robots.txt` & `sitemap.xml`)** :
+  - Génération directe de `/sitemap.xml` et `/sitemap-index.xml` avec balises `<lastmod>` et `hreflang="x-default"`, optimisation de `robots.txt` et ajout de l'aperçu social OpenGraph (`og-image.jpg`).
+
+---
 
 ## [1.2.2] - Mise à Jour des Dépendances & Gouvernance Dependabot
 

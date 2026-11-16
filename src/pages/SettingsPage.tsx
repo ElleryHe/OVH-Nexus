@@ -110,8 +110,9 @@ const SettingsPage = () => {
     try {
       const res = await api.get("/auth/totp/status");
       if (res.data) {
+        const enabled = Boolean(res.data.totpEnabled ?? res.data.enabled);
         setTotpStatus({
-          totpEnabled: !!res.data.totpEnabled,
+          totpEnabled: enabled,
           recoveryCodesRemaining: Number(res.data.recoveryCodesRemaining || 0),
           enabledAt: res.data.enabledAt || null,
           sudoActive: !!res.data.sudoActive,
@@ -146,7 +147,12 @@ const SettingsPage = () => {
       setTotpVerifyCode("");
       setFreshRecoveryCodes(null);
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || "生成 2FA 绑定密钥失败");
+      toast.error(
+        err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          "生成 2FA 绑定密钥失败"
+      );
+      await loadTotpStatus();
     } finally {
       setTotpBusy(false);
     }
@@ -162,18 +168,31 @@ const SettingsPage = () => {
       const res = await api.post("/auth/totp/activate", {
         code: totpVerifyCode.trim(),
       });
-      if (res.data?.enabled) {
+      if (res.data?.enabled || res.data?.totpEnabled) {
+        const codes: string[] = res.data?.recoveryCodes || [];
         setTotpSetupData(null);
         setTotpVerifyCode("");
-        setFreshRecoveryCodes(res.data?.recoveryCodes || []);
+        setFreshRecoveryCodes(codes);
+        setTotpStatus({
+          totpEnabled: true,
+          recoveryCodesRemaining: Number(
+            res.data?.recoveryCodesRemaining ?? codes.length
+          ),
+          enabledAt: res.data?.enabledAt || new Date().toISOString(),
+          sudoActive: !!res.data?.sudoActive,
+          sudoExpiresAt: Number(res.data?.sudoExpiresAt || 0),
+        });
         toast.success(
           "双因素认证 (2FA) 已成功启用！请立即备份下方的一次性应急恢复码。"
         );
         await loadTotpStatus();
+        window.dispatchEvent(new CustomEvent("totp:sudo-updated"));
       }
     } catch (err: any) {
       toast.error(
-        err?.response?.data?.message || "验证码校验失败，请检查验证器时间同步"
+        err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          "验证码校验失败，请检查验证器时间同步"
       );
     } finally {
       setTotpBusy(false);
@@ -712,6 +731,15 @@ const SettingsPage = () => {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {accounts.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => navigate("/api-accounts")}
+                        className="cyber-button-primary px-3 py-1.5 text-xs font-medium flex items-center gap-1.5"
+                      >
+                        <span>继续配置 OVH API 账户 →</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={totpBusy}
@@ -969,6 +997,37 @@ const SettingsPage = () => {
               <div className="cyber-grid-line pt-4">
                 <div className="p-4 rounded-lg border border-cyber-grid bg-cyber-bg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-bold text-cyber-text">OVHcloud API 账户与密钥管理</h2>
+                      <span
+                        className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${
+                          accounts.length > 0
+                            ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/30"
+                            : "bg-amber-500/10 text-amber-500 border-amber-500/30"
+                        }`}
+                      >
+                        {accounts.length > 0
+                          ? `已配置 ${accounts.length} 个账户`
+                          : "尚未配置"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-cyber-muted mt-1">
+                      支持统一托管多个 OVHcloud 区域账户（欧洲 <code>ovh-eu</code>、美国 <code>ovh-us</code>、加拿大 <code>ovh-ca</code>），所有 API 密钥均通过 AES-256-GCM 静态加密存储。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/api-accounts")}
+                    className="cyber-button-primary text-xs sm:text-sm px-4 py-2 whitespace-nowrap flex-shrink-0"
+                  >
+                    {accounts.length > 0 ? "管理 OVH API 账户 →" : "立即添加 OVH API →"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="cyber-grid-line pt-4">
+                <div className="p-4 rounded-lg border border-cyber-grid bg-cyber-bg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
                     <h2 className="text-base font-bold text-cyber-text">通知渠道与事件规则</h2>
                     <p className="text-xs text-cyber-muted mt-1">
                       Telegram 机器人、Webhook 按钮回调以及 SMTP 邮件通知已统一迁入独立的「通知中心」，您已有的 Telegram 配置已自动迁移。
@@ -984,23 +1043,17 @@ const SettingsPage = () => {
                 </div>
               </div>
               
-              <div className="flex justify-end pt-4">
-                <button
-                  type="submit"
-                  className="cyber-button px-6"
-                  disabled={isSaving}
-                >
-                  {isSaving ? (
-                    <span className="flex items-center">
-                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-cyber-text" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      保存中...
-                    </span>
-                  ) : "保存设置"}
-                </button>
-              </div>
+              {!accountFieldsHidden && (
+                <div className="flex justify-end pt-4">
+                  <button
+                    type="submit"
+                    className="cyber-button px-6"
+                    disabled={isSaving}
+                  >
+                    {isSaving ? "保存中..." : "保存设置"}
+                  </button>
+                </div>
+              )}
             </form>
           </div>
           

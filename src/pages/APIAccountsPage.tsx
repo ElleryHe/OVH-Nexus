@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Eye, EyeOff, ShieldAlert, ShieldCheck, ArrowRight } from "lucide-react";
 import { useAPI } from "@/context/APIContext";
 import { api } from "@/utils/apiClient";
 import { toast } from "sonner";
 
 const APIAccountsPage = () => {
-  const { accounts, currentAccountId, defaultAccountId, setCurrentAccount, refreshAccounts } = useAPI();
+  const { accounts, currentAccountId, defaultAccountId, setCurrentAccount, refreshAccounts, checkAuthentication } = useAPI();
+  const [totpEnabled, setTotpEnabled] = useState<boolean | null>(null);
   const [form, setForm] = useState({
     id: "",
     alias: "",
@@ -21,8 +24,21 @@ const APIAccountsPage = () => {
   const [debugInfo, setDebugInfo] = useState<any | null>(null);
   const [debugError, setDebugError] = useState<string>("");
 
+  const loadTotp = async () => {
+    try {
+      const res = await api.get("/auth/totp/status");
+      setTotpEnabled(Boolean(res.data?.totpEnabled ?? res.data?.enabled));
+    } catch {
+      setTotpEnabled(false);
+    }
+  };
+
   useEffect(() => {
     refreshAccounts();
+    loadTotp();
+    const onTotpChange = () => loadTotp();
+    window.addEventListener("totp:sudo-updated", onTotpChange);
+    return () => window.removeEventListener("totp:sudo-updated", onTotpChange);
   }, []);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -100,16 +116,21 @@ const APIAccountsPage = () => {
       if (res.data?.success) {
         toast.success("账户已保存");
         await refreshAccounts();
+        await checkAuthentication();
         resetForm();
       } else {
-        const msg = res.data?.error || "保存失败";
+        const msg = res.data?.message || res.data?.error || "保存失败";
         const m = typeof msg === 'string' ? msg.match(/OVH-Query-ID:\s*([^\s]+)/) : null;
         toast.error(m ? `保存失败：${msg} · QueryID: ${m[1]}` : `保存失败：${msg}`);
       }
     } catch (e: any) {
-      const msg = e?.response?.data?.error || e?.message || "保存失败";
-      const m = typeof msg === 'string' ? msg.match(/OVH-Query-ID:\s*([^\s]+)/) : null;
-      toast.error(m ? `保存失败：${msg} · QueryID: ${m[1]}` : `保存失败：${msg}`);
+      if (e?.response?.status === 403 || e?.message === "已取消 2FA 二次验证") {
+        // Handled globally by apiClient 2FA gatekeeper / step-up modal
+      } else {
+        const msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || "保存失败";
+        const m = typeof msg === 'string' ? msg.match(/OVH-Query-ID:\s*([^\s]+)/) : null;
+        toast.error(m ? `保存失败：${msg} · QueryID: ${m[1]}` : `保存失败：${msg}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -121,11 +142,14 @@ const APIAccountsPage = () => {
       if (res.data?.success) {
         toast.success("账户已删除");
         await refreshAccounts();
+        await checkAuthentication();
       } else {
-        toast.error(res.data?.error || "删除失败");
+        toast.error(res.data?.message || res.data?.error || "删除失败");
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.error || e.message || "删除失败");
+      if (e?.response?.status !== 403 && e?.message !== "已取消 2FA 二次验证") {
+        toast.error(e.response?.data?.message || e.response?.data?.error || e.message || "删除失败");
+      }
     }
   };
 
@@ -159,10 +183,41 @@ const APIAccountsPage = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold mb-1 cyber-glow-text">API账户管理</h1>
-        <p className="text-cyber-muted">管理多个 OVH API 账户的凭据与区域</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold mb-1 cyber-glow-text">OVH API 账户管理</h1>
+          <p className="text-cyber-muted text-sm">统一管理多个 OVHcloud 账户凭据与区域节点（AES-256-GCM 磁盘静态加密）</p>
+        </div>
+        {totpEnabled && (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 self-start sm:self-auto">
+            <ShieldCheck size={14} />
+            <span>2FA 安全门禁已就绪</span>
+          </span>
+        )}
       </div>
+
+      {totpEnabled === false && (
+        <div className="cyber-panel p-4 border-amber-500/35 bg-amber-500/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <ShieldAlert size={18} className="text-amber-500 shrink-0 mt-0.5" />
+            <div className="text-xs sm:text-sm leading-relaxed">
+              <span className="font-semibold text-amber-600 dark:text-amber-400 mr-1.5">
+                请先开启双因素认证 (2FA)：
+              </span>
+              <span className="text-cyber-muted">
+                新增、修改或删除 OVH API 密钥属于受保护高危操作。首次部署请先前往「系统与安全设置」绑定验证器，随后再填写并保存下方密钥。
+              </span>
+            </div>
+          </div>
+          <Link
+            to="/settings#totp"
+            className="cyber-button-primary text-xs px-3.5 py-2 inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap"
+          >
+            <span>前往绑定 2FA</span>
+            <ArrowRight size={14} />
+          </Link>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
@@ -205,7 +260,7 @@ const APIAccountsPage = () => {
                       placeholder={editingId ? "已配置，留空不修改" : "xxxxxxxxxxxxxxxx"}
                     />
                     <button type="button" onClick={() => toggleShowValue('appKey')} className="absolute inset-y-0 right-0 px-3 text-cyber-muted hover:text-cyber-accent">
-                      {showValues.appKey ? '🙈' : '👁️'}
+                      {showValues.appKey ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
                 </div>
@@ -221,7 +276,7 @@ const APIAccountsPage = () => {
                       placeholder={editingId ? "已配置，留空不修改" : "xxxxxxxxxxxxxxxx"}
                     />
                     <button type="button" onClick={() => toggleShowValue('appSecret')} className="absolute inset-y-0 right-0 px-3 text-cyber-muted hover:text-cyber-accent">
-                      {showValues.appSecret ? '🙈' : '👁️'}
+                      {showValues.appSecret ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
                 </div>
@@ -237,7 +292,7 @@ const APIAccountsPage = () => {
                       placeholder={editingId ? "已配置，留空不修改" : "xxxxxxxxxxxxxxxx"}
                     />
                     <button type="button" onClick={() => toggleShowValue('consumerKey')} className="absolute inset-y-0 right-0 px-3 text-cyber-muted hover:text-cyber-accent">
-                      {showValues.consumerKey ? '🙈' : '👁️'}
+                      {showValues.consumerKey ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
                 </div>

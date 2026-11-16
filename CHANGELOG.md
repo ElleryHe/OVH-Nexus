@@ -9,6 +9,28 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.2.3] - 2026-11-16
+
+### Fixed
+- **Tailwind CSS v3 Selector Escaping & Sidebar Layout Deadlock**:
+  - Pinned `"postcss-selector-parser": "^6.1.6"` in `package.json` `overrides` (preventing resolution to `7.2.0`, which triple-escaped responsive/state selectors like `.lg\:block` and caused the desktop navigation sidebar to stay `hidden`).
+  - Added a dedicated sticky top navigation bar (`< 1024px`) in `Layout.tsx` and aligned drawer breakpoints to eliminate the `768px–1023px` viewport navigation gap.
+- **First-Time Deployment OVH API Onboarding & Top Notice Banner**:
+  - Added **OVH API Accounts (`/api-accounts`)** directly to the left sidebar navigation and added a dedicated OVH API Accounts management card inside `/settings`.
+  - Updated the unconfigured API banner (`APINotice.tsx`) to link directly to `/api-accounts`, auto-hide on `/api-accounts` and `/settings`, and support one-click dismissal.
+  - Added a 2FA prerequisite onboarding callout on `/api-accounts` and automatic `checkAuthentication()` state refresh after saving/deleting accounts.
+- **2FA (TOTP) Status Synchronization (`backend/api_auth_middleware.py`, `SettingsPage.tsx`)**:
+  - Fixed `/api/auth/totp/status` and `/api/auth/totp/activate` to return `totpEnabled` alongside `enabled` and standardized `message` error payloads so newly activated 2FA immediately transitions to **Enabled** in the WebUI.
+
+### Added
+- **Documentation Portal SEO (`website/`)**:
+  - Added build-time `/sitemap.xml` generation alongside `/sitemap-index.xml` with `<lastmod>` timestamps and `x-default` `hreflang` alternates, refined `robots.txt` crawler rules, added explicit XML/text `_headers`, and configured OpenGraph / Twitter social preview metadata (`og-image.jpg`).
+
+### Changed
+- Upgraded GitHub Actions (`actions/checkout@v7`, `docker/setup-qemu-action@v4`, `docker/login-action@v4`, `docker/metadata-action@v6`, `docker/build-push-action@v7`) and 16 minor/patch frontend dependencies (`tailwindcss@^3.4.19`, `vite@^8.3.8`, `typescript@^5.9.3`, `axios@^1.21.1`, `@tanstack/react-query@^5.107.1`, `framer-motion@^12.43.0`).
+
+---
+
 ## [1.2.2] - 2026-11-15
 
 ### Changed

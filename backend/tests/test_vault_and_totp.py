@@ -208,8 +208,22 @@ def test_totp_2fa_enrollment_stepup_tiers_and_mcp_l3_lock(client, monkeypatch):
     assert r_act.status_code == 200
     act_data = r_act.get_json()
     assert act_data["enabled"] is True
+    assert act_data["totpEnabled"] is True
     recovery_codes = act_data["recoveryCodes"]
     assert len(recovery_codes) == 8
+
+    # Verify /api/auth/totp/status exposes both `totpEnabled` and `enabled` for UI state sync
+    r_totp_status = client.get("/api/auth/totp/status")
+    assert r_totp_status.status_code == 200
+    status_data = r_totp_status.get_json()
+    assert status_data["totpEnabled"] is True
+    assert status_data["enabled"] is True
+    assert status_data["recoveryCodesRemaining"] == 8
+
+    # Calling /api/auth/totp/setup again while already enabled returns 400 with human-readable message
+    r_dup_setup = client.post("/api/auth/totp/setup", json={"accountName": "OVH-Nexus-Admin"})
+    assert r_dup_setup.status_code == 400
+    assert "启用状态" in r_dup_setup.get_json()["message"]
 
     # Verify totp_config.json on disk encrypts `secret` and hashes recovery codes
     disk_totp_raw = open(TOTP.TOTP_CONFIG_FILE, "r", encoding="utf-8").read()

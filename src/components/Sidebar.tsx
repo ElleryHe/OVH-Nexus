@@ -25,6 +25,7 @@ import {
   Monitor,
   BellRing,
   Bot,
+  KeyRound,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -81,6 +82,7 @@ const Sidebar = ({ onToggle }: SidebarProps) => {
     {
       title: t('nav.group.system'),
       items: [
+        { path: "/api-accounts", icon: KeyRound, label: t('nav.apiAccounts') },
         { path: "/mcp", icon: Bot, label: t('nav.mcp') },
         { path: "/notifications", icon: BellRing, label: t('nav.notifications') },
         { path: "/logs", icon: FileText, label: t('nav.logs') },
@@ -142,7 +144,7 @@ const Sidebar = ({ onToggle }: SidebarProps) => {
                       ? "text-cyber-accent bg-cyber-accent/10 border border-cyber-accent/25 font-semibold"
                       : "text-cyber-muted hover:text-cyber-text hover:bg-cyber-grid/40 border border-transparent"
                   }`}
-                  onClick={isMobile ? onToggle : undefined}
+                  onClick={onToggle}
                 >
                   {active && (
                     <motion.div

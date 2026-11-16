@@ -3,11 +3,30 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.2.2]
+:::note[Latest Release: v1.2.3]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.2.3] - Responsive Layout Fix, First-Run API Onboarding, 2FA Status Sync & Docs SEO
+
+### Fixed
+
+- **Tailwind CSS v3 Selector Escaping & Sidebar Layout**:
+  - Pinned `"postcss-selector-parser": "^6.1.6"` in `package.json` `overrides` (preventing resolution to `7.2.0`, which corrupted responsive selectors like `lg:block` and hid the desktop sidebar).
+  - Added a sticky mobile/tablet header bar (`< 1024px`) in `Layout.tsx` so navigation is always accessible across all viewport widths.
+- **First-Time Deployment OVH API Onboarding & Dismissible Notice**:
+  - Added **OVH API Accounts (`/api-accounts`)** to the main sidebar and linked `/settings` and `APINotice` directly to `/api-accounts`, with one-click banner dismissal and a clear 2FA prerequisite callout.
+- **2FA (TOTP) Status Synchronization**:
+  - Standardized `totpEnabled` and `message` payloads across `/api/auth/totp/*` endpoints so newly bound 2FA immediately displays as **Enabled** without false-negative UI resets.
+
+### Added
+
+- **Documentation Portal SEO (`robots.txt` & `sitemap.xml`)**:
+  - Added direct `/sitemap.xml` generation alongside `/sitemap-index.xml` with `<lastmod>` and `x-default` `hreflang` tags, refined `robots.txt` crawler rules, and configured `og:image` / `twitter:image` metadata.
+
+---
 
 ## [1.2.2] - Dependency Baseline Updates & Dependabot Governance Hardening
 

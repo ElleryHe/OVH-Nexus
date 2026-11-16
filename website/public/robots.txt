@@ -1,4 +1,34 @@
+# OVH Nexus Official Documentation Portal (https://ovh-nexus.ellery.me)
+
+User-agent: Googlebot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: Bingbot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: Baiduspider
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: DuckDuckBot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
 User-agent: *
 Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
 
+Sitemap: https://ovh-nexus.ellery.me/sitemap.xml
 Sitemap: https://ovh-nexus.ellery.me/sitemap-index.xml
