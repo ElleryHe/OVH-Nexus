@@ -18,9 +18,9 @@ OVH Nexus unifie tout le cycle de vie dans une seule interface :
 
 ## Architecture du Système
 
-OVH Nexus est distribué sous forme d'un conteneur unique (`elleryhe/ovh-nexus`) :
+OVH Nexus est compilé sous la forme d'un **binaire statique unique Go 1.27** (`CGO_ENABLED=0`) intégrant la SPA React et la base SQLite WAL pure Go (`elleryhe/ovh-nexus`) :
 
-![OVH Nexus — Architecture Conteneur Unique](../../../../assets/architecture-fr.jpg)
+![OVH Nexus v1.3.0 — Architecture Binaire Statique Unique Go](../../../../assets/architecture-fr.svg)
 
 ## Régions OVHcloud Prises en Charge
 

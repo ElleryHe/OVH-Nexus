@@ -7,7 +7,7 @@ OVH Nexus supports registering and switching between multiple OVHcloud accounts 
 
 ## How Multi-Account Isolation Works
 
-- **Persistent Account Registry (`data/accounts.json`)**: Stores each account's display label, endpoint (`ovh-eu`, `ovh-ca`, `ovh-us`), subsidiary zone (`IE`, `FR`, `CA`, `US`, etc.), and API credentials with `0600` file permissions on disk.
+- **Persistent Account Registry (`/data/nexus.db` · `ovh_accounts`)**: Stores each account's display label, endpoint (`ovh-eu`, `ovh-ca`, `ovh-us`), subsidiary zone (`IE`, `FR`, `CA`, `US`, etc.), and `AES-256-GCM` encrypted API credentials inside the `0600` SQLite WAL database.
 - **Request-Scoped Account Selection (`X-OVH-Account` Header)**: When you switch the active account in the WebUI top bar or **API Accounts** page, the frontend attaches `X-OVH-Account: <account-id>` to API requests so fleet queries, OS installations, and manual orders run against the selected account.
 - **Per-Account Server Cache Isolation**: Dedicated server lists, hardware specifications, and catalog lookups are cached per account ID so switching between accounts never leaks or mixes server lists across accounts.
 

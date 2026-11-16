@@ -18,9 +18,9 @@ OVH Nexus unifies the entire lifecycle in one web interface:
 
 ## System Architecture
 
-OVH Nexus is distributed as an all-in-one container (`elleryhe/ovh-nexus`):
+OVH Nexus is compiled into a **single static Go 1.27 binary** (`CGO_ENABLED=0`) embedded with the React SPA and pure-Go SQLite WAL storage (`elleryhe/ovh-nexus`):
 
-![OVH Nexus — Single-Container Architecture](../../../assets/architecture-en.jpg)
+![OVH Nexus v1.3.0 — Go Single Static Binary Architecture](../../../assets/architecture-en.svg)
 
 ## Supported OVHcloud Regions
 

@@ -37,10 +37,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Follow recent OVHcloud orders, retrieve invoice & payment links, watch the 4-stage hardware delivery pipeline (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`), and track expiration countdowns across all accounts.
   </Card>
   <Card title="Multi-Channel Notification Center" icon="telegram">
-    Configure multiple **Telegram Bots** and **SMTP Email** channels (`SSL/TLS`, `STARTTLS`, `Plain` with responsive HTML templates) subscribed to 7 fine-grained events (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
+    Configure multiple outbound **Telegram Bots** and **SMTP Email** channels (`SSL/TLS`, `STARTTLS`, `Plain` with responsive HTML templates) subscribed to 8 fine-grained events (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`, `mcp.action`) in `en`, `fr`, or `zh-CN`.
   </Card>
-  <Card title="Hardened Self-Hosted Architecture" icon="padlock">
-    All-in-one multi-arch Docker image (`linux/amd64` & `linux/arm64`) bundling Nginx and Python backend with mandatory `API_SECRET_KEY` validation, `HttpOnly` session cookies, login rate limiting, secret masking (`****`), and tri-lingual UI (`en` / `fr` / `zh-CN`).
+  <Card title="Hardened Go Single-Binary Architecture" icon="padlock">
+    Hardened ~20 MB multi-arch Alpine container (`linux/amd64` & `linux/arm64`, non-root `65532:65532` on `:8080`) running a single static Go 1.27 binary with embedded SPA, native Slowloris defense, pure-Go SQLite WAL (`/data/nexus.db`), `AES-256-GCM` column encryption, RFC 6238 TOTP 2FA, and SSE live logs.
   </Card>
 </CardGrid>
 

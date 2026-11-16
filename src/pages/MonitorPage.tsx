@@ -117,7 +117,7 @@ const MonitorPage = () => {
             if (becameAvailable || firstTimeAvailable) {
               // ✅ 在异步请求前保存 planCode，用于后续检查
               const planCode = sub.planCode;
-              api.post('/config-sniper/quick-order', {
+              api.post('/orders/quick-order', {
                 planCode: planCode,
                 datacenter: dc
               })
@@ -140,10 +140,15 @@ const MonitorPage = () => {
                 if (!stillExists) {
                   return; // 订阅已被删除，不显示错误
                 }
-                // 对于"指定机房无可定价配置（...）"的 400 错误，静默处理，不弹错误
+                // 对于指定机房无可定价配置的 400 错误，静默处理，不弹错误
                 const status = err?.response?.status;
-                const msg = (err?.response?.data as any)?.error || err?.message || '';
-                const isNoPriceForDc = status === 400 && typeof msg === 'string' && msg.includes('指定机房无可定价配置');
+                const errData = (err?.response?.data || {}) as Record<string, any>;
+                const msg = String(errData?.error || errData?.message || err?.message || '');
+                const isNoPriceForDc =
+                  status === 400 &&
+                  (errData?.code === 'NO_PRICED_CONFIG' ||
+                    msg.toLowerCase().includes('no priced configuration') ||
+                    msg.includes('指定机房无可定价配置'));
                 if (isNoPriceForDc) {
                   return;
                 }

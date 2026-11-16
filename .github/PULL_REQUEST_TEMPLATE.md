@@ -18,7 +18,7 @@ Closes #<!-- issue number if applicable -->
 
 ## Verification & Testing / 测试与验证
 
-- [ ] Backend unit tests pass (`pytest backend/tests/ -v`) / 后端安全与 MCP 网关单元测试全部通过
+- [ ] Go backend checks pass (`cd server && go vet ./... && go test -race ./...`) / Go 后端静态检查与单元测试全部通过
 - [ ] Frontend builds cleanly (`npm run build`) / 前端 TypeScript 与 Vite 构建无报错
 - [ ] Documentation site builds cleanly (`npm run build --prefix website`) / 三语文档站构建无报错
 - [ ] UI verified in both **Light** and **Dark** themes / 已在浅色与深色主题下验证界面显示

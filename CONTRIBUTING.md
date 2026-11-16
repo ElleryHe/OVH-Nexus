@@ -15,8 +15,8 @@ By participating in this project, you agree to abide by our [Code of Conduct](./
 > [!CAUTION]
 > **Never commit or paste real credentials** in code, tests, screenshots, issues, or pull requests:
 > - OVHcloud API credentials (`appKey`, `appSecret`, `consumerKey`)
-> - Console session secret (`API_SECRET_KEY`) or MCP Bearer Tokens (`nxs_mcp_...`)
-> - Telegram Bot tokens (`tgToken`) or Chat IDs
+> - Console session secret (`API_SECRET_KEY`), master key (`DATA_ENCRYPTION_KEY`), or MCP Bearer Tokens (`nxs_mcp_...`)
+> - Telegram Bot tokens or Chat IDs
 > - SMTP credentials (`username`, `password`)
 
 If you discover a security vulnerability, **do not open a public issue**. Please report it privately via [GitHub Security Advisories](https://github.com/ElleryHe/OVH-Nexus/security/advisories/new) as described in [SECURITY.md](./SECURITY.md).
@@ -26,30 +26,39 @@ If you discover a security vulnerability, **do not open a public issue**. Please
 ## 3. Development Setup
 
 ### Prerequisites
-- **Docker & Docker Compose** (recommended for end-to-end testing)
-- **Node.js 22+** & `npm` (for frontend & documentation development)
-- **Python 3.11+** (for backend development & unit tests)
+
+- **Docker & Docker Compose** (recommended for end-to-end verification)
+- **Go 1.27+** (for backend server & unit tests, `CGO_ENABLED=0` static build)
+- **Node.js 24+** & `npm` (for frontend & documentation development)
 
 ### Project Structure
+
 ```text
-├── backend/
-│   ├── app.py                   # Flask API application & multi-account engine
-│   ├── api_auth_middleware.py   # Session cookie auth, rate limiting & loopback guards
-│   ├── catalog_service.py       # Public OVHcloud catalog dictionary & hardware spec parser
-│   ├── sku_watcher.py           # Public availability SKU change watcher & anti-glitch engine
-│   ├── server_monitor.py        # Stock subscription & auto-order monitor
-│   ├── mcp/                     # Model Context Protocol (MCP) Gateway & Bidirectional Privacy Shield
-│   ├── notifications/           # Pluggable NotificationHub (Telegram & SMTP Email)
-│   ├── routes/cloud_fleet.py    # OVHcloud Orders, Services, SSH Keys, VPS & Edge Firewall APIs
-│   └── tests/                   # Backend security & MCP gateway unit test suite
+├── server/
+│   ├── go.mod / go.sum            # Go 1.27 module (chi/v5, go-ovh, modernc.org/sqlite, x/crypto)
+│   ├── cmd/ovh-nexus/             # Single static binary entrypoint
+│   └── internal/
+│       ├── config/                # Fail-fast env loader & validation (TZ, TRUSTED_PROXIES, keys)
+│       ├── vault/                 # HKDF-SHA256 + AES-256-GCM encryption & SHA-256 token hashing
+│       ├── store/                 # Pure-Go SQLite WAL (/data/nexus.db) schema & repositories
+│       ├── logger/                # Standardized English log/slog hub, SSE broker & redactor
+│       ├── auth/                  # HMAC HttpOnly sessions, rate limiter & RFC 6238 TOTP gatekeeper
+│       ├── ovhclient/             # Multi-account go-ovh client pool & public HTTP client
+│       ├── catalog/               # OVH public catalog parser, enrichment & FQN pricing
+│       ├── procurement/           # Cart builder, queue & quick-order engine
+│       ├── monitor/               # Goroutine workers (stock, VPS, public SKU watcher, lifecycle)
+│       ├── fleet/                 # Dedicated Server, VPS & Account Hub APIs
+│       ├── notify/                # Outbound Telegram Bot & SMTP dispatchers (en / fr / zh-CN)
+│       ├── mcp/                   # Streamable HTTP /api/mcp JSON-RPC 2.0 + Bidirectional Privacy Shield
+│       ├── httpx/                 # Router, Slowloris timeouts, security headers & REST endpoints
+│       └── webui/                 # //go:embed SPA static handler
 ├── src/
-│   ├── components/              # Shared UI components, Sidebar, PasswordGate, NexusLogo
-│   ├── context/                 # APIContext, LocaleContext (EN/FR/zh-CN), ThemeContext
-│   ├── pages/                   # Console feature pages (including MCPGatewayPage)
-│   └── utils/                   # API client & hardware/pricing formatters
-├── website/                     # Official tri-lingual documentation portal (Astro Starlight)
-├── nginx/                       # Nginx reverse-proxy & security header configuration
-└── Dockerfile                   # Multi-stage single-container build with HEALTHCHECK
+│   ├── components/                # Shared UI components, Sidebar, PasswordGate, TotpStepUpModal
+│   ├── context/                   # APIContext, LocaleContext (EN/FR/zh-CN), ThemeContext
+│   ├── pages/                     # Console feature pages (LogsPage, NotificationCenterPage, MCPGatewayPage, etc.)
+│   └── utils/                     # API client & hardware/pricing formatters
+├── website/                       # Official tri-lingual documentation portal (Astro Starlight)
+└── Dockerfile                     # 3-stage static Go build (node:24-alpine + golang:1.27-alpine -> alpine:3.24)
 ```
 
 ### Running Locally for Development
@@ -59,11 +68,14 @@ If you discover a security vulnerability, **do not open a public issue**. Please
    npm ci
    npm run dev
    ```
-2. **Backend (Flask)**:
+2. **Backend (Go)**:
    ```bash
-   cd backend
-   pip install -r requirements.txt -r requirements-dev.txt
-   API_SECRET_KEY=dev-secret-key-at-least-12-chars PORT=19998 python app.py
+   cd server
+   API_SECRET_KEY="dev-secret-key-at-least-12-chars" \
+   DATA_ENCRYPTION_KEY="dev-encryption-key-at-least-16-chars" \
+   DATA_DIR="./dev-data" \
+   PORT="8080" \
+   go run ./cmd/ovh-nexus
    ```
 3. **Full Container Build & Verification**:
    ```bash
@@ -75,15 +87,18 @@ If you discover a security vulnerability, **do not open a public issue**. Please
 
 ## 4. Running Tests
 
-All backend changes must pass the security and MCP gateway unit test suite before submitting a pull request:
+All Go backend changes must pass static analysis and the race-enabled unit test suite before submitting a pull request:
 
 ```bash
-API_SECRET_KEY="test-master-secret" pytest backend/tests/ -v
+cd server
+go vet ./...
+go test -race ./...
 ```
 
 Frontend and documentation changes must compile cleanly without TypeScript, Vite, or Astro bundling errors:
 
 ```bash
+npx tsc --noEmit
 npm run build
 npm run build --prefix website
 ```
@@ -92,14 +107,15 @@ npm run build --prefix website
 
 ## 5. Pull Request Guidelines
 
-1. **Branching**: Create a descriptive feature or bugfix branch (e.g., `feat/webhook-channel` or `fix/catalog-timeout`). Keep branch history linear via `git rebase`.
+1. **Branching**: Create a descriptive feature or bugfix branch (e.g., `feat/discord-notifier` or `fix/catalog-timeout`). Keep branch history linear via `git rebase`.
 2. **Commit Messages**: Follow [Conventional Commits](https://www.conventionalcommits.org/):
    - `feat(scope): ...` for new features
    - `fix(scope): ...` for bug fixes
    - `docs: ...` for documentation updates
    - `chore: ...` for build, CI, or dependency maintenance
-3. **Internationalization (i18n)**: When adding user-facing strings to core navigation or shared components, update the `en`, `fr`, and `zh-CN` dictionaries in `src/context/LocaleContext.tsx`.
-4. **Theme Compatibility**: Ensure UI components remain legible in both **Light** (`Pure White`) and **Dark** (`Carbon Black`) themes using the semantic `cyber-*` Tailwind tokens.
+3. **Standardized Logging**: All backend `log/slog` messages must use concise English and one of the canonical `source` modules without exposing raw credentials.
+4. **Internationalization (i18n)**: When adding user-facing strings to core navigation, shared components, or docs, keep `en`, `fr`, and `zh-CN` synchronized in `src/context/LocaleContext.tsx` and `website/src/content/docs/`.
+5. **Theme Compatibility**: Ensure UI components remain legible in both **Light** (`Pure White`) and **Dark** (`Carbon Black`) themes using the semantic `cyber-*` Tailwind tokens.
 
 ---
 

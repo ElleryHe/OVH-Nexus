@@ -19,4 +19,4 @@ In the **VPS Monitor** page (`/vps-monitor`), switch to the **My Purchased VPS**
 In the **VPS Stock Monitor** tab, you can track availability across OVHcloud's public VPS catalog (`/order/catalog/public/vps` and datacenter availability endpoints):
 
 - Inspect which datacenters currently have stock (`available` vs `out-of-stock`) for each VPS plan code.
-- Create recurring stock subscriptions (`data/vps_subscriptions.json`) so OVH Nexus polls your selected VPS plan codes in the background and dispatches notifications via the **Notification Center** as soon as target zones restock.
+- Create recurring stock subscriptions (persisted in `/data/nexus.db` · `vps_subscriptions`) so OVH Nexus polls your selected VPS plan codes in the background and dispatches notifications via the **Notification Center** as soon as target zones restock.

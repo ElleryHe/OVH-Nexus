@@ -58,7 +58,7 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
   const [tgToken, setTgToken] = useState<string>('');
   const [hasTgToken, setHasTgToken] = useState<boolean>(false);
   const [tgChatId, setTgChatId] = useState<string>('');
-  const [iam, setIam] = useState<string>('go-ovh-ie');
+  const [iam, setIam] = useState<string>('ovh-nexus-ie');
   const [zone, setZone] = useState<string>('IE');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -75,6 +75,7 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
 
         const hasCredentials = Boolean(data?.hasAppKey && data?.hasAppSecret && data?.hasConsumerKey);
         if (data) {
+          const resolvedZone = data.zone || 'IE';
           setAppKey(data.appKey || '');
           setAppSecret(data.appSecret || '');
           setConsumerKey(data.consumerKey || '');
@@ -82,8 +83,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
           setTgToken(data.tgToken || '');
           setHasTgToken(Boolean(data.hasTgToken || data.tgToken));
           setTgChatId(data.tgChatId || '');
-          setIam(data.iam || 'go-ovh-ie');
-          setZone(data.zone || 'IE');
+          setIam(data.iam || `ovh-nexus-${resolvedZone.toLowerCase()}`);
+          setZone(resolvedZone);
         }
 
         if (hasCredentials) {
@@ -136,6 +137,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
   // Save API keys to backend
   const setAPIKeys = async (keys: APIKeysType): Promise<void> => {
     setIsLoading(true);
+    const resolvedZone = keys.zone || 'IE';
+    const resolvedIam = keys.iam || `ovh-nexus-${resolvedZone.toLowerCase()}`;
     try {
       const response = await api.post(`/settings`, {
         appKey: keys.appKey,
@@ -144,8 +147,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         endpoint: keys.endpoint || 'ovh-eu',
         tgToken: keys.tgToken || '',
         tgChatId: keys.tgChatId || '',
-        iam: keys.iam || 'go-ovh-ie',
-        zone: keys.zone || 'IE'
+        iam: resolvedIam,
+        zone: resolvedZone
       });
       
       setAppKey(keys.appKey);
@@ -157,8 +160,8 @@ export const API_Provider = ({ children }: { children: ReactNode }) => {
         setHasTgToken(true);
       }
       setTgChatId(keys.tgChatId || '');
-      setIam(keys.iam || 'go-ovh-ie');
-      setZone(keys.zone || 'IE');
+      setIam(resolvedIam);
+      setZone(resolvedZone);
       
       setIsAuthenticated(true);
       apiEvents.emitAuthChanged(true);

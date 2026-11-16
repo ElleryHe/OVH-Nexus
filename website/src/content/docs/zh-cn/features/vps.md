@@ -19,4 +19,4 @@ OVH Nexus 完整覆盖了 OVHcloud 虚拟私有服务器（VPS）的两大核心
 在 **VPS 库存监控（VPS Stock Monitor）** 标签页中，您可以免 API Key 查询 OVHcloud 公开 VPS 目录（`/order/catalog/public/vps`）在各区域数据中心的实时库存状态：
 
 - 直观查看各档位 VPS 套餐在全球各机房的当前可购状态（有货 vs 售罄）。
-- 创建 VPS 库存订阅任务（保存在 `data/vps_subscriptions.json`），后台线程将定期轮询目标型号与机房，并在补货瞬间通过**通知中心**向您的 Telegram 或邮箱推送补货提醒。
+- 创建 VPS 库存订阅任务（持久化保存在 `/data/nexus.db` · `vps_subscriptions` 表），后台协程将定期轮询目标型号与机房，并在补货瞬间通过**通知中心**向您的 Telegram 或邮箱推送补货提醒。

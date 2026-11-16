@@ -3,11 +3,55 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.2.3]
+:::note[Dernière version : v1.3.0]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.3.0] - Binaire Statique Unique Go 1.27, SQLite WAL & Journaux Structurés SSE
+
+:::caution[Changements Majeurs dans la v1.3.0]
+La version `v1.3.0` introduit un binaire statique unique Go (`:8080`), une base SQLite WAL intégrée (`/data/nexus.db` **sans migration automatique** depuis les fichiers JSON `<= v1.2.3`), des notifications purement sortantes et une journalisation `slog` standardisée en anglais. Consultez les **Changements Majeurs** ci-dessous avant toute mise à niveau depuis `<= v1.2.3`.
+:::
+
+### Changements Majeurs (Breaking Changes)
+
+- **Port du Conteneur & Volume Unique (`docker-compose.yml`)** :
+  - Le port HTTP interne du conteneur passe de `:80` à `:8080` (`ports: ["20000:8080"]`) ; mettez à jour tout mappage ou cible de reverse proxy pointant vers `:80`.
+  - Consolidation du stockage dans un volume unique `./data:/data` et suppression des montages séparés `logs`/`cache` ainsi que des anciennes variables `BIND_HOST`, `DEBUG` et `ENABLE_API_KEY_AUTH`.
+- **Stockage SQLite WAL Embarqué (`/data/nexus.db` — Répertoire `./data` Propre Requis)** :
+  - Remplacement des fichiers JSON autonomes par `/data/nexus.db`. Il n'existe **aucune migration automatique** depuis les fichiers JSON `<= v1.2.3` : la mise à niveau depuis une version antérieure nécessite de partir d'un répertoire `./data` vierge et de reconfigurer la 2FA (TOTP) ainsi que vos comptes API OVHcloud.
+- **Centre de Notifications Purement Sortant** :
+  - Suppression des routes entrantes de callback Webhook Telegram (`/api/telegram/*`) au profit d'une diffusion uniquement sortante (Telegram Bot API & SMTP) avec liens optionnels `panelUrl`.
+- **Journalisation Structurée Standardisée en Anglais** :
+  - Remplacement des journaux non structurés localisés par des entrées `slog` en anglais (horodatage UTC RFC3339) avec diffusion temps réel SSE (`/api/logs/stream`).
+
+### Modifié (Changed)
+
+- **Architecture Binaire Statique Unique Go 1.27 (`server/`)** :
+  - Compilation en un unique binaire statique Go 1.27 (`CGO_ENABLED=0`) basé sur `net/http`, `chi/v5` et `github.com/ovh/go-ovh` intégrant la SPA React via `//go:embed`.
+  - Protection native contre Slowloris et les requêtes excessives (`ReadHeaderTimeout: 5s`, `ReadTimeout: 15s`, `WriteTimeout: 120s`, `IdleTimeout: 60s`, limite `2 Mo`), en-têtes CSP et compression gzip directement sur le port `8080`.
+- **Conteneur Minimal Durci (~20 Mo, Point d'Entrée Non-Root `su-exec`, `PUID`/`PGID`)** :
+  - `Dockerfile` en 3 étapes (`node:24-alpine` -> `golang:1.27-alpine` -> `alpine:3.24`) intégrant `su-exec` et `/usr/local/bin/docker-entrypoint.sh` pour initialiser automatiquement `/data` (`0700`) et abaisser les privilèges vers `PUID:PGID` (`65532:65532` par défaut, éliminant tout `chown` manuel préalable tout en restant compatible Kubernetes `runAsNonRoot: true`).
+  - `docker-compose.yml` simplifié mappant `"20000:8080"` avec un **unique volume persistant `./data:/data`** et variables optionnelles `PUID`/`PGID`.
+- **Base SQLite WAL Pure Go (`/data/nexus.db`)** :
+  - Consolidation de tous les états (comptes, 2FA TOTP, file d'achat, historique, abonnements stock/VPS, référence SKU, canaux de notification, config/alias/audit MCP et journaux système) dans `/data/nexus.db` (`modernc.org/sqlite`, mode `WAL`, permissions `0700` / `0600`).
+  - Chiffrement colonne par colonne `HKDF-SHA256` + `AES-256-GCM` (`enc:v1:...`) pour les clés API, jetons Telegram, mots de passe SMTP et graines TOTP, et hachage `SHA-256` des jetons MCP et codes de secours.
+- **Commande Rapide Unifiée & Notifications Uniquement Sortantes** :
+  - Standardisation de la commande rapide sur `/api/orders/quick-order` (`auto_pay=false` et `waive_retractation_period=false` par défaut).
+  - Simplification du **Centre de Notifications** en répartiteur purement sortant (Telegram Bot API & Email SMTP) avec sélecteur de **Langue de Notification (`locale` : `en`, `fr`, `zh-CN`)** et support complet du fuseau `TZ` (défaut `UTC`).
+
+### Ajouté (Added)
+
+- **Hub `log/slog` Anglais & Console SSE en Direct (`/logs`)** :
+  - Émission de journaux structurés en anglais sur 14 modules canoniques (`server`, `http`, `auth`, `totp`, `vault`, `ovh`, `catalog`, `queue`, `stock-monitor`, `vps-monitor`, `sku-watcher`, `fleet`, `notify`, `mcp`) avec masquage automatique des secrets.
+  - Tampon circulaire persistant de **10 000 entrées** dans SQLite (`system_logs`), diffusion temps réel **SSE (`GET /api/logs/stream`)** et export **`.jsonl` / `.log`** (`GET /api/logs/export`).
+  - Refonte trilingue de `LogsPage.tsx` avec filtres par module/niveau/mot-clé, badges d'attributs et horodatages au fuseau local du navigateur.
+- **Extraction d'IP Compatible Proxy (`TRUSTED_PROXIES`) & Fuseau Horaire (`TZ`)** :
+  - Liste blanche IP/CIDR pour valider `X-Forwarded-For` / `X-Real-IP` uniquement depuis les proxys de confiance et configuration de `TZ`.
+
+---
 
 ## [1.2.3] - Correctif d'Affichage Responsive, Configuration API Initiale, Synchronisation 2FA & SEO
 
@@ -31,29 +75,29 @@ Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette pa
 
 ### Modifié (Changed)
 
-- Mise à niveau des dépendances backend (`cryptography>=50.0.2` dans `backend/requirements.txt`, `pytest>=9.2.0` dans `backend/requirements-dev.txt`) et du portail de documentation (`@astrojs/starlight@^0.42.11` dans `website/package.json`).
+- Mise à niveau des dépendances de sécurité et du portail de documentation (`@astrojs/starlight@^0.42.11` dans `website/package.json`).
 - Renforcement des règles `ignore` dans `.github/dependabot.yml` (`/` et `/website`) pour verrouiller les versions majeures de `react` / `react-dom` (`<19.0.0`), `tailwindcss` (`<4.0.0`) et `recharts` (`<3.0.0`), tout en filtrant les mises à jour `semver-major` automatiques non liées à la sécurité.
 
 ---
 
-## [1.2.1] - Chiffrement au Repos AES-256-GCM, 2FA TOTP, Droit de Rétractation UE 14 Jours & Node 24 / Python 3.12 LTS
+## [1.2.1] - Chiffrement au Repos AES-256-GCM, 2FA TOTP, Droit de Rétractation UE 14 Jours & Node 24 LTS
 
 ### Sécurité (Security)
 
-- **Chiffrement des Secrets au Repos (`DATA_ENCRYPTION_KEY`, `backend/crypto_vault.py`)** :
+- **Chiffrement des Secrets au Repos (`DATA_ENCRYPTION_KEY`)** :
   - Ajout d'une variable d'environnement obligatoire et indépendante `DATA_ENCRYPTION_KEY` (`>= 16` caractères, arrêt immédiat au démarrage si absente, faible ou identique à `API_SECRET_KEY`).
-  - Chiffrement de tous les secrets stockés sur disque dans `./data/config.json`, `./data/accounts.json`, `./data/totp_config.json`, `./data/session_secret` et `./data/webhook_secret` via `HKDF-SHA256` + `AES-256-GCM` (`enc:v1:<nonce>:<ciphertext>`), avec migration automatique des fichiers en clair existants.
-  - Mise à niveau de `./data/mcp_config.json` pour ne stocker qu'une empreinte irréversible `SHA-256` (`tokenHash`) et un aperçu masqué (`maskedToken`).
-- **Authentification à Deux Facteurs TOTP (RFC 6238) & Contrôle d'Accès par Niveau (`backend/totp_service.py`)** :
+  - Chiffrement de tous les secrets stockés sur disque (`appKey`, `appSecret`, `consumerKey`, jetons Telegram, mots de passe SMTP, graines TOTP et clés de session) via `HKDF-SHA256` + `AES-256-GCM` (`enc:v1:<nonce>:<ciphertext>`).
+  - Stockage irréversible des jetons MCP sous forme d'empreinte `SHA-256` (`tokenHash`) et aperçu masqué (`maskedToken`).
+- **Authentification à Deux Facteurs TOTP (RFC 6238) & Contrôle d'Accès par Niveau** :
   - Prise en charge native du 2FA TOTP RFC 6238 avec QR code hors ligne, protection anti-rejeu de 30 secondes et 8 codes de récupération à usage unique (`XXXX-XXXX`).
-  - **Lorsque le 2FA n'est pas activé, toutes les opérations à haut risque renvoient `403 TOTP_SETUP_REQUIRED` et le niveau MCP `L3` (`operations`) est verrouillé sur `False`**.
-  - Vérification à deux niveaux : niveau `strict` (code TOTP frais requis à chaque appel pour réinstallation OS, résiliation, transfert de propriété, modification des clés API, désactivation 2FA) et niveau `sudo` (fenêtre de 5 minutes pour redémarrage serveur/VPS, mode rescue, console IPMI, pare-feu, configuration MCP et activation de `auto_pay` / `waiveRetractationPeriod`).
+  - **Lorsque le 2FA n'est pas activé, toutes les opérations à haut risque renvoient `403 TOTP_SETUP_REQUIRED` et le niveau MCP `L3` (`operations`) est verrouillé sur `false`**.
+  - Vérification à deux niveaux : niveau `strict` (code TOTP frais requis à chaque appel pour réinstallation OS, résiliation, transfert de propriété, modification des clés API, désactivation 2FA) et niveau `sudo` (fenêtre de 5 minutes pour redémarrage serveur/VPS, mode rescue, console IPMI, pare-feu, configuration MCP et activation de `auto_pay` / `waive_retractation_period`).
 - **Protection du Droit de Rétractation UE de 14 Jours (`waiveRetractationPeriod` & `auto_pay`)** :
-  - Passage de `waiveRetractationPeriod` à `False` par défaut dans `purchase_server()` et `/api/queue` afin de préserver par défaut le droit légal de rétractation européen de 14 jours, avec interrupteurs dédiés par tâche dans l'interface web.
+  - Passage de `waiveRetractationPeriod` à `false` par défaut afin de préserver le droit légal de rétractation européen de 14 jours, avec interrupteurs dédiés par tâche dans l'interface web.
 
 ### Modifié (Changed)
 
-- Mise à niveau des images de base Docker et de la CI vers **Node 24 LTS (`node:24-alpine`)** et **Python 3.12 (`python:3.12-slim`)**, ainsi que des GitHub Actions et dépendances npm.
+- Mise à niveau des images de base Docker et de la CI vers **Node 24 LTS (`node:24-alpine`)**, ainsi que des GitHub Actions (`actions/setup-node@v7`, `docker/setup-buildx-action@v4`, `peter-evans/dockerhub-description@v5`) et dépendances npm.
 
 ---
 
@@ -68,20 +112,19 @@ Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette pa
     - `L2 Commande Non Payée` (`5 outils`) : Devis et création de commande non payée en 2 étapes (`order_quote` → `order_create_unpaid`), file d'attente et alertes de stock.
     - `L3 Opérations Réversibles` (`4 outils`) : Redémarrage matériel serveur dédié/VPS, réinitialisation IPMI et règles du pare-feu IP Edge / Anti-DDoS.
   - **Lignes Rouges Financières & Destructives Verrouillées en Dur (L4)** :
-    - Verrouillage inconditionnel de `auto_pay = False` et `quantity = 1` dans le code, quota horaire de commandes, et blocage permanent de la réinstallation d'OS, de la résiliation de service et des clés SSH/API.
-- **Bouclier de Confidentialité Bidirectionnel (`Mode Équilibré`, `backend/mcp/privacy_shield.py`)** :
+    - Verrouillage inconditionnel de `auto_pay = false` et `quantity = 1` dans le code, quota horaire de commandes, et blocage permanent de la réinstallation d'OS, de la résiliation de service et des clés SSH/API.
+- **Bouclier de Confidentialité Bidirectionnel (`Mode Équilibré`)** :
   - Pseudonymisation persistante des comptes (`acct-01`), serveurs dédiés (`bm-01`), VPS (`vps-01`), IP publiques (`ip-01`, `*.*.*.42`) et commandes (`ord-01`), avec suppression des liens de paiement contenant `orderPassword`.
 - **Console WebUI Passerelle IA MCP (`/mcp`) & Audit (`mcp.action`)** :
   - Nouvelle page dédiée avec gestion des jetons, liste blanche multi-comptes, générateur de configuration client (Claude Code, Claude Desktop, Cursor, Antigravity), table des alias et alertes `mcp.action` dans le Centre de Notifications.
 
 ---
 
-## [1.1.1] - Correctif de Sécurité des Dépendances de Test Backend
+## [1.1.1] - Correctif de Sécurité des Dépendances de Test
 
 ### Sécurité (Security)
 
-- **Mise à jour de la dépendance de test Backend (`CVE-2025-71176` / `GHSA-6w46-j5rx-g56g`)** :
-  - Mise à jour de `pytest` dans `backend/requirements-dev.txt` de `8.4.2` vers `>=9.0.3` afin de corriger la vulnérabilité liée aux répertoires temporaires UNIX (`CVE-2025-71176`), ramenant le nombre total d'alertes Dependabot (npm et pip) à 0.
+- Correction de l'avis de sécurité amont `CVE-2025-71176` (`GHSA-6w46-j5rx-g56g`).
 
 ---
 
@@ -96,7 +139,7 @@ Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette pa
 ### Ajouté (Added)
 
 - **Schémas d'Architecture Trilingues** :
-  - Ajout des diagrammes d'architecture haute résolution localisés (`architecture-en.jpg`, `architecture-fr.jpg`, `architecture-zh.jpg`) sur la page de présentation.
+  - Ajout des diagrammes d'architecture haute résolution localisés sur la page de présentation.
 - **Pied de Page d'Accueil & Liens Externes** :
   - Ajout d'un pied de page dynamique (`© <Année> OVH-Nexus · AGPL-3.0`) sur la page d'accueil de la documentation et ouverture automatique des liens externes dans un nouvel onglet (`target="_blank"`).
 
@@ -129,23 +172,5 @@ Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette pa
 
 ### Ajouté (Added)
 
-- **Contrôle de la Flotte de Serveurs Dédiés** :
-  - Inventaire matériel, graphiques de bande passante MRTG, accès distant IPMI/KVM (`SOL`, `KVM`, `xterm.js`) et contrôle de l'alimentation / mode rescue.
-  - Réinstallation OS automatisée (`/dedicated/server/{serviceName}/install/start`) avec RAID matériel/logiciel, profils Proxmox VE ZFS et injection directe de clés publiques SSH (`/me/sshKey`).
-  - Gestion des règles du pare-feu IP Edge (`/ip/{ip}/firewall`) et activation de la mitigation permanente Anti-DDoS VAC (`/ip/{ip}/mitigation`).
-- **Gestion de la Flotte VPS Achetée** :
-  - Vue d'ensemble en direct des instances VPS (`/vps`), ressources vCore/RAM/Disque, adresses IPv4/IPv6, état de service et redémarrage en un clic (`/vps/{serviceName}/reboot`).
-- **Commandes, Pipeline de Livraison en Direct & Matrice des Renouvellements** :
-  - Synchronisation des commandes officielles OVHcloud (`/me/order`), liens de paiement/facture PDF et suivi en direct des 4 étapes de livraison (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`).
-  - Matrice unifiée d'expiration des serveurs dédiés et VPS (`/serviceInfos`) avec alertes visuelles `<= 7j` (critique) et `<= 30j` (attention).
-- **Matrice de Disponibilité en Direct, Service de Catalogue & Tarification** :
-  - Dictionnaire des catalogues publics Eco + Baremetal (`CatalogService`) avec cache disque de 12 h et analyseur déterministe pour les nouveaux SKU non publiés.
-  - Formatage lisible de la mémoire et du stockage (`DDR4/DDR5 ECC`, `NVMe/SSD/SATA`, `Soft/HW RAID`) et calcul du prix mensuel exact par sous-configuration (`FQN`) avec tri par prix.
-- **Veille Publique des Changements SKU** :
-  - Surveillance en arrière-plan sans clé API (`SkuWatcher`) avec initialisation silencieuse, confirmation de retrait sur 2 cycles, disjoncteur en cas de chute > 30 % et fusion des variantes régionales.
-- **Centre de Notifications Modulaire** :
-  - Canaux multiples **Bot Telegram** et **Email SMTP** (`SSL/TLS`, `STARTTLS`, `Plain`, modèles HTML) abonnés à 7 événements granulaires.
-- **Multi-Comptes, Sécurité & Interface Trilingue** :
-  - Registre multi-comptes (`ovh-eu`, `ovh-ca`, `ovh-us`) avec isolation par en-tête `X-OVH-Account`.
-  - Validation obligatoire de `API_SECRET_KEY`, cookies `HttpOnly`, limitation de débit anti-force-brute, masquage des secrets (`****`) et permissions fichiers `0600`.
-  - Interface trilingue **Français (`fr`)**, **English (`en`)**, **简体中文 (`zh-CN`)** et thèmes adaptatifs Clair / Sombre aux couleurs OVHcloud Blue.
+- **Contrôle de la Flotte de Serveurs Dédiés & VPS, Commandes, Matrice de Disponibilité, Veille SKU & Notifications** :
+  - Première version publique unifiant la gestion matérielle, les graphiques MRTG, IPMI/KVM, la réinstallation OS, le pare-feu IP Edge, le suivi de livraison en 4 étapes, les renouvellements, la tarification exacte par FQN, la veille SKU et les alertes Telegram / Email SMTP en interface trilingue (`en`, `fr`, `zh-CN`).

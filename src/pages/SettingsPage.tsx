@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
-import { createPortal } from "react-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { useAPI } from "@/context/APIContext";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
@@ -9,8 +8,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/utils/apiClient";
 import QRCode from "qrcode";
 import {
-  X,
-  AlertCircle,
   ShieldCheck,
   ShieldAlert,
   KeyRound,
@@ -50,7 +47,7 @@ const SettingsPage = () => {
     endpoint: "ovh-eu",
     tgToken: "",
     tgChatId: "",
-    iam: "go-ovh-ie",
+    iam: "ovh-nexus-ie",
     zone: "IE"
   });
   const [isSaving, setIsSaving] = useState(false);
@@ -70,13 +67,7 @@ const SettingsPage = () => {
     zone: "IE"
   });
   const [isSubmittingAccount, setIsSubmittingAccount] = useState(false);
-  
-  // Telegram Webhook 相关状态
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [webhookInfo, setWebhookInfo] = useState<any>(null);
-  const [isSettingWebhook, setIsSettingWebhook] = useState(false);
-  const [isLoadingWebhookInfo, setIsLoadingWebhookInfo] = useState(false);
-  const [showErrorHistoryDialog, setShowErrorHistoryDialog] = useState(false);
+
   const [apiKeyValid, setApiKeyValid] = useState<boolean | null>(null);
   const [ovhAuthValid, setOvhAuthValid] = useState<boolean | null>(null);
   const accountFieldsHidden = true;
@@ -269,6 +260,7 @@ const SettingsPage = () => {
 
   // Load current values when component mounts
   useEffect(() => {
+    const resolvedZone = zone || "IE";
     setFormValues({
       appKey: appKey || "",
       appSecret: appSecret || "",
@@ -276,8 +268,8 @@ const SettingsPage = () => {
       endpoint: endpoint || "ovh-eu",
       tgToken: "",
       tgChatId: tgChatId || "",
-      iam: iam || "go-ovh-ie",
-      zone: zone || "IE"
+      iam: iam || `ovh-nexus-${resolvedZone.toLowerCase()}`,
+      zone: resolvedZone
     });
   }, [appKey, appSecret, consumerKey, endpoint, tgToken, tgChatId, iam, zone]);
 
@@ -286,120 +278,10 @@ const SettingsPage = () => {
     if (formValues.zone) {
       setFormValues(prev => ({
         ...prev,
-        iam: `go-ovh-${formValues.zone.toLowerCase()}`
+        iam: `ovh-nexus-${formValues.zone.toLowerCase()}`
       }));
     }
   }, [formValues.zone]);
-
-  // 加载 Webhook 信息（可选功能，失败不显示错误）
-  const loadWebhookInfo = async () => {
-    if (!hasTgToken && !tgToken) {
-      // 没有token时，不尝试加载
-      setIsLoadingWebhookInfo(false);
-      return;
-    }
-    
-    setIsLoadingWebhookInfo(true);
-    try {
-      const response = await api.get('/telegram/get-webhook-info');
-      const data = response.data;
-      if (data.success && data.webhook_info) {
-        setWebhookInfo(data.webhook_info);
-        if (data.webhook_info.url) {
-          setWebhookUrl(data.webhook_info.url.replace('/api/telegram/webhook', ''));
-        }
-      }
-    } catch (error: any) {
-      // 静默失败，webhook是可选的
-      console.log('Webhook 功能未配置或不可用（这是可选的）');
-      setWebhookInfo(null);
-    } finally {
-      setIsLoadingWebhookInfo(false);
-    }
-  };
-
-  // 自动检测 Webhook URL（使用当前页面的域名）
-  const autoDetectWebhookUrl = () => {
-    const currentUrl = window.location.origin;
-    setWebhookUrl(currentUrl);
-  };
-
-  // 设置 Webhook
-  const handleSetWebhook = async () => {
-    if (!hasTgToken && !tgToken) {
-      toast.error('请先配置 Telegram Bot Token');
-      return;
-    }
-    
-    if (!webhookUrl.trim()) {
-      toast.error('请输入 Webhook URL');
-      return;
-    }
-
-    setIsSettingWebhook(true);
-    try {
-      const response = await api.post('/telegram/set-webhook', {
-        webhook_url: webhookUrl
-      });
-      
-      const data = response.data;
-      
-      if (data.success) {
-        toast.success('Webhook 设置成功！');
-        setWebhookInfo(data.webhook_info);
-        // 重新加载信息
-        await loadWebhookInfo();
-      } else {
-        toast.error(data.error || '设置失败');
-      }
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.error || error.message || '未知错误';
-      toast.error('设置失败：' + errorMsg);
-    } finally {
-      setIsSettingWebhook(false);
-    }
-  };
-
-  // 组件加载时获取 Webhook 信息
-  useEffect(() => {
-    if (hasTgToken || tgToken) {
-      loadWebhookInfo();
-      autoDetectWebhookUrl();
-    }
-  }, [hasTgToken, tgToken]);
-
-  // 计算错误信息辅助函数
-  const getErrorInfo = () => {
-    if (!webhookInfo?.last_error_date) return null;
-    
-    const errorDate = new Date(webhookInfo.last_error_date * 1000);
-    const now = new Date();
-    const msSinceError = now.getTime() - errorDate.getTime();
-    const hoursSinceError = msSinceError / (1000 * 60 * 60);
-    const daysSinceError = msSinceError / (1000 * 60 * 60 * 24);
-    const isRecentError = hoursSinceError < 24;
-    
-    const formatRelativeTime = () => {
-      if (hoursSinceError < 1) {
-        const minutes = Math.floor(msSinceError / (1000 * 60));
-        return `${minutes}分钟前`;
-      } else if (hoursSinceError < 24) {
-        return `${Math.floor(hoursSinceError)}小时前`;
-      } else if (daysSinceError < 7) {
-        return `${Math.floor(daysSinceError)}天前`;
-      } else {
-        return errorDate.toLocaleDateString('zh-CN');
-      }
-    };
-    
-    return {
-      errorDate,
-      isRecentError,
-      formatRelativeTime,
-      hoursSinceError,
-      daysSinceError
-    };
-  };
 
   useEffect(() => {
     (async () => {
@@ -479,21 +361,6 @@ const SettingsPage = () => {
     } catch (error) {
       console.error("Error saving settings:", error);
       toast.error("保存设置失败");
-      setIsSaving(false);
-    }
-  };
-
-  const handleClearTelegram = async () => {
-    if (!window.confirm("确定要清空 Telegram Bot Token 与 Chat ID 并移除 Webhook 吗？")) {
-      return;
-    }
-    setIsSaving(true);
-    try {
-      await api.post('/settings', { clearTelegram: true });
-      toast.success("Telegram 配置已清空，页面将刷新");
-      setTimeout(() => { window.location.reload(); }, 600);
-    } catch (err) {
-      toast.error("清空 Telegram 配置失败");
       setIsSaving(false);
     }
   };
@@ -987,9 +854,9 @@ const SettingsPage = () => {
                       value={formValues.iam}
                       onChange={handleChange}
                       className="cyber-input w-full"
-                      placeholder="go-ovh-ie"
+                      placeholder="ovh-nexus-ie"
                     />
-                    <p className="text-xs text-cyber-muted mt-1">默认会根据 ZONE 设置自动生成，例如: go-ovh-ie</p>
+                    <p className="text-xs text-cyber-muted mt-1">默认会根据 ZONE 设置自动生成，例如: ovh-nexus-ie</p>
                   </div>
                 </div>
               </div>
@@ -1030,7 +897,7 @@ const SettingsPage = () => {
                   <div>
                     <h2 className="text-base font-bold text-cyber-text">通知渠道与事件规则</h2>
                     <p className="text-xs text-cyber-muted mt-1">
-                      Telegram 机器人、Webhook 按钮回调以及 SMTP 邮件通知已统一迁入独立的「通知中心」，您已有的 Telegram 配置已自动迁移。
+                      Telegram 机器人与 SMTP 邮件出站通知已统一迁入独立的「通知中心」，支持多语言告警模板与控制台链接配置。
                     </p>
                   </div>
                   <button
@@ -1106,119 +973,6 @@ const SettingsPage = () => {
 
           </div>
         </div>
-      )}
-
-      {/* 错误历史模态框 */}
-      {createPortal(
-        <AnimatePresence>
-          {showErrorHistoryDialog && webhookInfo?.last_error_date && (
-            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none">
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowErrorHistoryDialog(false)}
-                className="absolute inset-0 bg-black/70 backdrop-blur-sm pointer-events-auto"
-              />
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                onClick={(e) => e.stopPropagation()}
-                className="cyber-card max-w-2xl w-full max-h-[90vh] overflow-y-auto pointer-events-auto relative"
-              >
-                <div className="flex items-center justify-between mb-4 pb-4 border-b border-cyber-accent/20">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="w-5 h-5 text-yellow-400" />
-                    <h3 className="text-xl font-semibold text-cyber-text">
-                      {(() => {
-                        const errorInfo = getErrorInfo();
-                        return errorInfo?.isRecentError ? '最后错误' : '历史错误';
-                      })()}
-                    </h3>
-                  </div>
-                  <button
-                    onClick={() => setShowErrorHistoryDialog(false)}
-                    className="p-2 hover:bg-cyber-grid/50 rounded-lg transition-colors text-cyber-muted hover:text-cyber-text"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  {(() => {
-                    const errorInfo = getErrorInfo();
-                    if (!errorInfo) return null;
-                    
-                    const hasNoPendingUpdates = webhookInfo.pending_update_count === 0;
-                    
-                    return (
-                      <div className={`border rounded-lg p-4 transition-all ${
-                        errorInfo.isRecentError 
-                          ? 'bg-red-500/10 border-red-500/30' 
-                          : 'bg-yellow-500/10 border-yellow-500/30'
-                      }`}>
-                        <div className="flex items-start justify-between gap-2 mb-3">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`text-sm font-semibold ${
-                              errorInfo.isRecentError ? 'text-red-400' : 'text-yellow-400'
-                            }`}>
-                              {errorInfo.isRecentError ? '⚠️' : '📋'} {errorInfo.isRecentError ? '最后错误' : '历史错误'}
-                            </span>
-                          </div>
-                          <span className={`text-xs px-2 py-1 rounded ${
-                            errorInfo.isRecentError 
-                              ? 'bg-red-500/20 text-red-300' 
-                              : 'bg-yellow-500/20 text-yellow-300'
-                          }`}>
-                            {errorInfo.formatRelativeTime()}
-                          </span>
-                        </div>
-                        
-                        <div className={`text-sm font-mono mb-3 ${
-                          errorInfo.isRecentError ? 'text-red-300/80' : 'text-yellow-300/80'
-                        }`}>
-                          {errorInfo.errorDate.toLocaleString('zh-CN', {
-                            year: 'numeric',
-                            month: '2-digit',
-                            day: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit',
-                            hour12: false
-                          })}
-                        </div>
-                        
-                        {webhookInfo.last_error_message && (
-                          <div className={`text-sm leading-relaxed break-words p-3 rounded bg-black/20 mb-3 ${
-                            errorInfo.isRecentError ? 'text-red-200' : 'text-yellow-200'
-                          }`}>
-                            {webhookInfo.last_error_message}
-                          </div>
-                        )}
-                        
-                        {!errorInfo.isRecentError && hasNoPendingUpdates && (
-                          <div className="text-sm text-green-300/90 pt-3 border-t border-yellow-500/20 flex items-start gap-2">
-                            <span className="text-base">💡</span>
-                            <span>待处理更新为 0，Webhook 可能已恢复正常。如需清除此错误记录，请重新设置 Webhook。</span>
-                          </div>
-                        )}
-                        
-                        {errorInfo.isRecentError && (
-                          <div className="text-sm text-red-300/80 pt-3 border-t border-red-500/20 flex items-start gap-2">
-                            <span className="text-base">🔍</span>
-                            <span>这是最近的错误，请检查 Webhook 配置和服务器状态。</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>,
-        document.body
       )}
     </div>
   );

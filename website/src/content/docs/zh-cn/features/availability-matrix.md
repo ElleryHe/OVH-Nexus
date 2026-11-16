@@ -3,7 +3,7 @@ title: 全球实时库存矩阵与配置级价格
 description: 免 API Key 查看 OVHcloud 全球机房实时库存、消费者友好型号、可读化硬件规格与精确到子配置的月付价格。
 ---
 
-**实时库存矩阵（OVH Live Availability Matrix，`/ovh-availability`）** 直接拉取 OVHcloud 公开库存接口 `/dedicated/server/datacenter/availabilities`，并由 `CatalogService` 自动关联公开 Eco 目录（`/order/catalog/public/eco`）与 Baremetal 目录（`/order/catalog/public/baremetal`）。
+**实时库存矩阵（OVH Live Availability Matrix，`/ovh-availability`）** 直接拉取 OVHcloud 公开库存接口 `/dedicated/server/datacenter/availabilities`，并由 `internal/catalog` 自动关联公开 Eco 目录（`/order/catalog/public/eco`）与 Baremetal 目录（`/order/catalog/public/baremetal`）。
 
 :::tip[无需配置 OVH API Key]
 实时库存接口与公开价格目录均为 OVHcloud 公共接口。部署 OVH Nexus 后无需绑定任何 API 密钥即可直接使用本页面全部功能。

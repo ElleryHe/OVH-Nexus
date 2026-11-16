@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { api } from "@/utils/apiClient";
+import { useLocale } from "@/context/LocaleContext";
 import { toast } from "sonner";
 import {
   Bell,
@@ -16,7 +17,7 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
-  Webhook,
+  Languages,
   ExternalLink,
 } from "lucide-react";
 
@@ -132,7 +133,18 @@ const DEFAULT_EVENTS = [
   "mcp.action",
 ];
 
+type NotificationLocale = "en" | "fr" | "zh-CN";
+
+const normalizeNotificationLocale = (raw?: string | null): NotificationLocale => {
+  if (!raw) return "en";
+  const cleaned = raw.trim().toLowerCase();
+  if (cleaned.startsWith("fr")) return "fr";
+  if (cleaned.startsWith("zh")) return "zh-CN";
+  return "en";
+};
+
 const NotificationCenterPage = () => {
+  const { t, locale: uiLocale } = useLocale();
   const [activeTab, setActiveTab] = useState<"channels" | "rules">("channels");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -141,6 +153,7 @@ const NotificationCenterPage = () => {
 
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [panelUrl, setPanelUrl] = useState("");
+  const [notifLocale, setNotifLocale] = useState<NotificationLocale>("en");
   const [rules, setRules] = useState<NotificationRules>({
     skuEnabled: true,
     skuInterval: 600,
@@ -153,15 +166,6 @@ const NotificationCenterPage = () => {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [skuStatus, setSkuStatus] = useState<SkuWatcherStatus | null>(null);
   const [isCheckingSku, setIsCheckingSku] = useState(false);
-
-  // Telegram Webhook state
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [webhookInfo, setWebhookInfo] = useState<any>(null);
-  const [isSettingWebhook, setIsSettingWebhook] = useState(false);
-  const [isLoadingWebhook, setIsLoadingWebhook] = useState(false);
-  const [expandedWebhookChannelId, setExpandedWebhookChannelId] = useState<
-    string | null
-  >(null);
 
   const fetchState = useCallback(async () => {
     setIsLoading(true);
@@ -184,6 +188,7 @@ const NotificationCenterPage = () => {
       );
       setChannels(loadedChannels);
       setPanelUrl(data.panelUrl || "");
+      setNotifLocale(normalizeNotificationLocale(data.locale));
       if (data.rules) {
         setRules((prev) => ({ ...prev, ...data.rules }));
       }
@@ -225,6 +230,7 @@ const NotificationCenterPage = () => {
       const res = await api.put("/notifications", {
         channels: payloadChannels,
         panelUrl,
+        locale: notifLocale,
         rules,
       });
 
@@ -240,6 +246,12 @@ const NotificationCenterPage = () => {
             },
           }))
         );
+        if (typeof updated.panelUrl === "string") {
+          setPanelUrl(updated.panelUrl);
+        }
+        if (updated.locale) {
+          setNotifLocale(normalizeNotificationLocale(updated.locale));
+        }
         setHasApiKey(Boolean(updated.hasApiKey));
       }
       toast.success("通知渠道与规则已保存");
@@ -372,52 +384,6 @@ const NotificationCenterPage = () => {
     }
   };
 
-  const fetchWebhookInfo = async () => {
-    setIsLoadingWebhook(true);
-    try {
-      const res = await api.get("/telegram/get-webhook-info");
-      if (res.data?.success) {
-        setWebhookInfo(res.data.webhook_info);
-        if (res.data.webhook_info?.url) {
-          setWebhookUrl(res.data.webhook_info.url);
-        }
-      } else {
-        toast.error(res.data?.error || "获取 Webhook 状态失败");
-      }
-    } catch (err: any) {
-      toast.error(
-        "获取 Webhook 状态失败: " + (err.response?.data?.error || err.message)
-      );
-    } finally {
-      setIsLoadingWebhook(false);
-    }
-  };
-
-  const handleSetWebhook = async () => {
-    if (!webhookUrl.trim()) {
-      toast.error("请输入公网可访问的 Webhook URL");
-      return;
-    }
-    setIsSettingWebhook(true);
-    try {
-      const res = await api.post("/telegram/set-webhook", {
-        webhook_url: webhookUrl.trim(),
-      });
-      if (res.data?.success) {
-        setWebhookInfo(res.data.webhook_info);
-        toast.success("Telegram Webhook 设置成功");
-      } else {
-        toast.error(res.data?.error || "设置 Webhook 失败");
-      }
-    } catch (err: any) {
-      toast.error(
-        "设置 Webhook 失败: " + (err.response?.data?.error || err.message)
-      );
-    } finally {
-      setIsSettingWebhook(false);
-    }
-  };
-
   const toggleRange = (code: string) => {
     setRules((prev) => {
       const exists = prev.skuRanges.includes(code);
@@ -457,32 +423,65 @@ const NotificationCenterPage = () => {
         </button>
       </motion.div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-2 border-b border-cyber-grid pb-3">
-        <button
-          type="button"
-          onClick={() => setActiveTab("channels")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-            activeTab === "channels"
-              ? "bg-cyber-accent text-white shadow-sm"
-              : "bg-cyber-surface text-cyber-muted hover:text-cyber-text border border-cyber-grid"
-          }`}
+      {/* Tabs + Outbound Notification Language Selector */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-cyber-grid pb-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab("channels")}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+              activeTab === "channels"
+                ? "bg-cyber-accent text-white shadow-sm"
+                : "bg-cyber-surface text-cyber-muted hover:text-cyber-text border border-cyber-grid"
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            通知渠道 ({channels.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("rules")}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+              activeTab === "rules"
+                ? "bg-cyber-accent text-white shadow-sm"
+                : "bg-cyber-surface text-cyber-muted hover:text-cyber-text border border-cyber-grid"
+            }`}
+          >
+            <Sliders className="w-4 h-4" />
+            事件与全局规则
+          </button>
+        </div>
+
+        <div
+          className="flex items-center gap-2 bg-cyber-surface border border-cyber-grid rounded-lg px-3 py-1.5"
+          title={t("notifications.lang.desc")}
         >
-          <MessageSquare className="w-4 h-4" />
-          通知渠道 ({channels.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("rules")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-            activeTab === "rules"
-              ? "bg-cyber-accent text-white shadow-sm"
-              : "bg-cyber-surface text-cyber-muted hover:text-cyber-text border border-cyber-grid"
-          }`}
-        >
-          <Sliders className="w-4 h-4" />
-          事件与全局规则
-        </button>
+          <Languages className="w-4 h-4 text-cyber-accent shrink-0" />
+          <label
+            htmlFor="notification-locale-select"
+            className="text-xs font-medium text-cyber-muted whitespace-nowrap"
+          >
+            {t("notifications.lang.label")}:
+          </label>
+          <select
+            id="notification-locale-select"
+            value={notifLocale}
+            onChange={(e) =>
+              setNotifLocale(normalizeNotificationLocale(e.target.value))
+            }
+            className="bg-transparent text-xs font-semibold text-cyber-text focus:outline-none cursor-pointer"
+          >
+            <option value="en" className="bg-cyber-surface text-cyber-text">
+              {t("notifications.lang.option.en")}
+            </option>
+            <option value="fr" className="bg-cyber-surface text-cyber-text">
+              {t("notifications.lang.option.fr")}
+            </option>
+            <option value="zh-CN" className="bg-cyber-surface text-cyber-text">
+              {t("notifications.lang.option.zhCN")}
+            </option>
+          </select>
+        </div>
       </div>
 
       {/* API Key Notice for lifecycle events */}
@@ -707,90 +706,6 @@ const NotificationCenterPage = () => {
                               className="cyber-input w-full text-sm"
                             />
                           </div>
-                        </div>
-
-                        {/* Collapsible Telegram Webhook Config */}
-                        <div className="pt-2">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedWebhookChannelId((prev) =>
-                                prev === ch.id ? null : ch.id
-                              )
-                            }
-                            className="text-xs text-cyber-accent hover:underline flex items-center gap-1.5 font-medium"
-                          >
-                            <Webhook className="w-3.5 h-3.5" />
-                            {expandedWebhookChannelId === ch.id
-                              ? "收起 Telegram 按钮回调 Webhook 设置"
-                              : "展开 Telegram 按钮回调 Webhook 设置（用于消息内一键加入抢购队列）"}
-                          </button>
-
-                          {expandedWebhookChannelId === ch.id && (
-                            <div className="mt-3 p-4 rounded-lg border border-cyber-grid bg-cyber-bg space-y-3">
-                              <p className="text-xs text-cyber-muted">
-                                配置公网 HTTPS Webhook 后，当收到补货通知时可直接点击 Telegram 消息下方的按钮将机型加入抢购队列（先保存 Bot Token 后再操作）。
-                              </p>
-                              <div className="flex flex-col sm:flex-row gap-2">
-                                <input
-                                  type="text"
-                                  value={webhookUrl}
-                                  onChange={(e) =>
-                                    setWebhookUrl(e.target.value)
-                                  }
-                                  placeholder="https://your-domain.com/api/telegram/webhook"
-                                  className="cyber-input flex-1 text-xs sm:text-sm"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setWebhookUrl(
-                                      `${window.location.origin}/api/telegram/webhook`
-                                    )
-                                  }
-                                  className="cyber-button text-xs px-3 py-2 whitespace-nowrap"
-                                >
-                                  填入当前域名
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={handleSetWebhook}
-                                  disabled={isSettingWebhook}
-                                  className="cyber-button-primary text-xs px-3.5 py-2 rounded whitespace-nowrap"
-                                >
-                                  {isSettingWebhook
-                                    ? "设置中..."
-                                    : "设置 Webhook"}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={fetchWebhookInfo}
-                                  disabled={isLoadingWebhook}
-                                  className="cyber-button text-xs px-3 py-2 whitespace-nowrap"
-                                >
-                                  {isLoadingWebhook
-                                    ? "查询中..."
-                                    : "查询当前状态"}
-                                </button>
-                              </div>
-                              {webhookInfo && (
-                                <div className="text-xs text-cyber-muted font-mono bg-cyber-surface p-2.5 rounded border border-cyber-grid">
-                                  <div>
-                                    当前 URL: {webhookInfo.url || "未设置"}
-                                  </div>
-                                  <div>
-                                    待处理更新数:{" "}
-                                    {webhookInfo.pending_update_count ?? 0}
-                                  </div>
-                                  {webhookInfo.last_error_message && (
-                                    <div className="text-red-500">
-                                      最近错误: {webhookInfo.last_error_message}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </div>
                     ) : (
@@ -1114,7 +1029,11 @@ const NotificationCenterPage = () => {
                   <span className="font-mono text-cyber-text ml-1">
                     {skuStatus.lastCheckTime
                       ? new Date(skuStatus.lastCheckTime).toLocaleString(
-                          "zh-CN"
+                          uiLocale === "zh-CN"
+                            ? "zh-CN"
+                            : uiLocale === "fr"
+                            ? "fr-FR"
+                            : "en-US"
                         )
                       : "尚未执行"}
                   </span>
@@ -1274,10 +1193,10 @@ const NotificationCenterPage = () => {
             <div className="cyber-panel p-5 space-y-3">
               <h3 className="text-base font-bold text-cyber-text flex items-center gap-1.5">
                 <ExternalLink className="w-4 h-4 text-cyber-accent" />
-                邮件底部控制台跳转链接（可选）
+                {t("notifications.panelUrl.title")}
               </h3>
               <p className="text-xs text-cyber-muted">
-                填写后，SMTP 邮件通知底部将附带「打开 OVH Nexus 控制台」按钮（打开后仍需输入访问密钥，不附带免密下单令牌以保障安全）。
+                {t("notifications.panelUrl.desc")}
               </p>
               <div>
                 <label className="block text-xs font-medium text-cyber-muted mb-1">

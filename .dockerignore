@@ -1,28 +1,24 @@
 # Dependencies & caches
 node_modules/
-backend/venv/
-backend/__pycache__/
-**/__pycache__/
-.pytest_cache/
-.coverage
-coverage.xml
+**/node_modules/
 
-# Build artifacts
-dist/
-build/
+# Frontend & documentation build artifacts
+/dist/
+/build/
 .vite/
 .astro/
 .wrangler/
+server/ovh-nexus
+server/bin/
+server/internal/webui/dist/*
+!server/internal/webui/dist/index.html
 
 # Runtime & host-mounted volumes (never include local runtime state in image context)
 data/
 cache/
 logs/
-backend/data/
-backend/cache/*
-!backend/cache/.gitkeep
-backend/logs/*
-!backend/logs/.gitkeep
+*.db
+*.db*
 *.log
 
 # Development & IDE files
@@ -38,17 +34,16 @@ backend/logs/*
 *~
 .DS_Store
 Thumbs.db
+问题.png
 
 # Environment files
 .env
-backend/.env
 .env.*
 !.env.example
 
-# Documentation site, tests & non-runtime markdown
+# Documentation site & non-runtime markdown
 website/
 docs/
-backend/tests/
 *.md
 !README.md
 .gitignore

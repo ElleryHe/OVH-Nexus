@@ -37,10 +37,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Synchronisez vos commandes OVHcloud, récupérez les liens de paiement et suivez en direct les 4 étapes de livraison matérielle (`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`) ainsi que les échéances d'expiration de tous vos services.
   </Card>
   <Card title="Centre de Notifications Multi-Canaux" icon="telegram">
-    Configurez plusieurs **Bots Telegram** et comptes **Email SMTP** (`SSL/TLS`, `STARTTLS`, `Plain` avec modèles HTML responsives) abonnés à 7 événements granulaires (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`).
+    Configurez plusieurs **Bots Telegram** et comptes **Email SMTP** sortants (`SSL/TLS`, `STARTTLS`, `Plain` avec modèles HTML responsives) abonnés à 8 événements granulaires (`stock.available`, `stock.unavailable`, `sku.changed`, `order.success`, `order.failed`, `order.delivered`, `service.expiring`, `mcp.action`) en `en`, `fr` ou `zh-CN`.
   </Card>
-  <Card title="Architecture Auto-Hébergée Durcie" icon="padlock">
-    Image Docker tout-en-un multi-architecture (`linux/amd64` & `linux/arm64`) combinant Nginx et Python avec validation stricte de `API_SECRET_KEY`, cookies de session `HttpOnly`, limitation de débit anti-force-brute, masquage des secrets (`****`) et interface trilingue (`en` / `fr` / `zh-CN`).
+  <Card title="Architecture Binaire Unique Go Durcie" icon="padlock">
+    Image Alpine durcie multi-architecture (~20 Mo, `linux/amd64` & `linux/arm64`, non-root `65532:65532` sur `:8080`) exécutant un binaire statique unique Go 1.27 avec SPA intégrée, défense native Slowloris, SQLite WAL (`/data/nexus.db`), chiffrement `AES-256-GCM`, 2FA TOTP RFC 6238 et journaux SSE en direct.
   </Card>
 </CardGrid>
 

@@ -14,35 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  backend-tests:
-    name: Backend Pytest Suite
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: |
-            backend/requirements.txt
-            backend/requirements-dev.txt
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-
-      - name: Run Security & MCP Gateway Unit Tests
-        env:
-          API_SECRET_KEY: "ci-test-master-secret-key-at-least-12-chars"
-          DATA_ENCRYPTION_KEY: "ci-test-vault-encryption-key-at-least-16-chars"
-        run: pytest backend/tests/ -v
-
-  webui-build:
-    name: WebUI TypeScript & Vite Build
+  build-and-test:
+    name: WebUI Build & Go Backend Test Suite
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -55,11 +28,34 @@ jobs:
           cache: "npm"
           cache-dependency-path: package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install WebUI dependencies & build SPA
+        run: |
+          npm ci
+          npm run build
 
-      - name: Build production WebUI bundle
-        run: npm run build
+      - name: Embed SPA bundle into Go webui package
+        run: |
+          rm -rf server/internal/webui/dist/*
+          cp -r dist/* server/internal/webui/dist/
+
+      - name: Set up Go 1.27
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: server/go.sum
+
+      - name: Run Go vet & race-enabled unit tests
+        working-directory: server
+        env:
+          API_SECRET_KEY: "ci-test-master-secret-key-at-least-12-chars"
+          DATA_ENCRYPTION_KEY: "ci-test-vault-encryption-key-at-least-16-chars"
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Verify static Go binary build
+        working-directory: server
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/ovh-nexus ./cmd/ovh-nexus
 
   docs-build:
     name: Documentation Site Build (Astro Starlight)
