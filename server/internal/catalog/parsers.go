@@ -32,6 +32,7 @@ type PlanMeta struct {
 	BaseCode      string             `json:"baseCode"`
 	Name          string             `json:"name"`
 	Range         string             `json:"range"`
+	Generation    int                `json:"generation,omitempty"`
 	CPU           *CPUInfo           `json:"cpu,omitempty"`
 	Region        *RegionTag         `json:"region,omitempty"`
 	Price         *float64           `json:"price,omitempty"`
@@ -80,39 +81,180 @@ var regionSuffixMap = map[string]RegionTag{
 	"syd":  {Code: "SYD", ZHCN: "悉尼", EN: "Sydney", FR: "Sydney"},
 	"mum":  {Code: "MUM", ZHCN: "孟买", EN: "Mumbai", FR: "Mumbai"},
 	"ynm":  {Code: "MUM", ZHCN: "孟买", EN: "Mumbai", FR: "Mumbai"},
+	"tor":  {Code: "TOR", ZHCN: "多伦多", EN: "Toronto", FR: "Toronto"},
 	"apac": {Code: "APAC", ZHCN: "亚太", EN: "APAC", FR: "APAC"},
 }
 
-type dcInfoMeta struct {
-	Name        string
-	Region      string
-	CountryCode string
+// DatacenterInfo holds tri-lingual city, country, region, ISO country code, and flag emoji for an OVH datacenter.
+type DatacenterInfo struct {
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Region      string `json:"region"`
+	CountryCode string `json:"countryCode"`
+	Flag        string `json:"flag"`
+	CityEN      string `json:"cityEn"`
+	CityFR      string `json:"cityFr"`
+	CityZHCN    string `json:"cityZhCn"`
+	CountryEN   string `json:"countryEn"`
+	CountryFR   string `json:"countryFr"`
+	CountryZHCN string `json:"countryZhCn"`
 }
 
-var datacenterMetaMap = map[string]dcInfoMeta{
-	"gra": {Name: "Gravelines", Region: "France", CountryCode: "FR"},
-	"rbx": {Name: "Roubaix", Region: "France", CountryCode: "FR"},
-	"sbg": {Name: "Strasbourg", Region: "France", CountryCode: "FR"},
-	"par": {Name: "Paris", Region: "France", CountryCode: "FR"},
-	"fra": {Name: "Frankfurt", Region: "Germany", CountryCode: "DE"},
-	"lon": {Name: "London", Region: "United Kingdom", CountryCode: "GB"},
-	"eri": {Name: "Erith", Region: "United Kingdom", CountryCode: "GB"},
-	"waw": {Name: "Warsaw", Region: "Poland", CountryCode: "PL"},
-	"lim": {Name: "Limassol", Region: "Cyprus", CountryCode: "CY"},
-	"bhs": {Name: "Beauharnois", Region: "Canada", CountryCode: "CA"},
-	"hil": {Name: "Hillsboro", Region: "United States (West)", CountryCode: "US"},
-	"vin": {Name: "Vint Hill", Region: "United States (East)", CountryCode: "US"},
-	"sgp": {Name: "Singapore", Region: "Singapore", CountryCode: "SG"},
-	"syd": {Name: "Sydney", Region: "Australia", CountryCode: "AU"},
-	"mum": {Name: "Mumbai", Region: "India", CountryCode: "IN"},
-	"ynm": {Name: "Mumbai", Region: "India", CountryCode: "IN"},
+var datacenterMetaMap = map[string]DatacenterInfo{
+	"bhs": {
+		Code: "BHS", Name: "Beauharnois", Region: "Canada", CountryCode: "CA", Flag: "🇨🇦",
+		CityEN: "Beauharnois", CityFR: "Beauharnois", CityZHCN: "博阿努瓦",
+		CountryEN: "Canada", CountryFR: "Canada", CountryZHCN: "加拿大",
+	},
+	"tor": {
+		Code: "TOR", Name: "Toronto", Region: "Canada", CountryCode: "CA", Flag: "🇨🇦",
+		CityEN: "Toronto", CityFR: "Toronto", CityZHCN: "多伦多",
+		CountryEN: "Canada", CountryFR: "Canada", CountryZHCN: "加拿大",
+	},
+	"ca-east-tor": {
+		Code: "TOR", Name: "Toronto", Region: "Canada", CountryCode: "CA", Flag: "🇨🇦",
+		CityEN: "Toronto", CityFR: "Toronto", CityZHCN: "多伦多",
+		CountryEN: "Canada", CountryFR: "Canada", CountryZHCN: "加拿大",
+	},
+	"ca-east-tor-a": {
+		Code: "TOR", Name: "Toronto", Region: "Canada", CountryCode: "CA", Flag: "🇨🇦",
+		CityEN: "Toronto", CityFR: "Toronto", CityZHCN: "多伦多",
+		CountryEN: "Canada", CountryFR: "Canada", CountryZHCN: "加拿大",
+	},
+	"ca-east-tor-b": {
+		Code: "TOR", Name: "Toronto", Region: "Canada", CountryCode: "CA", Flag: "🇨🇦",
+		CityEN: "Toronto", CityFR: "Toronto", CityZHCN: "多伦多",
+		CountryEN: "Canada", CountryFR: "Canada", CountryZHCN: "加拿大",
+	},
+	"gra": {
+		Code: "GRA", Name: "Gravelines", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Gravelines", CityFR: "Gravelines", CityZHCN: "格拉沃利讷",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"rbx": {
+		Code: "RBX", Name: "Roubaix", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Roubaix", CityFR: "Roubaix", CityZHCN: "鲁贝",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"sbg": {
+		Code: "SBG", Name: "Strasbourg", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Strasbourg", CityFR: "Strasbourg", CityZHCN: "斯特拉斯堡",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"par": {
+		Code: "PAR", Name: "Paris", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Paris", CityFR: "Paris", CityZHCN: "巴黎",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"eu-west-par": {
+		Code: "PAR", Name: "Paris", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Paris", CityFR: "Paris", CityZHCN: "巴黎",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"mrs": {
+		Code: "MRS", Name: "Marseille", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Marseille", CityFR: "Marseille", CityZHCN: "马赛",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"eu-south-mrs": {
+		Code: "MRS", Name: "Marseille", Region: "France", CountryCode: "FR", Flag: "🇫🇷",
+		CityEN: "Marseille", CityFR: "Marseille", CityZHCN: "马赛",
+		CountryEN: "France", CountryFR: "France", CountryZHCN: "法国",
+	},
+	"fra": {
+		Code: "FRA", Name: "Frankfurt", Region: "Germany", CountryCode: "DE", Flag: "🇩🇪",
+		CityEN: "Frankfurt", CityFR: "Francfort", CityZHCN: "法兰克福",
+		CountryEN: "Germany", CountryFR: "Allemagne", CountryZHCN: "德国",
+	},
+	"lim": {
+		Code: "LIM", Name: "Limburg", Region: "Germany", CountryCode: "DE", Flag: "🇩🇪",
+		CityEN: "Limburg", CityFR: "Limbourg", CityZHCN: "林堡",
+		CountryEN: "Germany", CountryFR: "Allemagne", CountryZHCN: "德国",
+	},
+	"lon": {
+		Code: "LON", Name: "London", Region: "United Kingdom", CountryCode: "GB", Flag: "🇬🇧",
+		CityEN: "London", CityFR: "Londres", CityZHCN: "伦敦",
+		CountryEN: "UK", CountryFR: "Royaume-Uni", CountryZHCN: "英国",
+	},
+	"eri": {
+		Code: "ERI", Name: "Erith", Region: "United Kingdom", CountryCode: "GB", Flag: "🇬🇧",
+		CityEN: "Erith", CityFR: "Erith", CityZHCN: "埃里斯",
+		CountryEN: "UK", CountryFR: "Royaume-Uni", CountryZHCN: "英国",
+	},
+	"waw": {
+		Code: "WAW", Name: "Warsaw", Region: "Poland", CountryCode: "PL", Flag: "🇵🇱",
+		CityEN: "Warsaw", CityFR: "Varsovie", CityZHCN: "华沙",
+		CountryEN: "Poland", CountryFR: "Pologne", CountryZHCN: "波兰",
+	},
+	"vin": {
+		Code: "VIN", Name: "Vint Hill", Region: "United States (East)", CountryCode: "US", Flag: "🇺🇸",
+		CityEN: "Vint Hill, Virginia", CityFR: "Vint Hill, Virginie", CityZHCN: "弗吉尼亚温特山",
+		CountryEN: "USA", CountryFR: "États-Unis", CountryZHCN: "美国",
+	},
+	"hil": {
+		Code: "HIL", Name: "Hillsboro", Region: "United States (West)", CountryCode: "US", Flag: "🇺🇸",
+		CityEN: "Hillsboro, Oregon", CityFR: "Hillsboro, Oregon", CityZHCN: "俄勒冈希尔斯伯勒",
+		CountryEN: "USA", CountryFR: "États-Unis", CountryZHCN: "美国",
+	},
+	"syd": {
+		Code: "SYD", Name: "Sydney", Region: "Australia", CountryCode: "AU", Flag: "🇦🇺",
+		CityEN: "Sydney", CityFR: "Sydney", CityZHCN: "悉尼",
+		CountryEN: "Australia", CountryFR: "Australie", CountryZHCN: "澳大利亚",
+	},
+	"sgp": {
+		Code: "SGP", Name: "Singapore", Region: "Singapore", CountryCode: "SG", Flag: "🇸🇬",
+		CityEN: "Singapore", CityFR: "Singapour", CityZHCN: "新加坡",
+		CountryEN: "Singapore", CountryFR: "Singapour", CountryZHCN: "新加坡",
+	},
+	"mum": {
+		Code: "MUM", Name: "Mumbai", Region: "India", CountryCode: "IN", Flag: "🇮🇳",
+		CityEN: "Mumbai", CityFR: "Mumbai", CityZHCN: "孟买",
+		CountryEN: "India", CountryFR: "Inde", CountryZHCN: "印度",
+	},
+	"ynm": {
+		Code: "MUM", Name: "Mumbai", Region: "India", CountryCode: "IN", Flag: "🇮🇳",
+		CityEN: "Mumbai", CityFR: "Mumbai", CityZHCN: "孟买",
+		CountryEN: "India", CountryFR: "Inde", CountryZHCN: "印度",
+	},
+	"bru": {
+		Code: "BRU", Name: "Brussels", Region: "Belgium", CountryCode: "BE", Flag: "🇧🇪",
+		CityEN: "Brussels", CityFR: "Bruxelles", CityZHCN: "布鲁塞尔",
+		CountryEN: "Belgium", CountryFR: "Belgique", CountryZHCN: "比利时",
+	},
+	"mad": {
+		Code: "MAD", Name: "Madrid", Region: "Spain", CountryCode: "ES", Flag: "🇪🇸",
+		CityEN: "Madrid", CityFR: "Madrid", CityZHCN: "马德里",
+		CountryEN: "Spain", CountryFR: "Espagne", CountryZHCN: "西班牙",
+	},
+	"mil": {
+		Code: "MIL", Name: "Milan", Region: "Italy", CountryCode: "IT", Flag: "🇮🇹",
+		CityEN: "Milan", CityFR: "Milan", CityZHCN: "米兰",
+		CountryEN: "Italy", CountryFR: "Italie", CountryZHCN: "意大利",
+	},
+	"zur": {
+		Code: "ZUR", Name: "Zurich", Region: "Switzerland", CountryCode: "CH", Flag: "🇨🇭",
+		CityEN: "Zurich", CityFR: "Zurich", CityZHCN: "苏黎世",
+		CountryEN: "Switzerland", CountryFR: "Suisse", CountryZHCN: "瑞士",
+	},
+	"ams": {
+		Code: "AMS", Name: "Amsterdam", Region: "Netherlands", CountryCode: "NL", Flag: "🇳🇱",
+		CityEN: "Amsterdam", CityFR: "Amsterdam", CityZHCN: "阿姆斯特丹",
+		CountryEN: "Netherlands", CountryFR: "Pays-Bas", CountryZHCN: "荷兰",
+	},
+	"prg": {
+		Code: "PRG", Name: "Prague", Region: "Czechia", CountryCode: "CZ", Flag: "🇨🇿",
+		CityEN: "Prague", CityFR: "Prague", CityZHCN: "布拉格",
+		CountryEN: "Czechia", CountryFR: "Tchéquie", CountryZHCN: "捷克",
+	},
 }
 
 var (
-	reRegionSuffix  = regexp.MustCompile(`(?i)-(sgp|syd|mum|ynm|apac)$`)
-	reVersionSuffix = regexp.MustCompile(`(?i)-v\d+$`)
-	reTrailingVer   = regexp.MustCompile(`^(\d{2}[a-z]+\d{2})\d$`)
-	rePlanBody      = regexp.MustCompile(`^(\d{2})([a-z0-9-]+)$`)
+	reRegionSuffix   = regexp.MustCompile(`(?i)-(sgp|syd|mum|ynm|tor|apac)$`)
+	reVersionSuffix  = regexp.MustCompile(`(?i)-v\d+$`)
+	reTrailingVer    = regexp.MustCompile(`^(\d{2}[a-z]+\d{2})\d$`)
+	rePlanBody       = regexp.MustCompile(`^(\d{2})([a-z0-9-]+)$`)
+	rePlanGeneration = regexp.MustCompile(`(?i)^(\d{2})[a-z]`)
+	reParenCode      = regexp.MustCompile(`\(([a-zA-Z0-9-]+)\)\s*$`)
 	reDigitsOnly    = regexp.MustCompile(`^(\d+)([a-z]*)$`)
 	reRiseSize      = regexp.MustCompile(`^(s|m|l|xl)(\d+)$`)
 	reScaleCode     = regexp.MustCompile(`^scale(amd|intel|gpu)(\d+)$`)
@@ -154,11 +296,25 @@ var (
 	reStdFreq    = regexp.MustCompile(`-\d{4,5}$`)
 )
 
-// NormalizeDisplayDatacenter maps OVH internal API datacenter codes (e.g. ynm) to UI display codes (mum).
+// NormalizeDisplayDatacenter maps OVH internal API datacenter codes (e.g. ynm, ca-east-tor-a) to UI display codes (mum, tor).
 func NormalizeDisplayDatacenter(dc string) string {
 	low := strings.ToLower(strings.TrimSpace(dc))
-	if low == "ynm" {
+	switch {
+	case low == "ynm":
 		return "mum"
+	case low == "ca-east-tor" || strings.HasPrefix(low, "ca-east-tor-"):
+		return "tor"
+	case low == "eu-west-par" || strings.HasPrefix(low, "eu-west-par-"):
+		return "par"
+	case low == "eu-south-mrs" || strings.HasPrefix(low, "eu-south-mrs-"):
+		return "mrs"
+	case strings.HasPrefix(low, "eu-west-lz-"):
+		suffix := strings.TrimPrefix(low, "eu-west-lz-")
+		if len(suffix) >= 3 {
+			if _, ok := datacenterMetaMap[suffix[:3]]; ok {
+				return suffix[:3]
+			}
+		}
 	}
 	return low
 }
@@ -175,41 +331,169 @@ func NormalizeAPIDatacenter(dc string) string {
 	return low
 }
 
-// DatacenterMeta returns (dcName, region, countryCode) for a datacenter code.
-func DatacenterMeta(dcCode string) (string, string, string) {
-	low := strings.ToLower(strings.TrimSpace(dcCode))
-	if len(low) > 3 {
-		if m, ok := datacenterMetaMap[low[:3]]; ok {
-			return m.Name, m.Region, m.CountryCode
+// LookupDatacenterInfo resolves structured tri-lingual DatacenterInfo for a raw or normalized datacenter code.
+func LookupDatacenterInfo(dcCode string) (DatacenterInfo, bool) {
+	raw := strings.TrimSpace(dcCode)
+	if raw == "" {
+		return DatacenterInfo{}, false
+	}
+	low := strings.ToLower(raw)
+	if m, ok := datacenterMetaMap[low]; ok {
+		return m, true
+	}
+	norm := NormalizeDisplayDatacenter(low)
+	if m, ok := datacenterMetaMap[norm]; ok {
+		return m, true
+	}
+	if m := reParenCode.FindStringSubmatch(raw); len(m) == 2 {
+		inner := NormalizeDisplayDatacenter(m[1])
+		if info, ok := datacenterMetaMap[inner]; ok {
+			return info, true
 		}
 	}
-	if m, ok := datacenterMetaMap[low]; ok {
-		return m.Name, m.Region, m.CountryCode
+	if strings.Contains(norm, "-") {
+		parts := strings.Split(norm, "-")
+		for i := len(parts) - 1; i >= 0; i-- {
+			p := parts[i]
+			if len(p) >= 3 {
+				if info, ok := datacenterMetaMap[p[:3]]; ok {
+					return info, true
+				}
+			}
+		}
 	}
+	if len(norm) > 3 {
+		if info, ok := datacenterMetaMap[norm[:3]]; ok {
+			return info, true
+		}
+	}
+	return DatacenterInfo{}, false
+}
+
+// DatacenterMeta returns (dcName, region, countryCode) for a datacenter code.
+func DatacenterMeta(dcCode string) (string, string, string) {
+	if info, ok := LookupDatacenterInfo(dcCode); ok {
+		return info.Name, info.Region, info.CountryCode
+	}
+	low := strings.ToLower(strings.TrimSpace(dcCode))
 	if low == "" {
 		return "Unknown", "Unknown", ""
 	}
 	return strings.ToUpper(low), "Global", ""
 }
 
+// DatacenterFlag returns the flag emoji for a datacenter code, or empty string if unknown.
+func DatacenterFlag(dcCode string) string {
+	if info, ok := LookupDatacenterInfo(dcCode); ok {
+		return info.Flag
+	}
+	return ""
+}
+
+// FormatDatacenterLabel formats a datacenter code with localized city, country, and flag emoji
+// (e.g. "BHS（博阿努瓦，加拿大 🇨🇦）" for zh-CN, "BHS (Beauharnois, Canada 🇨🇦)" for en/fr).
+func FormatDatacenterLabel(dcCode, locale string) string {
+	raw := strings.TrimSpace(dcCode)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, ",") {
+		parts := strings.Split(raw, ",")
+		formatted := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" {
+				formatted = append(formatted, FormatDatacenterLabel(t, locale))
+			}
+		}
+		if len(formatted) > 0 {
+			return strings.Join(formatted, ", ")
+		}
+	}
+
+	info, ok := LookupDatacenterInfo(raw)
+	if !ok {
+		return strings.ToUpper(raw)
+	}
+
+	loc := strings.ToLower(strings.TrimSpace(locale))
+	isZH := strings.HasPrefix(loc, "zh")
+	isFR := strings.HasPrefix(loc, "fr")
+
+	city := info.CityEN
+	country := info.CountryEN
+	if isZH {
+		city = nonEmpty(info.CityZHCN, city)
+		country = nonEmpty(info.CountryZHCN, country)
+	} else if isFR {
+		city = nonEmpty(info.CityFR, city)
+		country = nonEmpty(info.CountryFR, country)
+	}
+
+	location := city
+	if country != "" && !strings.EqualFold(city, country) {
+		if isZH {
+			location = fmt.Sprintf("%s，%s", city, country)
+		} else {
+			location = fmt.Sprintf("%s, %s", city, country)
+		}
+	}
+	if info.Flag != "" {
+		location = fmt.Sprintf("%s %s", location, info.Flag)
+	}
+	if isZH {
+		return fmt.Sprintf("%s（%s）", info.Code, location)
+	}
+	return fmt.Sprintf("%s (%s)", info.Code, location)
+}
+
 // InferCartRegion infers the OVH cart item `region` configuration value for a datacenter.
 func InferCartRegion(apiDatacenter string) string {
 	dc := strings.ToLower(strings.TrimSpace(apiDatacenter))
-	for _, p := range []string{"gra", "rbx", "sbg", "eri", "lim", "waw", "par", "fra", "lon"} {
+	if strings.HasPrefix(dc, "bhs") || strings.HasPrefix(dc, "tor") || strings.HasPrefix(dc, "ca-east-tor") || strings.HasPrefix(dc, "ca-") {
+		return "canada"
+	}
+	for _, p := range []string{"gra", "rbx", "sbg", "eri", "lim", "waw", "par", "fra", "lon", "mrs", "bru", "mad", "mil", "zur", "ams", "prg", "eu-"} {
 		if strings.HasPrefix(dc, p) {
 			return "europe"
 		}
 	}
-	if strings.HasPrefix(dc, "bhs") {
-		return "canada"
-	}
-	if strings.HasPrefix(dc, "vin") || strings.HasPrefix(dc, "hil") {
+	if strings.HasPrefix(dc, "vin") || strings.HasPrefix(dc, "hil") || strings.HasPrefix(dc, "us-") {
 		return "usa"
 	}
-	if strings.HasPrefix(dc, "syd") || strings.HasPrefix(dc, "sgp") || strings.HasPrefix(dc, "ynm") || strings.HasPrefix(dc, "mum") {
+	if strings.HasPrefix(dc, "syd") || strings.HasPrefix(dc, "sgp") || strings.HasPrefix(dc, "ynm") || strings.HasPrefix(dc, "mum") || strings.HasPrefix(dc, "ap-") {
 		return "apac"
 	}
 	return ""
+}
+
+// InferPlanGeneration extracts the 4-digit hardware generation year (2020..2035) from a planCode prefix (e.g. "24ska01" -> 2024).
+func InferPlanGeneration(planCode string) int {
+	m := rePlanGeneration.FindStringSubmatch(strings.TrimSpace(planCode))
+	if len(m) != 2 {
+		return 0
+	}
+	yy, err := strconv.Atoi(m[1])
+	if err != nil || yy < 20 || yy > 35 {
+		return 0
+	}
+	return 2000 + yy
+}
+
+// IsNonServerAddonCode reports whether a planCode looks like a hardware addon, license, or OS option rather than a server planCode.
+func IsNonServerAddonCode(code string) bool {
+	low := strings.ToLower(strings.TrimSpace(code))
+	if low == "" || isLicenseOrOSOption(low) {
+		return true
+	}
+	for _, prefix := range []string{
+		"ram-", "softraid-", "hardraid-", "hybridsoftraid-", "noraid-",
+		"bandwidth-", "vrack-", "traffic-", "gpu-", "os-",
+	} {
+		if strings.HasPrefix(low, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ParsePlanRegion extracts the base planCode and optional regional suffix tag.
@@ -417,11 +701,12 @@ func InferPlanFromCode(planCode string) PlanMeta {
 	}
 
 	return PlanMeta{
-		PlanCode: planCode,
-		BaseCode: baseCode,
-		Name:     name,
-		Range:    productRange,
-		Region:   regionInfo,
+		PlanCode:   planCode,
+		BaseCode:   baseCode,
+		Name:       name,
+		Range:      productRange,
+		Generation: InferPlanGeneration(planCode),
+		Region:     regionInfo,
 	}
 }
 

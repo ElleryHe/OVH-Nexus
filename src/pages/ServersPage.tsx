@@ -24,10 +24,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Cpu, Database, Wifi, HardDrive, CheckSquare, Square, Settings, ArrowRightLeft, Clock, Bell, Grid, List, Euro, DollarSign, Loader2, Server, MapPin, Check } from "lucide-react";
+import { Cpu, Database, Wifi, HardDrive, CheckSquare, Square, Settings, ArrowRightLeft, Clock, Bell, Grid, List, Euro, DollarSign, Loader2, Server, MapPin, Check, Sparkles } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { apiEvents } from "@/context/APIContext";
-import { OVH_DATACENTERS, DatacenterInfo } from "@/config/ovhConstants"; // Import from new location
+import { useLocale } from "@/context/LocaleContext";
+import { DCLabel } from "@/components/DCLabel";
+import { QuickMonitorDialog } from "@/components/QuickMonitorDialog";
+import {
+  OVH_DATACENTERS,
+  DatacenterInfo,
+  formatDatacenter,
+  getDatacenterMeta,
+  normalizeDatacenterCode,
+  inferPlanGeneration,
+} from "@/config/ovhConstants";
 import { API_URL } from "@/config/constants";
 import { formatMemoryCode, formatStorageCode } from "@/utils/hardwareFormat";
 
@@ -80,11 +90,18 @@ interface ServerPlan {
   planCode: string;
   name: string;
   description?: string;
+  range?: string;
   cpu: string;
   memory: string;
   storage: string;
   bandwidth: string;
   vrackBandwidth: string;
+  monthlyPrice?: number | null;
+  currency?: string;
+  catalogSource?: string;
+  listingState?: 'listed' | 'presale' | 'delisted' | string;
+  orderable?: boolean;
+  generation?: number;
   defaultOptions: ServerOption[];
   availableOptions: ServerOption[];
   datacenters: {
@@ -93,12 +110,22 @@ interface ServerPlan {
     region: string;
     availability: string;
     countryCode: string;
+    flag?: string;
   }[];
 }
 
+const isServerPresale = (server: ServerPlan): boolean =>
+  server.listingState === 'presale' ||
+  server.catalogSource === 'presale' ||
+  server.orderable === false;
+
 const ServersPage = () => {
   const isMobile = useIsMobile();
+  const { locale, t } = useLocale();
   const [showBatchMonitorDialog, setShowBatchMonitorDialog] = useState(false);
+  const [filterPresaleOnly, setFilterPresaleOnly] = useState(false);
+  const [recentSkuMap, setRecentSkuMap] = useState<Record<string, string>>({});
+  const [quickMonitorServer, setQuickMonitorServer] = useState<ServerPlan | null>(null);
   const [pendingQueueTarget, setPendingQueueTarget] = useState<{
     server: ServerPlan;
     datacenters: string[];
@@ -157,8 +184,8 @@ const ServersPage = () => {
   
   // 数据中心区域分组
   const DATACENTER_REGIONS = {
-    '欧洲': ['gra', 'sbg', 'rbx', 'waw', 'fra', 'lon'],
-    '北美': ['bhs', 'hil', 'vin'],
+    '欧洲': ['gra', 'sbg', 'rbx', 'par', 'mrs', 'lim', 'fra', 'lon', 'eri', 'waw'],
+    '北美': ['bhs', 'tor', 'hil', 'vin'],
     '亚太': ['sgp', 'syd', 'mum'],
   };
   
@@ -309,17 +336,31 @@ const ServersPage = () => {
       const allDatacenters = OVH_DATACENTERS.map(dc => dc.code.toUpperCase());
       setDatacenters(allDatacenters);
       
-      // 初始化数据中心选择状态
+      // 初始化数据中心选择状态与初始可用性快照
       const dcSelections: Record<string, Record<string, boolean>> = {};
+      const seededAvail: Record<string, Record<string, string>> = {};
       formattedServers.forEach(server => {
         dcSelections[server.planCode] = {};
         // 对所有固定的数据中心进行初始化
         OVH_DATACENTERS.forEach(dc => {
           dcSelections[server.planCode][dc.code.toUpperCase()] = false;
         });
+        if (Array.isArray(server.datacenters) && server.datacenters.length > 0) {
+          const dcMap: Record<string, string> = {};
+          server.datacenters.forEach(d => {
+            const norm = normalizeDatacenterCode(d.datacenter);
+            if (norm && d.availability) {
+              dcMap[norm] = d.availability;
+            }
+          });
+          if (Object.keys(dcMap).length > 0) {
+            seededAvail[server.planCode] = dcMap;
+          }
+        }
       });
       
       setSelectedDatacenters(dcSelections);
+      setAvailability(prev => ({ ...seededAvail, ...prev }));
       
       // 先设置服务器数据，让useEffect来处理过滤和排序
       setServers(formattedServers);
@@ -695,11 +736,10 @@ const ServersPage = () => {
       console.log(`获取到 ${planCode} 的可用性数据 (配置: ${selectedOpts.join(', ') || '默认'}):`, response.data);
       
       // OVH API返回的数据中心代码可能与前端不一致，需要映射
-      // 例如：API返回 "ynm" (孟买)，但前端使用 "mum"
+      // 例如：API返回 "ynm" (孟买) 或 "ca-east-tor-a" (多伦多)
       const normalizedData: Record<string, string> = {};
       Object.entries(response.data).forEach(([dc, status]) => {
-        // 将ynm映射为mum（孟买的API代码是ynm，前端使用mum）
-        const normalizedDc = dc === 'ynm' ? 'mum' : dc;
+        const normalizedDc = normalizeDatacenterCode(dc) || dc;
         normalizedData[normalizedDc] = status as string;
       });
       
@@ -711,18 +751,18 @@ const ServersPage = () => {
         [planCode]: normalizedData
       }));
       
-      // 如果有可用的数据中心，自动查询第一个可用机房的价格
+      // 如果有可用的数据中心，且非预售机型，自动查询第一个可用机房的价格
       const availableDatacenters = Object.entries(normalizedData)
         .filter(([_, status]) => status && status !== 'unavailable' && status !== 'unknown')
         .map(([dc, _]) => dc);
       
-      if (availableDatacenters.length > 0 && isAuthenticated) {
+      const serverObj = servers.find(s => s.planCode === planCode);
+      if (availableDatacenters.length > 0 && isAuthenticated && serverObj && !isServerPresale(serverObj)) {
         const firstAvailableDC = availableDatacenters[0];
         const selectedOpts = selectedOptions[planCode] || [];
-        const server = servers.find(s => s.planCode === planCode);
         const finalOptions = selectedOpts.length > 0 
           ? selectedOpts 
-          : (server?.defaultOptions.map(opt => opt.value) || []);
+          : (serverObj?.defaultOptions.map(opt => opt.value) || []);
         
         // 异步获取价格，不阻塞UI
         fetchServerPrice(planCode, finalOptions, firstAvailableDC);
@@ -1276,6 +1316,13 @@ const ServersPage = () => {
       } else {
         console.log(`⚠️ 未认证，跳过加载订阅列表`);
       }
+
+      // 获取 SKU 新上架标记（仅限基线后真正上架的型号）
+      api.get('/sku/changes?limit=50').then((res) => {
+        if (res.data?.status?.recentFirstSeen) {
+          setRecentSkuMap(res.data.status.recentFirstSeen);
+        }
+      }).catch(() => {});
       
       // 直接从后端获取数据（后端已有缓存机制）
       console.log("📡 从后端API获取服务器数据");
@@ -1309,18 +1356,25 @@ const ServersPage = () => {
     };
   }, []);
 
+  const presaleServerCount = servers.filter(isServerPresale).length;
+
   // Apply filters when search term or datacenter changes
   useEffect(() => {
     console.log(`🎯 排序useEffect触发 - servers.length: ${servers.length}, ref.size: ${subscribedServersRef.current.size}`);
     
     if (servers.length === 0) {
+      setFilteredServers([]);
       console.log("⏳ 服务器列表为空，跳过过滤");
       return;
     }
     
-    console.log(`🔍 应用过滤条件 - 搜索词: "${searchTerm}", 数据中心: "${selectedDatacenter}"`);
+    console.log(`🔍 应用过滤条件 - 搜索词: "${searchTerm}", 数据中心: "${selectedDatacenter}", 仅看预售: ${filterPresaleOnly}`);
     
     let filtered = [...servers];
+
+    if (filterPresaleOnly) {
+      filtered = filtered.filter(server => isServerPresale(server));
+    }
     
     // Apply search filter
     if (searchTerm) {
@@ -1359,7 +1413,7 @@ const ServersPage = () => {
     const top3 = filtered.slice(0, 3).map(s => `${s.planCode}${currentSubscribed.has(s.planCode) ? '✓' : ''}`).join(', ');
     console.log(`✅ 过滤完成，显示 ${filtered.length} 台服务器（已订阅: ${currentSubscribed.size} 台），前3个: ${top3}`);
     setFilteredServers(filtered);
-  }, [searchTerm, selectedDatacenter, servers]); // 移除subscribedServers依赖，因为使用ref
+  }, [searchTerm, selectedDatacenter, filterPresaleOnly, servers]); // 移除subscribedServers依赖，因为使用ref
 
   // 初始化选项
   useEffect(() => {
@@ -1832,20 +1886,38 @@ const ServersPage = () => {
       {/* Filters and controls */}
       <div className="cyber-panel p-2 sm:p-3 mb-3 sm:mb-4 w-full">
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-3 w-full">
-          <div className="relative flex-1 sm:max-w-md">
-            <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyber-muted">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
+          <div className="flex flex-wrap items-center gap-2 flex-1">
+            <div className="relative flex-1 min-w-[180px] sm:max-w-md">
+              <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyber-muted">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+              </div>
+              <input
+                type="text"
+                placeholder={isMobile ? "搜索..." : "搜索服务器..."}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="cyber-input pl-8 sm:pl-9 w-full text-xs sm:text-sm py-1.5 sm:py-2"
+              />
             </div>
-            <input
-              type="text"
-              placeholder={isMobile ? "搜索..." : "搜索服务器..."}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="cyber-input pl-8 sm:pl-9 w-full text-xs sm:text-sm py-1.5 sm:py-2"
-            />
+
+            <button
+              type="button"
+              onClick={() => setFilterPresaleOnly((prev) => !prev)}
+              className={`px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                filterPresaleOnly
+                  ? 'bg-purple-500/20 text-purple-300 border-purple-500/50 shadow-sm'
+                  : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-purple-300 hover:border-purple-500/35'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>{t('presale.filterOnly')}</span>
+              <span className="px-1.5 py-0.2 rounded-full text-[11px] font-mono bg-purple-500/20 text-purple-300">
+                {presaleServerCount}
+              </span>
+            </button>
           </div>
           
           <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4 flex-wrap">
@@ -1936,7 +2008,7 @@ const ServersPage = () => {
             </Card>
           ))}
         </div>
-      ) : !isLoading && filteredServers.length === 0 && servers.length > 0 && (searchTerm || selectedDatacenter !== "all") ? (
+      ) : !isLoading && filteredServers.length === 0 && servers.length > 0 && (searchTerm || selectedDatacenter !== "all" || filterPresaleOnly) ? (
         <Card className="border-cyber-accent/30 py-10">
           <CardContent className="flex flex-col items-center justify-center">
             <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyber-muted mx-auto mb-4">
@@ -1950,6 +2022,7 @@ const ServersPage = () => {
               onClick={() => {
                 setSearchTerm("");
                 setSelectedDatacenter("all");
+                setFilterPresaleOnly(false);
               }}
               className="px-4 py-2 bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 hover:border-cyber-accent/50 rounded-md transition-all text-sm font-medium shadow-sm hover:shadow-md"
             >
@@ -1962,19 +2035,55 @@ const ServersPage = () => {
         {/* 网格视图 */}
         {viewMode === 'grid' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4 w-full">
-            {filteredServers.map((server) => (
+            {filteredServers.map((server) => {
+              const isPresale = isServerPresale(server);
+              const generation = inferPlanGeneration(server.planCode, server.generation);
+              const isRecentlyAdded = Boolean(!isPresale && recentSkuMap[server.planCode]);
+
+              return (
             <div 
               key={server.planCode}
             >
-              <Card className="border-cyber-accent/30 overflow-hidden w-full">
+              <Card className={`overflow-hidden w-full ${isPresale ? 'border-purple-500/40' : 'border-cyber-accent/30'}`}>
                 {/* Header with server code and name */}
                 <CardHeader className="px-4 sm:px-5 py-2.5 bg-cyber-grid/20 border-b border-cyber-accent/20">
-                  <div className="flex justify-between items-center gap-4 min-w-0">
-                    <CardTitle className="text-xs sm:text-sm font-semibold truncate flex-shrink-0 max-w-[40%]">{server.planCode}</CardTitle>
+                  <div className="flex justify-between items-center gap-3 min-w-0 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                      <CardTitle className="text-xs sm:text-sm font-semibold truncate">{server.planCode}</CardTitle>
+                      {isPresale && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1 whitespace-nowrap">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          {t('presale.badge')}
+                        </span>
+                      )}
+                      {generation && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 whitespace-nowrap">
+                          {t('presale.generation', { year: generation })}
+                        </span>
+                      )}
+                      {isRecentlyAdded && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 whitespace-nowrap">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          {t('sku.newListed')}
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink min-w-0">
-                      <div className="bg-cyber-accent/10 px-1 py-0.5 rounded text-[9px] border border-cyber-accent/20 text-cyber-accent truncate max-w-[120px]">
+                      <div className="bg-cyber-accent/10 px-1.5 py-0.5 rounded text-[10px] border border-cyber-accent/20 text-cyber-accent truncate max-w-[140px]">
                         {server.name}
                       </div>
+                      {isPresale ? (
+                        <span
+                          title={t('presale.notOrderableHint')}
+                          className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30 whitespace-nowrap"
+                        >
+                          {t('presale.pricingTbd')}
+                        </span>
+                      ) : typeof server.monthlyPrice === 'number' && server.monthlyPrice > 0 ? (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
+                          {server.currency === 'USD' ? '$' : '€'}{server.monthlyPrice.toFixed(2)}/mo
+                        </span>
+                      ) : null}
                       {subscribedServers.has(server.planCode) && (
                         <span className="relative flex items-center gap-1 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-md text-[9px] sm:text-[10px] font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white hover:from-cyan-400 hover:to-blue-500 hover:-translate-y-0.5 transition-all duration-200 whitespace-nowrap flex-shrink-0" title="已订阅监控">
                           <Bell size={isMobile ? 10 : 12} />
@@ -1983,7 +2092,6 @@ const ServersPage = () => {
                       )}
                     </div>
                   </div>
-                  {/* 价格通过通知形式显示，不在页面直接显示 */}
                 </CardHeader>
                 
                 <CardContent className="p-4 sm:p-5">
@@ -2069,44 +2177,55 @@ const ServersPage = () => {
                               </>
                             )}
                           </button>
-                          
-                          <button
-                            onClick={() => {
-                              const selectedDcs = getSelectedDatacentersList(server.planCode);
-                              addToMonitor(server, selectedDcs);
-                            }}
-                            disabled={!isAuthenticated}
-                            className="px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 border border-blue-500/40 hover:border-blue-500/60 rounded text-[10px] font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap flex-shrink-0"
-                            title="添加到服务器监控"
-                          >
-                            <Bell size={9} className="flex-shrink-0" />
-                            监控
-                          </button>
-                          
-                          <button
-                            onClick={() => {
-                              const selectedDcs = getSelectedDatacentersList(server.planCode);
-                              if (selectedDcs.length > 0) {
-                                addToQueue(server, selectedDcs);
-                              } else {
-                                toast.error("请至少选择一个数据中心");
-                              }
-                            }}
-                            disabled={!isAuthenticated || getSelectedDatacentersList(server.planCode).length === 0}
-                            className="relative px-2.5 py-1 bg-gradient-to-r from-cyber-primary to-cyber-primary-dark text-white border border-cyber-primary/40 rounded text-[10px] font-bold shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none flex items-center gap-1 animate-pulse-slow whitespace-nowrap flex-shrink-0"
-                            style={{ animationDuration: '2s' }}
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
-                              <circle cx="9" cy="21" r="1"></circle>
-                              <circle cx="20" cy="21" r="1"></circle>
-                              <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
-                            </svg>
-                            <span className="tracking-wide">抢购</span>
-                            <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5 pointer-events-none">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyber-accent opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyber-primary"></span>
-                            </span>
-                          </button>
+
+                          {isPresale ? (
+                            <button
+                              onClick={() => setQuickMonitorServer(server)}
+                              disabled={!isAuthenticated}
+                              className="relative px-3 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white border border-purple-400/50 rounded text-[10px] font-bold shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap flex-shrink-0"
+                              title={t('presale.notOrderableHint')}
+                            >
+                              <Bell size={10} className="flex-shrink-0" />
+                              <span>{t('quickMonitor.button')}</span>
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => setQuickMonitorServer(server)}
+                                disabled={!isAuthenticated}
+                                className="px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 border border-blue-500/40 hover:border-blue-500/60 rounded text-[10px] font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap flex-shrink-0"
+                                title={t('quickMonitor.button')}
+                              >
+                                <Bell size={9} className="flex-shrink-0" />
+                                <span>{t('quickMonitor.button')}</span>
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  const selectedDcs = getSelectedDatacentersList(server.planCode);
+                                  if (selectedDcs.length > 0) {
+                                    addToQueue(server, selectedDcs);
+                                  } else {
+                                    toast.error("请至少选择一个数据中心");
+                                  }
+                                }}
+                                disabled={!isAuthenticated || getSelectedDatacentersList(server.planCode).length === 0}
+                                className="relative px-2.5 py-1 bg-gradient-to-r from-cyber-primary to-cyber-primary-dark text-white border border-cyber-primary/40 rounded text-[10px] font-bold shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none flex items-center gap-1 animate-pulse-slow whitespace-nowrap flex-shrink-0"
+                                style={{ animationDuration: '2s' }}
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+                                  <circle cx="9" cy="21" r="1"></circle>
+                                  <circle cx="20" cy="21" r="1"></circle>
+                                  <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+                                </svg>
+                                <span className="tracking-wide">抢购</span>
+                                <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5 pointer-events-none">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyber-accent opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyber-primary"></span>
+                                </span>
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2158,6 +2277,7 @@ const ServersPage = () => {
                             <div className="grid grid-cols-2 gap-3.5 w-full">
                               {regionDatacenters.map(dc => {
                                   const dcCode = dc.code.toUpperCase();
+                                  const dcMeta = getDatacenterMeta(dc.code);
                                   const availStatus = availability[server.planCode]?.[dcCode.toLowerCase()];
                                   const isSelected = selectedDatacenters[server.planCode]?.[dcCode];
                                   
@@ -2191,11 +2311,13 @@ const ServersPage = () => {
                                       type="button"
                                       className="w-full px-3.5 pt-2.5 pb-3 rounded-lg transition-all duration-200 flex flex-col items-start min-w-0 bg-cyber-grid/50 border border-cyber-accent/30 hover:bg-cyber-accent/8 hover:border-cyber-accent/45"
                                       onClick={(e) => toggleDatacenterSelection(server.planCode, dcCode, e)}
-                                      title={`${dc.name} (${dc.region})${statusText ? ` - ${statusText}` : ''}`}
+                                      title={`${formatDatacenter(dc.code, locale, 'full')}${statusText ? ` - ${statusText}` : ''}`}
                                     >
                                       {/* 第一行：代码（左） + 可用性状态（中） + 状态点/打勾（右） */}
                                       <div className="flex items-center justify-between w-full mb-1.5 gap-2">
-                                        <span className="text-xs font-bold tracking-wide leading-none text-white transition-colors duration-200">{dcCode}</span>
+                                        <span className="text-xs font-bold tracking-wide leading-none text-white transition-colors duration-200">
+                                          <DCLabel code={dcCode} mode="compact" />
+                                        </span>
                                         <div className="flex items-center gap-2 flex-1 justify-end">
                                           {showStatusText && (
                                             <span className={`text-[10px] font-semibold leading-none ${statusTextColor} tracking-tight transition-colors duration-200`}>{statusText}</span>
@@ -2212,7 +2334,9 @@ const ServersPage = () => {
                                       
                                       {/* 第二行：国家/地区 + 城市名称（白色文字，居中显示） */}
                                       <div className="w-full min-w-0 flex-1 flex items-center">
-                                        <span className="text-[10px] leading-[1.35] break-words font-normal text-white/90 transition-colors duration-200">{dc.region} - {dc.name}</span>
+                                        <span className="text-[10px] leading-[1.35] break-words font-normal text-white/90 transition-colors duration-200">
+                                          {dcMeta.country[locale] || dc.region} - {dcMeta.city[locale] || dc.name}
+                                        </span>
                                       </div>
                                     </button>
                                   );
@@ -2249,7 +2373,7 @@ const ServersPage = () => {
                                   }}
                                   className={`px-3 py-1.5 text-[11px] rounded-md border bg-cyber-accent/10 border-cyber-accent/40 text-cyber-accent cursor-move ${draggingDc && draggingDc.planCode === server.planCode && draggingDc.dc === dc ? 'opacity-70' : ''}`}
                                 >
-                                  {dc.toUpperCase()}
+                                  <DCLabel code={dc} mode="compact" />
                                 </div>
                               ))}
                             </div>
@@ -2261,27 +2385,52 @@ const ServersPage = () => {
                 </CardContent>
               </Card>
             </div>
-          ))}
+              );
+            })}
         </div>
         )}
         
         {/* 列表视图 - 移动端不显示 */}
         {!isMobile && viewMode === 'list' && (
           <div className="space-y-4">
-            {filteredServers.map((server) => (
+            {filteredServers.map((server) => {
+              const isPresale = isServerPresale(server);
+              const generation = inferPlanGeneration(server.planCode, server.generation);
+              const isRecentlyAdded = Boolean(!isPresale && recentSkuMap[server.planCode]);
+
+              return (
               <div
                 key={server.planCode}
-                className="bg-cyber-grid/10 border border-cyber-accent/30 rounded-lg overflow-hidden w-full shadow-sm hover:shadow-md transition-shadow"
+                className={`bg-cyber-grid/10 border rounded-lg overflow-hidden w-full shadow-sm hover:shadow-md transition-shadow ${
+                  isPresale ? 'border-purple-500/40' : 'border-cyber-accent/30'
+                }`}
               >
                 <div className="p-4">
                   {/* 第一行：服务器信息和规格 */}
                   <div className="flex items-start gap-3 mb-3">
                     {/* 服务器型号 - 优化宽度和间距 */}
-                    <div className="flex-shrink-0 w-[180px]">
-                      <div className="flex items-center gap-2 mb-1">
+                    <div className="flex-shrink-0 w-[210px]">
+                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                         <div className="font-bold text-base text-cyber-accent leading-tight whitespace-nowrap truncate" title={server.planCode}>
                           {server.planCode}
                         </div>
+                        {isPresale && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            {t('presale.badge')}
+                          </span>
+                        )}
+                        {generation && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                            {t('presale.generation', { year: generation })}
+                          </span>
+                        )}
+                        {isRecentlyAdded && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            {t('sku.newListed')}
+                          </span>
+                        )}
                         {subscribedServers.has(server.planCode) && (
                           <span className="relative flex items-center justify-center w-6 h-6 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 hover:-translate-y-0.5 transition-all duration-200 flex-shrink-0" title="已订阅监控">
                             <Bell size={12} className="text-white" />
@@ -2289,9 +2438,28 @@ const ServersPage = () => {
                         )}
                       </div>
                       <div className="text-xs text-cyber-muted leading-normal line-clamp-2" title={server.name}>{server.name}</div>
-                      {/* 价格显示 - 显示第一个可用机房的价格 */}
+                      {/* 价格显示 - 显示第一个可用机房的价格或预售待定价提示 */}
                       {(() => {
-                        if (!isAuthenticated) return null;
+                        if (isPresale) {
+                          return (
+                            <div
+                              title={t('presale.notOrderableHint')}
+                              className="mt-1.5 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30"
+                            >
+                              {t('presale.pricingTbd')}
+                            </div>
+                          );
+                        }
+                        if (!isAuthenticated) {
+                          if (typeof server.monthlyPrice === 'number' && server.monthlyPrice > 0) {
+                            return (
+                              <div className="mt-1.5 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-500/20 text-green-400 border border-green-500/30">
+                                {server.currency === 'USD' ? '$' : '€'}{server.monthlyPrice.toFixed(2)} /月
+                              </div>
+                            );
+                          }
+                          return null;
+                        }
                         
                         // 获取第一个可用机房的价格
                         const availabilityData = availability[server.planCode];
@@ -2318,7 +2486,16 @@ const ServersPage = () => {
                           }
                         }
                         
-                        if (!priceInfo) return null;
+                        if (!priceInfo) {
+                          if (typeof server.monthlyPrice === 'number' && server.monthlyPrice > 0) {
+                            return (
+                              <div className="mt-1.5 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-500/20 text-green-400 border border-green-500/30">
+                                {server.currency === 'USD' ? '$' : '€'}{server.monthlyPrice.toFixed(2)} /月
+                              </div>
+                            );
+                          }
+                          return null;
+                        }
                         
                         if (priceInfo.loading) {
                           return (
@@ -2476,42 +2653,54 @@ const ServersPage = () => {
                         >
                           检查
                         </button>
-                        <button
-                          onClick={() => {
-                            const selectedDcs = getSelectedDatacentersList(server.planCode);
-                            addToMonitor(server, selectedDcs);
-                          }}
-                          disabled={!isAuthenticated}
-                          className="px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 border border-blue-500/40 rounded text-xs font-medium disabled:opacity-50 transition-all"
-                          title="添加到监控"
-                        >
-                          <Bell size={14} />
-                        </button>
-                        <button
-                          onClick={() => {
-                            const selectedDcs = getSelectedDatacentersList(server.planCode);
-                            if (selectedDcs.length > 0) {
-                              addToQueue(server, selectedDcs);
-                            } else {
-                              toast.error("请至少选择一个数据中心");
-                            }
-                          }}
-                          disabled={!isAuthenticated || getSelectedDatacentersList(server.planCode).length === 0}
-                          className={`px-4 py-1.5 rounded text-xs font-bold shadow-sm transition-all border ${
-                            !isAuthenticated || getSelectedDatacentersList(server.planCode).length === 0
-                              ? 'bg-gradient-to-r from-slate-600 to-slate-700 text-slate-300 border-slate-500/50 cursor-not-allowed'
-                              : 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white border-blue-400/50 hover:border-blue-300'
-                          }`}
-                          title={
-                            !isAuthenticated 
-                              ? "请先配置API设置" 
-                              : getSelectedDatacentersList(server.planCode).length === 0 
-                                ? "请先选择数据中心" 
-                                : "一键抢购"
-                          }
-                        >
-                          🛒 抢购
-                        </button>
+                        {isPresale ? (
+                          <button
+                            onClick={() => setQuickMonitorServer(server)}
+                            disabled={!isAuthenticated}
+                            className="px-4 py-1.5 rounded text-xs font-bold shadow-sm transition-all border bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white border-purple-400/50 disabled:opacity-50 flex items-center gap-1.5"
+                            title={t('presale.notOrderableHint')}
+                          >
+                            <Bell size={13} />
+                            <span>{t('quickMonitor.button')}</span>
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => setQuickMonitorServer(server)}
+                              disabled={!isAuthenticated}
+                              className="px-3 py-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 border border-blue-500/40 rounded text-xs font-medium disabled:opacity-50 transition-all flex items-center gap-1"
+                              title={t('quickMonitor.button')}
+                            >
+                              <Bell size={13} />
+                              <span>{t('quickMonitor.button')}</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                const selectedDcs = getSelectedDatacentersList(server.planCode);
+                                if (selectedDcs.length > 0) {
+                                  addToQueue(server, selectedDcs);
+                                } else {
+                                  toast.error("请至少选择一个数据中心");
+                                }
+                              }}
+                              disabled={!isAuthenticated || getSelectedDatacentersList(server.planCode).length === 0}
+                              className={`px-4 py-1.5 rounded text-xs font-bold shadow-sm transition-all border ${
+                                !isAuthenticated || getSelectedDatacentersList(server.planCode).length === 0
+                                  ? 'bg-gradient-to-r from-slate-600 to-slate-700 text-slate-300 border-slate-500/50 cursor-not-allowed'
+                                  : 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white border-blue-400/50 hover:border-blue-300'
+                              }`}
+                              title={
+                                !isAuthenticated 
+                                  ? "请先配置API设置" 
+                                  : getSelectedDatacentersList(server.planCode).length === 0 
+                                    ? "请先选择数据中心" 
+                                    : "一键抢购"
+                              }
+                            >
+                              🛒 抢购
+                            </button>
+                          </>
+                        )}
                         
                         {/* 数据中心控制按钮 - 统一样式 */}
                         <div className="ml-2 pl-2 border-l border-cyber-accent/20 flex items-center gap-1.5">
@@ -2561,9 +2750,11 @@ const ServersPage = () => {
                                       ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent'
                                       : 'bg-slate-800/60 border-slate-700 hover:bg-slate-700/60 text-slate-300 hover:border-slate-600'
                                   } border font-medium`}
-                                  title={`${dc.name} (${dc.region})`}
+                                  title={formatDatacenter(dc.code, locale, 'full')}
                                 >
-                                  <span className="font-semibold">{dcCode}</span>
+                                  <span className="font-semibold">
+                                    <DCLabel code={dcCode} mode="compact" />
+                                  </span>
                                   {availStatus !== "unknown" && (
                                     <span className={`text-xs font-semibold ml-1.5 ${
                                       availStatus === "unavailable" ? 'text-red-400' : 'text-green-400'
@@ -2609,7 +2800,7 @@ const ServersPage = () => {
                                 }}
                                 className={`px-3 py-1.5 text-[11px] rounded-md border bg-cyber-accent/10 border-cyber-accent/40 text-cyber-accent cursor-move ${draggingDc && draggingDc.planCode === server.planCode && draggingDc.dc === dc ? 'opacity-70' : ''}`}
                               >
-                                {dc.toUpperCase()}
+                                <DCLabel code={dc} mode="compact" />
                               </div>
                             ))}
                           </div>
@@ -2619,11 +2810,29 @@ const ServersPage = () => {
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
         </>
       ) : null}
+
+      <QuickMonitorDialog
+        open={Boolean(quickMonitorServer)}
+        onOpenChange={(open) => {
+          if (!open) setQuickMonitorServer(null);
+        }}
+        planCode={quickMonitorServer?.planCode || ''}
+        serverName={quickMonitorServer?.name}
+        isPresale={quickMonitorServer ? isServerPresale(quickMonitorServer) : false}
+        initialDatacenters={quickMonitorServer?.datacenters}
+        onSuccess={(planCode) => {
+          const nextSet = new Set([...subscribedServersRef.current, planCode]);
+          subscribedServersRef.current = nextSet;
+          setSubscribedServers(nextSet);
+          setServers((prev) => [...prev]);
+        }}
+      />
 
       {/* 抢购任务支付与欧盟 14 天撤回权策略确认弹窗 */}
       <AlertDialog
@@ -2639,13 +2848,14 @@ const ServersPage = () => {
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3 pt-2 text-xs text-cyber-muted">
-                <div>
-                  已选机房优先级：
-                  <span className="ml-1 font-mono text-cyber-accent">
-                    {pendingQueueTarget?.datacenters
-                      .map((d) => d.toUpperCase())
-                      .join(" > ")}
-                  </span>
+                <div className="flex flex-wrap items-center gap-1">
+                  <span>已选机房优先级：</span>
+                  {pendingQueueTarget?.datacenters.map((d, idx) => (
+                    <span key={d} className="inline-flex items-center gap-1 font-mono text-cyber-accent">
+                      {idx > 0 && <span>&gt;</span>}
+                      <DCLabel code={d} mode="compact" />
+                    </span>
+                  ))}
                 </div>
 
                 <div className="space-y-2.5 pt-1">

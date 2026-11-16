@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAPI } from "@/context/APIContext";
 import { api } from "@/utils/apiClient";
 import { toast } from "sonner";
-import { XIcon, RefreshCwIcon, PlusIcon, SearchIcon, PlayIcon, PauseIcon, Trash2Icon, ArrowUpDownIcon, HeartIcon, Settings, Cpu, Database, HardDrive, Wifi, ArrowRightLeft, CheckSquare, Check, ShoppingCart } from 'lucide-react';
+import { XIcon, RefreshCwIcon, PlusIcon, SearchIcon, PlayIcon, PauseIcon, Trash2Icon, ArrowUpDownIcon, HeartIcon, Settings, Cpu, Database, HardDrive, Wifi, ArrowRightLeft, CheckSquare, Check, ShoppingCart, Bell, Bot, Filter, ExternalLink } from 'lucide-react';
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLocale } from "@/context/LocaleContext";
+import { DCLabel } from "@/components/DCLabel";
 import {
   useCatalogDictionary,
   resolvePlanDisplay,
@@ -19,7 +21,13 @@ import {
   QUEUE_POLLING_INTERVAL,
   formatInterval
 } from "@/config/constants";
-import { OVH_DATACENTERS, DatacenterInfo } from "@/config/ovhConstants";
+import {
+  OVH_DATACENTERS,
+  DatacenterInfo,
+  formatDatacenter,
+  getDatacenterMeta,
+  normalizeDatacenterCode,
+} from "@/config/ovhConstants";
 
 interface QueueItem {
   id: string;
@@ -39,6 +47,8 @@ interface QueueItem {
   nextAttemptAt?: number;
   auto_pay?: boolean;
   waive_retractation_period?: boolean;
+  source?: "manual" | "stock-monitor" | "mcp" | string;
+  sourceRef?: string;
 }
 
 interface ServerOption {
@@ -65,14 +75,17 @@ interface ServerPlan {
 }
 
 const DATACENTER_REGIONS: Record<string, string[]> = {
-  '欧洲': ['gra', 'sbg', 'rbx', 'waw', 'fra', 'lon'],
-  '北美': ['bhs', 'hil', 'vin'],
+  '欧洲': ['gra', 'sbg', 'rbx', 'par', 'mrs', 'lim', 'fra', 'lon', 'eri', 'waw'],
+  '北美': ['bhs', 'tor', 'hil', 'vin'],
   '亚太': ['sgp', 'syd', 'mum'],
 };
 
 const QueuePage = () => {
   const isMobile = useIsMobile();
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const filterPlanCode = (searchParams.get('planCode') || '').trim();
   const catalogDict = useCatalogDictionary();
   const { isAuthenticated, accounts } = useAPI();
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
@@ -319,8 +332,7 @@ const QueuePage = () => {
       setSelectedServer(server || null);
       if (server && Array.isArray(server.datacenters)) {
         const dcList = server.datacenters
-          .map(d => d.datacenter?.toLowerCase())
-          .map(d => (d === 'ynm' ? 'mum' : d))
+          .map(d => normalizeDatacenterCode(d.datacenter))
           .filter(Boolean) as string[];
         const validDcs = OVH_DATACENTERS.map(dc => dc.code);
         const filtered = dcList.filter(dc => validDcs.includes(dc));
@@ -644,8 +656,7 @@ const QueuePage = () => {
                         }
                       }
                       const dcList = (server.datacenters || [])
-                        .map(d => d.datacenter?.toLowerCase())
-                        .map(d => (d === 'ynm' ? 'mum' : d))
+                        .map(d => normalizeDatacenterCode(d.datacenter))
                         .filter(Boolean);
                       const validDcs = OVH_DATACENTERS.map(dc => dc.code);
                       const filtered = dcList.filter(dc => validDcs.includes(dc));
@@ -748,6 +759,7 @@ const QueuePage = () => {
                           <div className="grid grid-cols-2 gap-3 w-full">
                             {list.map(code => {
                               const dcObj = OVH_DATACENTERS.find(d => d.code === code);
+                              const dcMeta = getDatacenterMeta(code);
                               const isSelected = selectedDatacenters.includes(code);
                               const dcCodeUpper = code.toUpperCase();
                               return (
@@ -756,13 +768,15 @@ const QueuePage = () => {
                                   type="button"
                                   className={`w-full px-2.5 py-2 rounded-md transition-all duration-200 flex flex-col items-start min-w-0 ${isSelected ? 'bg-cyber-accent/15 border border-cyber-accent/30' : 'bg-cyber-grid/30 border border-cyber-accent/25 hover:bg-cyber-accent/8 hover:border-cyber-accent/40'}`}
                                   onClick={() => handleDatacenterChange(code)}
-                                  title={`${dcObj?.name || dcCodeUpper}`}
+                                  title={formatDatacenter(code, locale, 'full')}
                                 >
                                   <div className="flex items-center justify-between w-full mb-1.5 gap-2">
-                                    <span className="text-[11px] font-bold tracking-wide leading-none text-white transition-colors duration-200">{dcCodeUpper}</span>
+                                    <span className="text-[11px] font-bold tracking-wide leading-none text-white transition-colors duration-200">
+                                      <DCLabel code={dcCodeUpper} mode="compact" />
+                                    </span>
                                     <div className="w-4 h-4 flex items-center justify-center flex-shrink-0">{isSelected ? (<Check className="w-4 h-4 text-green-400" strokeWidth={3} />) : (<span className={`w-[6px] h-[6px] rounded-full bg-yellow-400 transition-all duration-200`}></span>)}</div>
                                   </div>
-                                  <div className="w-full min-w-0 flex-1 flex items-center"><span className="text-[10px] leading-[1.35] break-words font-normal text-white/90 transition-colors duration-200">{dcObj?.region} - {dcObj?.name}</span></div>
+                                  <div className="w-full min-w-0 flex-1 flex items-center"><span className="text-[10px] leading-[1.35] break-words font-normal text-white/90 transition-colors duration-200">{dcMeta.country[locale] || dcObj?.region} - {dcMeta.city[locale] || dcObj?.name}</span></div>
                                 </button>
                               );
                             })}
@@ -778,7 +792,9 @@ const QueuePage = () => {
                     <div className="text-xs font-medium text-cyber-secondary mb-2">拖动标签以设置优先级（越靠前优先级越高）</div>
                     <div className="flex flex-wrap gap-2">
                       {selectedDatacenters.map((dc) => (
-                        <div key={dc} draggable onDragStart={() => setDraggingDc(dc)} onDragEnd={() => setDraggingDc(null)} onDragOver={(e) => { e.preventDefault(); if (!draggingDc || draggingDc === dc) return; setSelectedDatacenters(prev => { const from = prev.indexOf(draggingDc); const to = prev.indexOf(dc); if (from === -1 || to === -1) return prev; const next = [...prev]; next.splice(from, 1); next.splice(to, 0, draggingDc); return next; }); }} className={`px-3 py-1.5 text-xs rounded-md border-2 bg-cyber-accent/10 border-cyber-accent/40 text-cyber-accent cursor-move shadow-sm ${draggingDc === dc ? 'opacity-70' : ''}`} title="拖动以调整优先级">{dc.toUpperCase()}</div>
+                        <div key={dc} draggable onDragStart={() => setDraggingDc(dc)} onDragEnd={() => setDraggingDc(null)} onDragOver={(e) => { e.preventDefault(); if (!draggingDc || draggingDc === dc) return; setSelectedDatacenters(prev => { const from = prev.indexOf(draggingDc); const to = prev.indexOf(dc); if (from === -1 || to === -1) return prev; const next = [...prev]; next.splice(from, 1); next.splice(to, 0, draggingDc); return next; }); }} className={`px-3 py-1.5 text-xs rounded-md border-2 bg-cyber-accent/10 border-cyber-accent/40 text-cyber-accent cursor-move shadow-sm ${draggingDc === dc ? 'opacity-70' : ''}`} title="拖动以调整优先级">
+                          <DCLabel code={dc} mode="compact" />
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -944,6 +960,25 @@ const QueuePage = () => {
 
       {/* Queue List */}
       <div>
+        {filterPlanCode && (
+          <div className="mb-3 px-3 py-2 rounded-md border border-cyber-accent/40 bg-cyber-accent/10 flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-cyber-accent font-medium">
+              <Filter size={14} />
+              <span>{t('queue.filterPlanCodeBanner', { planCode: filterPlanCode })}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                searchParams.delete('planCode');
+                setSearchParams(searchParams);
+              }}
+              className="px-2 py-0.5 rounded bg-cyber-surface border border-cyber-grid text-cyber-text hover:border-cyber-accent/50 transition-colors"
+            >
+              {t('queue.clearFilter')}
+            </button>
+          </div>
+        )}
+
         {/* 只在首次加载时显示加载状态，刷新时保留列表 */}
         {isLoading && queueItems.length === 0 ? (
           <div className="cyber-card">
@@ -953,11 +988,23 @@ const QueuePage = () => {
           </div>
         ) : (
           <div className="space-y-3">
-            {queueItems.map(item => (
+            {(filterPlanCode
+              ? queueItems.filter(
+                  (it) => it.planCode.toLowerCase() === filterPlanCode.toLowerCase()
+                )
+              : queueItems
+            ).map(item => {
+              const isHighlighted =
+                editingItemId === item.id ||
+                Boolean(
+                  filterPlanCode &&
+                    item.planCode.toLowerCase() === filterPlanCode.toLowerCase()
+                );
+              return (
               <div 
                 key={item.id}
                 id={`queue-item-${item.id}`}
-                className={`relative bg-cyber-surface p-4 rounded-lg shadow-md border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 ${editingItemId === item.id ? 'border-cyber-accent/60 ring-2 ring-cyber-accent/30 bg-cyber-accent/5 shadow-[0_0_16px_rgba(56,189,248,0.25)]' : 'border-cyber-border'}`}
+                className={`relative bg-cyber-surface p-4 rounded-lg shadow-md border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 ${isHighlighted ? 'border-cyber-accent/60 ring-2 ring-cyber-accent/30 bg-cyber-accent/5 shadow-[0_0_16px_rgba(56,189,248,0.25)]' : 'border-cyber-border'}`}
               >
                 {editingItemId === item.id && (
                   <span className="pointer-events-none absolute inset-0 rounded-lg animate-pulse bg-cyber-accent/5"></span>
@@ -989,19 +1036,44 @@ const QueuePage = () => {
                         </>
                       );
                     })()}
+                    {item.source === "stock-monitor" && (
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/monitor?planCode=${encodeURIComponent(item.planCode)}`)}
+                        className="px-2 py-0.5 text-[10px] font-semibold rounded-md bg-indigo-500/15 text-indigo-300 border border-indigo-500/35 hover:bg-indigo-500/25 transition-colors inline-flex items-center gap-1"
+                        title={t('quickMonitor.viewInMonitor')}
+                      >
+                        <Bell size={11} />
+                        <span>{t('queue.sourceStockMonitor')}</span>
+                        <ExternalLink size={10} />
+                      </button>
+                    )}
+                    {item.source === "mcp" && (
+                      <span className="px-2 py-0.5 text-[10px] font-semibold rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 inline-flex items-center gap-1">
+                        <Bot size={11} />
+                        <span>{t('queue.sourceMcp')}</span>
+                      </span>
+                    )}
                     {(() => {
                       const list = Array.isArray(item.datacenters) && item.datacenters.length > 0 ? item.datacenters : (item.datacenter ? [item.datacenter] : []);
                       if (list.length > 1) {
                         return (
-                          <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
-                            机房优先级：{list.map(dc => dc.toUpperCase()).join(' > ')}
+                          <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30 inline-flex items-center gap-1 flex-wrap">
+                            <span>机房优先级：</span>
+                            {list.map((dc, idx) => (
+                              <span key={dc} className="inline-flex items-center gap-0.5">
+                                {idx > 0 && <span className="mx-0.5">&gt;</span>}
+                                <DCLabel code={dc} mode="compact" />
+                              </span>
+                            ))}
                           </span>
                         );
                       }
                       if (list.length === 1) {
                         return (
-                          <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
-                            机房：{list[0].toUpperCase()}
+                          <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30 inline-flex items-center gap-1">
+                            <span>机房：</span>
+                            <DCLabel code={list[0]} mode="compact" />
                           </span>
                         );
                       }
@@ -1103,7 +1175,8 @@ const QueuePage = () => {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

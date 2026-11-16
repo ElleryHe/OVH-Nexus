@@ -103,20 +103,76 @@ func (m *mockOVHClient) DeleteWithContext(_ context.Context, path string, resTyp
 	return m.call(http.MethodDelete, path, nil, resType)
 }
 
-type mockCatalog struct{}
+type mockCatalog struct {
+	mu      sync.Mutex
+	entries []CatalogEntry
+}
 
-func (m *mockCatalog) QueryAvailability(_ context.Context, planFilter, dcFilter string, onlyAvailable bool, limit int) ([]CatalogEntry, int, error) {
-	entries := []CatalogEntry{
-		{
-			PlanCode:               "24ska01",
-			ModelName:              "KS-A (Kimsufi)",
-			Range:                  "kimsufi",
-			CPU:                    "Intel Xeon E3-1245v2",
-			AvailableDatacenters:   []string{"gra", "rbx"},
-			MatchingConfigurations: 2,
-		},
+func (m *mockCatalog) QueryAvailability(_ context.Context, planFilter, dcFilter string, onlyAvailable, presaleOnly bool, offset, limit int) ([]CatalogEntry, int, error) {
+	m.mu.Lock()
+	base := m.entries
+	m.mu.Unlock()
+	if len(base) == 0 {
+		base = []CatalogEntry{
+			{
+				PlanCode:               "24ska01",
+				ModelName:              "KS-A (Kimsufi)",
+				Range:                  "kimsufi",
+				CPU:                    "Intel Xeon E3-1245v2",
+				ListingState:           "listed",
+				Orderable:              true,
+				Generation:             2024,
+				AvailableDatacenters:   []string{"gra", "rbx"},
+				MatchingConfigurations: 2,
+			},
+		}
 	}
-	return entries, len(entries), nil
+
+	planLow := strings.ToLower(strings.TrimSpace(planFilter))
+	dcLow := strings.ToLower(strings.TrimSpace(dcFilter))
+
+	var matched []CatalogEntry
+	for _, e := range base {
+		state := e.ListingState
+		if state == "" {
+			state = "listed"
+		}
+		if presaleOnly && state != "presale" {
+			continue
+		}
+		if planLow != "" && !strings.Contains(strings.ToLower(e.PlanCode), planLow) && !strings.Contains(strings.ToLower(e.ModelName), planLow) {
+			continue
+		}
+		if dcLow != "" {
+			hasDC := false
+			for _, dc := range e.AvailableDatacenters {
+				if strings.Contains(strings.ToLower(dc), dcLow) {
+					hasDC = true
+					break
+				}
+			}
+			if !hasDC {
+				continue
+			}
+		}
+		if onlyAvailable && len(e.AvailableDatacenters) == 0 {
+			continue
+		}
+		matched = append(matched, e)
+	}
+
+	total := len(matched)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	if limit < 1 {
+		limit = 50
+	}
+	end := min(offset+limit, total)
+	return matched[offset:end], total, nil
 }
 
 func (m *mockCatalog) ResolveModelName(_ context.Context, planCode string) (string, error) {
@@ -230,6 +286,7 @@ type mcpTestEnv struct {
 	svc      *Service
 	router   chi.Router
 	clients  map[string]*mockOVHClient
+	catalog  *mockCatalog
 	proc     *mockProcurement
 	monitor  *mockMonitor
 	notifier *mockNotifier
@@ -275,6 +332,7 @@ func setupMCPTest(t *testing.T) *mcpTestEnv {
 		t.Fatalf("auth.NewService: %v", err)
 	}
 
+	cat := &mockCatalog{}
 	proc := &mockProcurement{}
 	mon := &mockMonitor{}
 	notifier := &mockNotifier{ch: make(chan MCPActionEvent, 32)}
@@ -284,7 +342,7 @@ func setupMCPTest(t *testing.T) *mcpTestEnv {
 		OVHPool:     ovhPool,
 		Auth:        authSvc,
 		Log:         logHub,
-		Catalog:     &mockCatalog{},
+		Catalog:     cat,
 		Procurement: proc,
 		Monitor:     mon,
 		Notifier:    notifier,
@@ -302,6 +360,7 @@ func setupMCPTest(t *testing.T) *mcpTestEnv {
 		logBuf:   logBuf,
 		svc:      svc,
 		clients:  make(map[string]*mockOVHClient),
+		catalog:  cat,
 		proc:     proc,
 		monitor:  mon,
 		notifier: notifier,
@@ -642,7 +701,7 @@ func TestMCPStreamableHTTPProtocolAndAudit(t *testing.T) {
 		t.Fatalf("expected negotiated protocolVersion 2024-11-05, got %v", initRes["protocolVersion"])
 	}
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.0" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.1" {
 		t.Fatalf("unexpected serverInfo: %+v", srvInfo)
 	}
 
@@ -1188,5 +1247,157 @@ func TestMCPProcurementRedlinesL2L3AndL4Blocking(t *testing.T) {
 		if !isErr || !strings.Contains(msg, "permanently blocked") {
 			t.Fatalf("L4 blocked tool %s should return policy denial, got isErr=%v msg=%q", blockedTool, isErr, msg)
 		}
+	}
+}
+
+func TestMCPCatalogAvailabilityPaginationPresaleAndProcurementSource(t *testing.T) {
+	env := setupMCPTest(t)
+	ctx := context.Background()
+
+	if _, err := env.store.UpsertAccount(ctx, store.OVHAccount{
+		ID:          "acc-v131",
+		Alias:       "Main Account",
+		Endpoint:    "ovh-eu",
+		Zone:        "IE",
+		AppKey:      "ak_131",
+		AppSecret:   "as_131",
+		ConsumerKey: "ck_131",
+		IsDefault:   true,
+	}); err != nil {
+		t.Fatalf("UpsertAccount: %v", err)
+	}
+
+	rec := doHTTP(t, env.router, http.MethodPut, "/api/mcp/settings", map[string]any{
+		"enabled": true,
+		"scopes":  map[string]any{"read": true},
+	}, nil)
+	token := decodeJSONMap(t, rec)["data"].(map[string]any)["revealedToken"].(string)
+
+	// 1. Verify catalog_availability inputSchema has offset and presale_only
+	_, listRPC := mcpCall(t, env, token, 1, "tools/list", nil)
+	tools := listRPC["result"].(map[string]any)["tools"].([]any)
+	var availSchema map[string]any
+	for _, rawTool := range tools {
+		tm := rawTool.(map[string]any)
+		if tm["name"] == "catalog_availability" {
+			availSchema = tm["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			break
+		}
+	}
+	if availSchema == nil || availSchema["offset"] == nil || availSchema["presale_only"] == nil {
+		t.Fatalf("expected offset and presale_only in catalog_availability inputSchema: %+v", availSchema)
+	}
+
+	// 2. Seed mixed listed + presale entries and verify offset pagination + presale_only filtering
+	env.catalog.mu.Lock()
+	env.catalog.entries = []CatalogEntry{
+		{
+			PlanCode:               "24ska01",
+			ModelName:              "KS-A",
+			Range:                  "KS",
+			CPU:                    "Intel Xeon E3-1245v2",
+			ListingState:           "listed",
+			Orderable:              true,
+			Generation:             2024,
+			AvailableDatacenters:   []string{"GRA (1H-high)"},
+			MatchingConfigurations: 1,
+		},
+		{
+			PlanCode:               "27ska01",
+			ModelName:              "KS-A (2027)",
+			Range:                  "KS",
+			CPU:                    "AMD EPYC 4244P",
+			ListingState:           "presale",
+			Orderable:              false,
+			Generation:             2027,
+			AvailableDatacenters:   []string{},
+			MatchingConfigurations: 1,
+		},
+		{
+			PlanCode:               "27rise01",
+			ModelName:              "RISE-1 (2027)",
+			Range:                  "RISE",
+			CPU:                    "AMD EPYC 4344P",
+			ListingState:           "presale",
+			Orderable:              false,
+			Generation:             2027,
+			AvailableDatacenters:   []string{"RBX (72H)"},
+			MatchingConfigurations: 2,
+		},
+	}
+	env.catalog.mu.Unlock()
+
+	page1, isErr, raw1 := mcpCallTool(t, env, token, "catalog_availability", map[string]any{
+		"offset": 0,
+		"limit":  2,
+	})
+	if isErr {
+		t.Fatalf("catalog_availability page1 failed: %s", raw1)
+	}
+	if int(page1["offset"].(float64)) != 0 ||
+		int(page1["returned"].(float64)) != 2 ||
+		int(page1["totalMatched"].(float64)) != 3 ||
+		int(page1["nextOffset"].(float64)) != 2 {
+		t.Fatalf("unexpected page1 pagination metadata: %+v", page1)
+	}
+
+	page2, isErr, raw2 := mcpCallTool(t, env, token, "catalog_availability", map[string]any{
+		"offset": 2,
+		"limit":  2,
+	})
+	if isErr {
+		t.Fatalf("catalog_availability page2 failed: %s", raw2)
+	}
+	if int(page2["offset"].(float64)) != 2 ||
+		int(page2["returned"].(float64)) != 1 ||
+		int(page2["totalMatched"].(float64)) != 3 ||
+		page2["nextOffset"] != nil {
+		t.Fatalf("unexpected page2 pagination metadata (expected nextOffset=nil at end): %+v", page2)
+	}
+
+	// presale_only=true filters BEFORE offset and limit so totalMatched == 2
+	presalePage, isErr, rawPresale := mcpCallTool(t, env, token, "catalog_availability", map[string]any{
+		"presale_only": true,
+		"offset":       0,
+		"limit":        1,
+	})
+	if isErr {
+		t.Fatalf("catalog_availability presale_only failed: %s", rawPresale)
+	}
+	if int(presalePage["totalMatched"].(float64)) != 2 ||
+		int(presalePage["returned"].(float64)) != 1 ||
+		int(presalePage["nextOffset"].(float64)) != 1 {
+		t.Fatalf("expected presale_only totalMatched=2, returned=1, nextOffset=1, got %+v", presalePage)
+	}
+	presaleItem := presalePage["items"].([]any)[0].(map[string]any)
+	if presaleItem["planCode"] != "27ska01" ||
+		presaleItem["listingState"] != "presale" ||
+		presaleItem["orderable"] != false ||
+		int(presaleItem["generation"].(float64)) != 2027 {
+		t.Fatalf("unexpected presale item metadata: %+v", presaleItem)
+	}
+
+	// 3. Verify procurement_status includes source and sourceRef on queue items
+	_, _ = env.store.CreateQueueItem(ctx, store.QueueItem{
+		ID:          "q-mon-linked",
+		AccountID:   "acc-v131",
+		PlanCode:    "27ska01",
+		Datacenters: []string{"gra"},
+		Quantity:    1,
+		Status:      "running",
+		Source:      "stock-monitor",
+		SourceRef:   "27ska01",
+	})
+	procStatus, isErr, rawProc := mcpCallTool(t, env, token, "procurement_status", map[string]any{})
+	if isErr {
+		t.Fatalf("procurement_status failed: %s", rawProc)
+	}
+	qList := procStatus["queue"].([]any)
+	if len(qList) != 1 {
+		t.Fatalf("expected 1 queue item, got %d", len(qList))
+	}
+	qEntry := qList[0].(map[string]any)
+	if qEntry["source"] != "stock-monitor" || qEntry["sourceRef"] != "27ska01" {
+		t.Fatalf("expected source='stock-monitor' and sourceRef='27ska01' in procurement_status queue item, got %+v", qEntry)
 	}
 }

@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { api } from '@/utils/apiClient';
 import { toast } from 'sonner';
-import { Bell, BellOff, Plus, Trash2, Settings, RefreshCw, History, ChevronUp } from 'lucide-react';
+import { Bell, BellOff, Plus, Trash2, Settings, RefreshCw, History, ChevronUp, ExternalLink, Filter } from 'lucide-react';
 import { useAPI } from '@/context/APIContext';
 import { useLocale } from '@/context/LocaleContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/components/ToastContainer';
+import { DCLabel } from '@/components/DCLabel';
 import {
   useCatalogDictionary,
   resolvePlanDisplay,
@@ -48,7 +50,10 @@ interface HistoryEntry {
 
 const MonitorPage = () => {
   const isMobile = useIsMobile();
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const filterPlanCode = (searchParams.get('planCode') || '').trim();
   const catalogDict = useCatalogDictionary();
   const { isAuthenticated } = useAPI();
   const { showConfirm } = useToast();
@@ -78,7 +83,7 @@ const MonitorPage = () => {
     autoOrderQuantity: 0  // 自动下单数量，0表示不限制（遵循2分钟限制）
   });
 
-  // 加载订阅列表
+  // 加载订阅列表（自动下单已统一由后端 monitor/stock.go 单点触发，前端不再重复调用 quick-order）
   const loadSubscriptions = async (isRefresh = false) => {
     if (isRefresh) {
       setIsRefreshing(true);
@@ -92,74 +97,7 @@ const MonitorPage = () => {
       const response = await api.get('/monitor/subscriptions');
       const newData = response.data as Subscription[];
 
-      // ✅ 先更新 currentSubscriptionsRef，确保异步回调中能检查到最新的订阅列表
       currentSubscriptionsRef.current = newData;
-      
-      // 比对状态变化：从无货->有货 时，如启用自动下单则触发快速下单
-      const prev = prevSubscriptionsRef.current || [];
-      const prevMap = new Map(prev.map(s => [s.planCode, s]));
-      for (const sub of newData) {
-        const prevSub = prevMap.get(sub.planCode);
-        if (sub?.notifyAvailable && sub?.autoOrder && sub?.lastStatus) {
-          const keys = Object.keys(sub.lastStatus);
-          for (const key of keys) {
-            // 兼容两种格式：'dc' 或 'dc|config_key'
-            const dc = key.includes('|') ? key.split('|')[0] : key;
-            const currentStatus = (sub.lastStatus as any)[key];
-            const prevStatus = prevSub?.lastStatus ? (prevSub.lastStatus as any)[key] : undefined;
-            const isCurrentlyAvailable = currentStatus && currentStatus !== 'unavailable';
-            const wasUnavailable = prevStatus === 'unavailable';
-            const noPrevRecord = prevSub === undefined || prevStatus === undefined;
-
-            const becameAvailable = wasUnavailable && isCurrentlyAvailable;
-            const firstTimeAvailable = noPrevRecord && isCurrentlyAvailable;
-
-            if (becameAvailable || firstTimeAvailable) {
-              // ✅ 在异步请求前保存 planCode，用于后续检查
-              const planCode = sub.planCode;
-              api.post('/orders/quick-order', {
-                planCode: planCode,
-                datacenter: dc
-              })
-              .then((res) => {
-                // ✅ 检查订阅是否仍然存在，如果已删除则不显示成功提示
-                const stillExists = currentSubscriptionsRef.current.some(s => s.planCode === planCode);
-                if (!stillExists) {
-                  return; // 订阅已被删除，不显示提示
-                }
-                const ok = (res?.data as any)?.success !== false;
-                if (ok) {
-                  toast.success(`已自动下单：${planCode}（${dc.toUpperCase()}）已加入队列`);
-                } else {
-                  // 非成功但无异常时，统一静默，避免干扰
-                }
-              })
-              .catch((err: any) => {
-                // ✅ 检查订阅是否仍然存在，如果已删除则不显示错误提示
-                const stillExists = currentSubscriptionsRef.current.some(s => s.planCode === planCode);
-                if (!stillExists) {
-                  return; // 订阅已被删除，不显示错误
-                }
-                // 对于指定机房无可定价配置的 400 错误，静默处理，不弹错误
-                const status = err?.response?.status;
-                const errData = (err?.response?.data || {}) as Record<string, any>;
-                const msg = String(errData?.error || errData?.message || err?.message || '');
-                const isNoPriceForDc =
-                  status === 400 &&
-                  (errData?.code === 'NO_PRICED_CONFIG' ||
-                    msg.toLowerCase().includes('no priced configuration') ||
-                    msg.includes('指定机房无可定价配置'));
-                if (isNoPriceForDc) {
-                  return;
-                }
-                // 其他错误再提示
-                toast.error(`自动下单失败：${planCode}（${dc.toUpperCase()}）`);
-              });
-            }
-          }
-        }
-      }
-
       setSubscriptions(newData);
       prevSubscriptionsRef.current = newData;
       // 如果数据加载完成，清除延迟显示的加载状态
@@ -536,11 +474,35 @@ const MonitorPage = () => {
         )}
 
         {/* 订阅列表 */}
+        {filterPlanCode && (
+          <div className="mb-3 px-3 py-2 rounded-md border border-cyber-accent/40 bg-cyber-accent/10 flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-cyber-accent font-medium">
+              <Filter size={14} />
+              <span>{t('monitor.filterPlanCodeBanner', { planCode: filterPlanCode })}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                searchParams.delete('planCode');
+                setSearchParams(searchParams);
+              }}
+              className="px-2 py-0.5 rounded bg-cyber-surface border border-cyber-grid text-cyber-text hover:border-cyber-accent/50 transition-colors"
+            >
+              {t('monitor.clearFilter')}
+            </button>
+          </div>
+        )}
+
         {(() => {
           // 在加载期间，如果有之前的数据，显示之前的数据；否则显示当前数据
-          const displaySubscriptions = (isLoading && prevSubscriptionsRef.current.length > 0) 
+          const baseSubscriptions = (isLoading && prevSubscriptionsRef.current.length > 0) 
             ? prevSubscriptionsRef.current 
             : subscriptions;
+          const displaySubscriptions = filterPlanCode
+            ? baseSubscriptions.filter(
+                (s) => s.planCode.toLowerCase() === filterPlanCode.toLowerCase()
+              )
+            : baseSubscriptions;
           
           if (displaySubscriptions.length === 0) {
             return (
@@ -556,12 +518,19 @@ const MonitorPage = () => {
             <div className="space-y-3">
               {displaySubscriptions.map((sub) => {
                 const planMeta = resolvePlanDisplay(sub.planCode, '', locale, catalogDict);
+                const isHighlighted =
+                  filterPlanCode &&
+                  sub.planCode.toLowerCase() === filterPlanCode.toLowerCase();
                 return (
               <motion.div
                 key={sub.planCode}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="bg-cyber-grid/10 rounded border border-cyber-accent/20 hover:border-cyber-accent/40 transition-colors overflow-hidden"
+                className={`bg-cyber-grid/10 rounded border transition-colors overflow-hidden ${
+                  isHighlighted
+                    ? 'border-cyber-accent/60 ring-2 ring-cyber-accent/30 bg-cyber-accent/5'
+                    : 'border-cyber-accent/20 hover:border-cyber-accent/40'
+                }`}
               >
                  <div className="flex justify-between items-start p-3">
                    <div className="flex-1">
@@ -583,12 +552,24 @@ const MonitorPage = () => {
                          </span>
                        )}
                      </div>
-                     <p className="text-xs text-cyber-muted">
-                       {sub.datacenters.length > 0 
-                         ? `监控数据中心: ${sub.datacenters.join(', ')}`
-                         : '监控所有数据中心'}
-                     </p>
-                    <div className="flex gap-2 mt-2">
+                     <div className="text-xs text-cyber-muted flex flex-wrap items-center gap-1.5 mt-1">
+                       {sub.datacenters.length > 0 ? (
+                         <>
+                           <span>监控数据中心:</span>
+                           {sub.datacenters.map((dc) => (
+                             <span
+                               key={dc}
+                               className="px-1.5 py-0.5 rounded bg-cyber-surface border border-cyber-grid text-cyber-text text-[11px] font-medium"
+                             >
+                               <DCLabel code={dc} mode="compact" />
+                             </span>
+                           ))}
+                         </>
+                       ) : (
+                         <span>监控所有数据中心</span>
+                       )}
+                     </div>
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
                       {sub.notifyAvailable && (
                         <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded">
                           有货提醒
@@ -600,12 +581,22 @@ const MonitorPage = () => {
                         </span>
                       )}
                       {sub.autoOrder && (
-                        <span className="text-xs px-2 py-0.5 bg-cyber-accent/20 text-cyber-accent rounded">
-                          自动下单{sub.autoOrderQuantity > 0 ? ` (${sub.autoOrderQuantity}台/机房)` : ''}
-                        </span>
+                        <>
+                          <span className="text-xs px-2 py-0.5 bg-cyber-accent/20 text-cyber-accent rounded">
+                            自动下单{sub.autoOrderQuantity && sub.autoOrderQuantity > 0 ? ` (${sub.autoOrderQuantity}台/机房)` : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/queue?planCode=${encodeURIComponent(sub.planCode)}`)}
+                            className="text-xs px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 transition-colors inline-flex items-center gap-1"
+                          >
+                            <span>{t('monitor.viewQueueTasks')}</span>
+                            <ExternalLink size={11} />
+                          </button>
+                        </>
                       )}
                     </div>
-                    {sub.autoOrder && sub.autoOrderQuantity > 0 && (
+                    {sub.autoOrder && sub.autoOrderQuantity && sub.autoOrderQuantity > 0 && (
                       <p className="text-xs text-yellow-500 mt-2 flex items-start">
                         <span className="mr-1">⚠️</span>
                         <span>如设置了自动下单数量，请不要清理抢购队列和抢购历史记录，避免重复下单</span>
@@ -661,7 +652,9 @@ const MonitorPage = () => {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium text-cyber-accent">{entry.datacenter.toUpperCase()}</span>
+                                  <span className="font-medium text-cyber-accent">
+                                    <DCLabel code={entry.datacenter} mode="full" />
+                                  </span>
                                   <span className={`px-1.5 py-0.5 rounded ${
                                     entry.changeType === 'available' 
                                       ? 'bg-green-500/20 text-green-400' 

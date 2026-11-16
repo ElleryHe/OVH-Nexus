@@ -3,11 +3,37 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.3.0]
+:::note[当前最新版本：v1.3.1]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.3.1] - 2026-11-17 — 预售机型识别、一键快速监控、三语机房地理信息字典与 MCP 网关增强
+
+### 新增功能 (Added)
+
+- **预售 / 待上架服务器自动识别与筛选**：
+  - 自动识别已出现在 OVHcloud 实时机房库存接口中但尚未写入公开价格目录的预售/未发布 `planCode`，在实时库存矩阵（`/availability`）与服务器目录（`/servers`）中统一展示**预售（Presale）**徽标、硬件代数标签（`2024`–`2027`）及**仅看预售（Presale Only）**筛选开关。
+- **一键快速监控弹窗 (`QuickMonitorDialog`)**：
+  - 支持在 `/availability` 或 `/servers` 任意机型行直接点击配置机房库存告警、硬件子配置过滤条件与自动下单规则。
+- **全局三语机房地理位置字典**：
+  - 在所有 WebUI 页面与通知模板中引入三语本地化城市、国家与国旗 Emoji 标签（`en` / `fr` / `zh-CN`，例如 `BHS (Beauharnois, Canada 🇨🇦)` / `BHS（博阿努瓦，加拿大 🇨🇦）`，以及紧凑位置带悬停全名提示的 `🇨🇦 BHS` 徽标），并新增多伦多（`TOR` / `ca-east-tor`）机房支持。
+- **库存监控与自动采购队列来源联动**：
+  - 由库存监控触发生成的采购队列任务自动记录 `source: "stock-monitor"`，支持在 `/monitor` 与 `/queue` 之间双向跳转定位，并收敛为后端单点触发（移除浏览器前端重复的 `quick-order` 调用）。
+- **MCP 网关体验与工具增强**：
+  - `/mcp` 控制台配置复制新增**仅服务器条目（Server Entry Only）**与**完整配置文件（Full Config File）**双模式切换及 JSON 合并逗号提示；`catalog_availability` 新增 `offset` 分页与 `presale_only` 预售筛选参数；`catalog_sku_changes` 数据源与 SKU Watcher 变动时间线完全对齐。
+
+### 问题修复 (Fixed)
+
+- **首次部署存量 SKU 基线静默与两阶段上架追踪**：
+  - 首次初始化扫描时的存量机型标记为 `baseline: true`（不再误标为新上架），并分别记录 `presaleSince`（首次预售出现时间）与 `listedAt`（转为公开目录正式上架时间），仅基线之后的真实新上架及 `presale -> listed` 转正机型显示为**新上架（New）**。
+- **多伦多 (`ca-east-tor`) 机房购物车结算区域推断修复**：
+  - 修复 `InferCartRegion`，将 `tor` / `ca-east-tor*` 机房正确映射至 `"canada"` 结算区域。
+- **安全依赖升级**：
+  - 将 `server/go.mod` 中的 `golang.org/x/oauth2` 升级至 `v0.38.0`，并清理未使用的传递依赖 `google.golang.org/protobuf`（修复 `CVE-2025-22868`、`CVE-2024-24786`）。
+
+---
 
 ## [1.3.0] - Go 1.27 单静态二进制架构、SQLite WAL 持久化与 SSE 实时结构化日志
 

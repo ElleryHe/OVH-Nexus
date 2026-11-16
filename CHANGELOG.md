@@ -9,6 +9,30 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.3.1] - 2026-11-17
+
+### Added
+- **Presale / Unlisted Server Detection & Filtering**:
+  - Automatically identifies unannounced/presale `planCode`s present in OVHcloud live datacenter availability feeds prior to public catalog listing, adding **Presale** badges, hardware generation tags (`2024`–`2027`), and a **Presale Only** filter across both the Live Availability Matrix (`/availability`) and Server Catalog (`/servers`).
+- **One-Click Quick Monitor Modal (`QuickMonitorDialog`)**:
+  - Configure datacenter stock alerts, hardware config filters, and auto-order rules directly from any row in `/availability` or `/servers`.
+- **Tri-Lingual Datacenter Geolocation Dictionary**:
+  - Added localized city, country, and flag emoji labels (`en` / `fr` / `zh-CN`, e.g., `BHS (Beauharnois, Canada 🇨🇦)` / `BHS（博阿努瓦，加拿大 🇨🇦）`, plus compact `🇨🇦 BHS` badges with hover tooltips) across all WebUI views and notification templates, including support for the Toronto (`TOR` / `ca-east-tor`) datacenter.
+- **Stock Monitor & Auto-Order Queue Source Linkage**:
+  - Queue tasks created by stock monitor triggers now record `source: "stock-monitor"` with bidirectional jump links between `/monitor` and `/queue`, and single-source backend triggering (removing duplicate browser-side quick-order calls).
+- **MCP Gateway Enhancements**:
+  - Added **Server Entry Only** vs **Full Config File** snippet modes with JSON merge guidance on `/mcp`, added `offset` pagination and `presale_only` filtering to `catalog_availability`, and aligned `catalog_sku_changes` with the SKU Watcher timeline.
+
+### Fixed
+- **Baseline-Silent SKU Listing State Tracking**:
+  - Initial deployment baseline SKUs are now marked as existing inventory (`baseline: true`) rather than newly listed, tracking distinct `presaleSince` and `listedAt` timestamps so only genuine post-baseline listings and `presale -> listed` transitions appear as **New**.
+- **Toronto (`ca-east-tor`) Cart Region Inference**:
+  - Fixed `InferCartRegion` to map `tor` / `ca-east-tor*` datacenters to `"canada"`.
+- **Security Dependencies**:
+  - Upgraded `golang.org/x/oauth2` to `v0.38.0` and pruned unused transitive `google.golang.org/protobuf` from `server/go.mod` (`CVE-2025-22868`, `CVE-2024-24786`).
+
+---
+
 ## [1.3.0] - 2026-11-16
 
 ### Breaking Changes

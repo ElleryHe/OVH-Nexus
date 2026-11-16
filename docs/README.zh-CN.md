@@ -29,8 +29,8 @@
 
 - **独立服务器与 VPS 管控**：硬件资产清单、MRTG 流量图表、IPMI/KVM 远程控制台、自动化系统重装（支持软硬 RAID / Proxmox ZFS 及一键注入 SSH 公钥）、IP 边缘防火墙与永久 Anti-DDoS 缓解、VPS 实例一键重启。
 - **订单交付与续费到期总览**：实时追踪 OVH 官方 4 步硬件交付流水线（`CREATING` → `VALIDATING` → `DELIVERING` → `INSTALLATION`）与全账户服务到期倒计时预警。
-- **全球实时库存矩阵与自动采购队列**：免 API Key 拉取全球机房实时库存，自动展示商业型号（`KS-A`、`RISE-1`、`SCALE-a1`）、可读化硬件规格与精确到子配置的月付价格。
-- **公开货架 SKU 变动监控与纯出站通知中心**：免 API Key 追踪所有在架/预上机架型号上新与下架（内置防抖熔断机制），支持多实例 **Telegram 机器人**与 **SMTP 邮件**按需订阅 8 类事件，并支持 `en` / `fr` / `zh-CN` 通知模板语言切换。
+- **全球实时库存矩阵、预售识别与自动采购队列**：免 API Key 拉取全球机房（`🇨🇦 BHS`、`🇨🇦 TOR`、`🇫🇷 GRA`、`🇩🇪 FRA`、`🇸🇬 SGP` 等三语地理标签）实时库存，自动展示商业型号（`KS-A`、`RISE-1`、`SCALE-a1`）、可读化硬件规格、精确到子配置的月付价格，支持**预售/待上架机型识别**（`2024`–`2027` 代数标签与“仅看预售”筛选）及与采购队列双向联动的**一键快速监控**弹窗。
+- **公开货架 SKU 变动监控与纯出站通知中心**：免 API Key 追踪预上机架型号与 `presale -> listed` 正式上架变动（内置首轮存量基线静默 `baseline: true` 与防抖熔断机制），支持多实例 **Telegram 机器人**与 **SMTP 邮件**按需订阅 8 类事件，并支持 `en` / `fr` / `zh-CN` 通知模板语言切换。
 - **实时可观测性与 SSE 日志控制台 (`/logs`)**：全标准化英文 `log/slog` 结构化日志，内置 SQLite 10,000 条滚动环形缓冲区、Server-Sent Events 实时推流、按模块/级别/关键词筛选、敏感凭据自动脱敏及 `.jsonl` / `.log` 一键导出。
 - **MCP AI 网关与隐私安全沙盒 (`/api/mcp`)**：支持 Claude Code、Claude Desktop、Cursor 与 Antigravity 通过 Streamable HTTP (JSON-RPC 2.0) 接入，内置双向资产混淆引擎（`bm-01`、`vps-01`、`ord-01` 与掩码尾号 IP `*.*.*.42`）及**“只允许两步确认生成未付款订单、硬性禁止自动扣款”**（`auto_pay=false` 代码级锁死）财务防线。
 - **单二进制安全加固**：原生抗 Slowloris 超时防护与 `2 MB` 请求体限制、`/data/nexus.db` 字段级 `HKDF-SHA256` + `AES-256-GCM` 静态加密、RFC 6238 TOTP 双因素分级门禁（`strict` / `sudo`），以及基于 `TRUSTED_PROXIES` 的可信代理真实 IP 提取。

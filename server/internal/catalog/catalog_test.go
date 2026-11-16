@@ -99,6 +99,47 @@ func TestHardwareParsersAndPlanInference(t *testing.T) {
 	if got := StandardizeConfig("ram-64g-ecc-3200-24rise01"); got != "ram-64g" {
 		t.Fatalf("StandardizeConfig unexpected: %q", got)
 	}
+
+	// Toronto normalization, cart region inference, generation inference, and tri-lingual datacenter labels
+	if got := NormalizeDisplayDatacenter("ca-east-tor-a"); got != "tor" {
+		t.Fatalf("NormalizeDisplayDatacenter(ca-east-tor-a) = %q, want \"tor\"", got)
+	}
+	if got := NormalizeDisplayDatacenter("ca-east-tor"); got != "tor" {
+		t.Fatalf("NormalizeDisplayDatacenter(ca-east-tor) = %q, want \"tor\"", got)
+	}
+	if got := InferCartRegion("ca-east-tor-a"); got != "canada" {
+		t.Fatalf("InferCartRegion(ca-east-tor-a) = %q, want \"canada\"", got)
+	}
+	if got := InferCartRegion("tor"); got != "canada" {
+		t.Fatalf("InferCartRegion(tor) = %q, want \"canada\"", got)
+	}
+	if got := InferCartRegion("eu-south-mrs"); got != "europe" {
+		t.Fatalf("InferCartRegion(eu-south-mrs) = %q, want \"europe\"", got)
+	}
+	if got := InferPlanGeneration("24ska01"); got != 2024 {
+		t.Fatalf("InferPlanGeneration(24ska01) = %d, want 2024", got)
+	}
+	if got := InferPlanGeneration("27skle01-v1"); got != 2027 {
+		t.Fatalf("InferPlanGeneration(27skle01-v1) = %d, want 2027", got)
+	}
+	if got := InferPlanGeneration("vps-2025-model1"); got != 0 {
+		t.Fatalf("InferPlanGeneration(vps-2025-model1) = %d, want 0", got)
+	}
+	if got := FormatDatacenterLabel("bhs", "zh-CN"); got != "BHS（博阿努瓦，加拿大 🇨🇦）" {
+		t.Fatalf("FormatDatacenterLabel(bhs, zh-CN) = %q", got)
+	}
+	if got := FormatDatacenterLabel("bhs", "en"); got != "BHS (Beauharnois, Canada 🇨🇦)" {
+		t.Fatalf("FormatDatacenterLabel(bhs, en) = %q", got)
+	}
+	if got := FormatDatacenterLabel("fra", "fr"); got != "FRA (Francfort, Allemagne 🇩🇪)" {
+		t.Fatalf("FormatDatacenterLabel(fra, fr) = %q", got)
+	}
+	if got := FormatDatacenterLabel("ca-east-tor-a", "zh-CN"); got != "TOR（多伦多，加拿大 🇨🇦）" {
+		t.Fatalf("FormatDatacenterLabel(ca-east-tor-a, zh-CN) = %q", got)
+	}
+	if got := DatacenterFlag("tor"); got != "🇨🇦" {
+		t.Fatalf("DatacenterFlag(tor) = %q, want 🇨🇦", got)
+	}
 }
 
 func TestCatalogFetchingSingleflightDiskCacheAndRoutes(t *testing.T) {
@@ -441,5 +482,118 @@ func TestGetServerPriceCartLifecycle(t *testing.T) {
 	}
 	if !deletedCart {
 		t.Fatalf("expected temporary quote cart to be deleted")
+	}
+}
+
+func TestPresaleSKUSynthesisInListServersAndConfigAvailabilities(t *testing.T) {
+	svc, _, _, _ := newTestCatalog(t)
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24ska01",
+						"invoiceName": "KS-A | Intel i7-6700k",
+						"product":     "24ska01",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "KS-A"}},
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 5499000000},
+						},
+					},
+				},
+			})
+		case "/order/catalog/public/baremetalServers", "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case "/dedicated/server/datacenter/availabilities":
+			pc := r.URL.Query().Get("planCode")
+			items := []map[string]any{
+				{
+					"fqn":      "24ska01.ram-32g-noecc-2133.softraid-2x480ssd",
+					"planCode": "24ska01",
+					"server":   "24ska01",
+					"memory":   "ram-32g-noecc-2133",
+					"storage":  "softraid-2x480ssd",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+					},
+				},
+				{
+					"fqn":      "27skle01-v1.ram-64g-ecc-3200.softraid-2x960nvme",
+					"planCode": "27skle01-v1",
+					"server":   "27skle01",
+					"memory":   "ram-64g-ecc-3200",
+					"storage":  "softraid-2x960nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "ca-east-tor-a", "availability": "72H"},
+						{"datacenter": "bhs", "availability": "unavailable"},
+					},
+				},
+			}
+			if pc != "" {
+				var filtered []map[string]any
+				for _, it := range items {
+					if it["planCode"] == pc {
+						filtered = append(filtered, it)
+					}
+				}
+				_ = json.NewEncoder(w).Encode(filtered)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(items)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+
+	resp, err := svc.ListServers(context.Background(), ListServersOptions{Endpoint: "ovh-eu", Zone: "IE", ForceRefresh: true})
+	if err != nil {
+		t.Fatalf("ListServers failed: %v", err)
+	}
+	if len(resp.Servers) != 2 {
+		t.Fatalf("expected 2 servers (1 listed + 1 presale), got %d", len(resp.Servers))
+	}
+
+	listed := resp.Servers[0]
+	if listed.PlanCode != "24ska01" || listed.ListingState != "listed" || !listed.Orderable || listed.Generation != 2024 {
+		t.Fatalf("unexpected listed ServerPlan: %+v", listed)
+	}
+
+	presale := resp.Servers[1]
+	if presale.PlanCode != "27skle01-v1" || presale.ListingState != "presale" || presale.Orderable || presale.Generation != 2027 || presale.MonthlyPrice != nil {
+		t.Fatalf("unexpected presale ServerPlan: %+v", presale)
+	}
+	if presale.Name != "KS-LE-1" || presale.CatalogSource != "presale" {
+		t.Fatalf("expected inferred presale name KS-LE-1 and source presale, got %+v", presale)
+	}
+	foundTor := false
+	for _, dc := range presale.Datacenters {
+		if dc.Datacenter == "tor" && dc.Availability == "72H" && dc.Flag == "🇨🇦" {
+			foundTor = true
+		}
+	}
+	if !foundTor {
+		t.Fatalf("expected ca-east-tor-a normalized to tor with 🇨🇦 flag on presale plan: %+v", presale.Datacenters)
+	}
+
+	cfgs, err := svc.GetConfigLevelAvailabilities(context.Background(), "ovh-eu", "IE", "27skle01-v1")
+	if err != nil {
+		t.Fatalf("GetConfigLevelAvailabilities for presale plan failed: %v", err)
+	}
+	if len(cfgs) != 1 {
+		t.Fatalf("expected 1 synthesized ConfigAvailability for presale plan, got %d", len(cfgs))
+	}
+	for _, cfg := range cfgs {
+		if cfg.ListingState != "presale" || cfg.Orderable || cfg.Generation != 2027 {
+			t.Fatalf("unexpected presale ConfigAvailability metadata: %+v", cfg)
+		}
+		if cfg.Datacenters["tor"] != "72H" || cfg.Datacenters["ca-east-tor-a"] != "72H" {
+			t.Fatalf("expected both raw and normalized Toronto availability in ConfigAvailability: %+v", cfg.Datacenters)
+		}
 	}
 }

@@ -285,8 +285,8 @@ func TestStockMonitorTransitionsAutoOrderAndRoutes(t *testing.T) {
 		t.Fatalf("expected 1 stock.available alert, got %d", env.tg.count())
 	}
 	qItems, _ := env.st.ListQueue(context.Background(), "")
-	if len(qItems) != 1 || qItems[0].PlanCode != "24ska01" || qItems[0].AutoPay || qItems[0].WaiveRetractationPeriod {
-		t.Fatalf("expected 1 safe unpaid auto-order queue task, got %+v", qItems)
+	if len(qItems) != 1 || qItems[0].PlanCode != "24ska01" || qItems[0].AutoPay || qItems[0].WaiveRetractationPeriod || qItems[0].Source != "stock-monitor" || qItems[0].SourceRef != "24ska01" {
+		t.Fatalf("expected 1 safe unpaid auto-order queue task with source=stock-monitor, got %+v", qItems)
 	}
 
 	// Repeated check while still available must not duplicate alert.
@@ -511,13 +511,20 @@ func TestSKUWatcherAntiFalsePositiveAndConfigDiff(t *testing.T) {
 		t.Fatalf("SaveNotificationSettings failed: %v", err)
 	}
 
-	// Step 1: Initial baseline (merges 24sk01 + 24sk01-sgp => 10 logical SKUs), 0 alerts.
+	// Step 1: Initial baseline (merges 24sk01 + 24sk01-sgp => 10 logical SKUs), 0 alerts, and recentFirstSeen MUST be empty!
 	res1, err := env.svc.CheckSKUOnce(context.Background(), true)
 	if err != nil {
 		t.Fatalf("CheckSKUOnce #1 failed: %v", err)
 	}
 	if res1.Status != "baseline_initialized" || res1.TotalSKUs != 10 || res1.TrackedCount != 10 || env.tg.count() != 0 {
 		t.Fatalf("unexpected step 1 baseline result: %+v tg=%d", res1, env.tg.count())
+	}
+	initStatus, _, err := env.svc.GetSKUStatusAndChanges(context.Background())
+	if err != nil {
+		t.Fatalf("GetSKUStatusAndChanges after baseline failed: %v", err)
+	}
+	if len(initStatus.RecentFirstSeen) != 0 {
+		t.Fatalf("expected RecentFirstSeen to be empty on initial silent baseline, got %+v", initStatus.RecentFirstSeen)
 	}
 
 	// Step 2: Sudden >30% drop (10 -> 4) MUST trigger glitch protection!
@@ -578,7 +585,7 @@ func TestSKUWatcherAntiFalsePositiveAndConfigDiff(t *testing.T) {
 		t.Fatalf("expected 3 top-level changes in /sku/check response, got %d", len(checkHTTPResp.Changes))
 	}
 
-	// Verify /api/sku/status and /api/sku/changes.
+	// Verify /api/sku/status and /api/sku/changes: only post-baseline 24sk11 is in RecentFirstSeen, NOT baseline 24sk01-sgp!
 	req = httptest.NewRequest(http.MethodGet, "/api/sku/status", nil)
 	rec = httptest.NewRecorder()
 	env.router.ServeHTTP(rec, req)
@@ -586,7 +593,7 @@ func TestSKUWatcherAntiFalsePositiveAndConfigDiff(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &skuStatus); err != nil {
 		t.Fatalf("decode /api/sku/status failed: %v", err)
 	}
-	if !skuStatus.Initialized || skuStatus.TotalSKUs != 10 || skuStatus.RecentFirstSeen["24sk11"] == "" || skuStatus.RecentFirstSeen["24sk01-sgp"] == "" {
+	if !skuStatus.Initialized || skuStatus.TotalSKUs != 10 || skuStatus.RecentFirstSeen["24sk11"] == "" || skuStatus.RecentFirstSeen["24sk01-sgp"] != "" {
 		t.Fatalf("unexpected /api/sku/status: %+v", skuStatus)
 	}
 
@@ -615,6 +622,46 @@ func TestSKUWatcherAntiFalsePositiveAndConfigDiff(t *testing.T) {
 	}
 	if !sawCfgChanged {
 		t.Fatalf("expected config_changed record with AddedConfigs and StockState, got %+v", changesResp.Changes)
+	}
+
+	// Step 5: Presale SKU appears in availabilities only (27skle01) -> tracked in PresaleSKUs, NOT in RecentFirstSeen.
+	plansMu.Lock()
+	currentAvails = append(currentAvails, map[string]any{
+		"fqn":         "27skle01.ram-64g.nvme",
+		"planCode":    "27skle01",
+		"memory":      "ram-64g-ecc-3200",
+		"storage":     "softraid-2x960nvme",
+		"datacenters": []map[string]any{{"datacenter": "ca-east-tor-a", "availability": "72H"}},
+	})
+	plansMu.Unlock()
+
+	res5, err := env.svc.CheckSKUOnce(context.Background(), true)
+	if err != nil {
+		t.Fatalf("CheckSKUOnce #5 (presale added) failed: %v", err)
+	}
+	if res5.AddedCount != 1 || res5.Added[0].ListingState != "presale" || res5.Added[0].Generation != 2027 {
+		t.Fatalf("expected presale added record with generation 2027, got %+v", res5)
+	}
+	st5, _, _ := env.svc.GetSKUStatusAndChanges(context.Background())
+	if st5.PresaleSKUs["27skle01"] == "" || st5.RecentFirstSeen["27skle01"] != "" {
+		t.Fatalf("expected 27skle01 in PresaleSKUs and NOT in RecentFirstSeen, got presale=%+v recent=%+v", st5.PresaleSKUs, st5.RecentFirstSeen)
+	}
+
+	// Step 6: 27skle01 transitions from presale -> listed in eco catalog -> enters RecentFirstSeen and emits listed change!
+	plansMu.Lock()
+	currentPlans = buildPlans([]string{"24sk01", "24sk01-sgp", "24sk02", "24sk03", "24sk04", "24sk05", "24sk06", "24sk07", "24sk08", "24sk09", "24sk11", "27skle01"})
+	plansMu.Unlock()
+
+	res6, err := env.svc.CheckSKUOnce(context.Background(), true)
+	if err != nil {
+		t.Fatalf("CheckSKUOnce #6 (presale -> listed transition) failed: %v", err)
+	}
+	if res6.AddedCount != 1 || res6.Added[0].ListingState != "listed" || res6.Added[0].PlanCode != "27skle01" {
+		t.Fatalf("expected presale -> listed transition to emit added/listed record, got %+v", res6)
+	}
+	st6, _, _ := env.svc.GetSKUStatusAndChanges(context.Background())
+	if st6.RecentFirstSeen["27skle01"] == "" || st6.PresaleSKUs["27skle01"] != "" {
+		t.Fatalf("expected 27skle01 in RecentFirstSeen and removed from PresaleSKUs after listing, got presale=%+v recent=%+v", st6.PresaleSKUs, st6.RecentFirstSeen)
 	}
 }
 

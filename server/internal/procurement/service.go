@@ -83,6 +83,8 @@ type QuickOrderRequest struct {
 	SkipDuplicateCheck      bool     `json:"skipDuplicateCheck"`
 	AutoPay                 bool     `json:"auto_pay"`
 	WaiveRetractationPeriod bool     `json:"waive_retractation_period"`
+	Source                  string   `json:"source,omitempty"`
+	SourceRef               string   `json:"sourceRef,omitempty"`
 }
 
 // QuickOrderResult holds the queued quick-order task and validated quote payload.
@@ -108,6 +110,8 @@ type CreateQueueRequest struct {
 	RetryInterval           int
 	AutoPay                 bool
 	WaiveRetractationPeriod bool
+	Source                  string
+	SourceRef               string
 }
 
 // UpdateQueueRequest captures partial queue task update fields.
@@ -409,6 +413,11 @@ func (s *Service) CreateQueueTask(ctx context.Context, req CreateQueueRequest) (
 		maxRetries = 50
 	}
 
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "manual"
+	}
+
 	item := store.QueueItem{
 		AccountID:               strings.TrimSpace(req.AccountID),
 		PlanCode:                planCode,
@@ -420,6 +429,8 @@ func (s *Service) CreateQueueTask(ctx context.Context, req CreateQueueRequest) (
 		RetryInterval:           retryInt,
 		AutoPay:                 req.AutoPay,                 // defaults false
 		WaiveRetractationPeriod: req.WaiveRetractationPeriod, // defaults false
+		Source:                  source,
+		SourceRef:               strings.TrimSpace(req.SourceRef),
 	}
 
 	created, err := s.store.CreateQueueItem(ctx, item)
@@ -609,7 +620,7 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 			}
 		}
 		if len(opts) == 0 {
-			if s.log != nil {
+			if s.log != nil && !strings.EqualFold(strings.TrimSpace(req.Source), "stock-monitor") {
 				s.log.Warn(logger.SourceQueue, "Quick order rejected: no priced configuration in datacenter", "planCode", planCode, "datacenter", datacenter)
 			}
 			return &QuickOrderResult{
@@ -701,6 +712,11 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 		}
 	}
 
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "manual"
+	}
+
 	created, err := s.store.CreateQueueItem(ctx, store.QueueItem{
 		AccountID:               strings.TrimSpace(req.AccountID),
 		PlanCode:                planCode,
@@ -712,6 +728,8 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 		RetryInterval:           2,
 		AutoPay:                 req.AutoPay,                 // defaults false
 		WaiveRetractationPeriod: req.WaiveRetractationPeriod, // defaults false
+		Source:                  source,
+		SourceRef:               strings.TrimSpace(req.SourceRef),
 	})
 	if err != nil {
 		return &QuickOrderResult{
@@ -938,6 +956,20 @@ func (s *Service) findAvailableDatacenter(
 		}
 	}
 
+	matchesDC := func(rawDC, targetDisplayDC, targetAPIDC string) (string, bool) {
+		rawClean := strings.ToLower(strings.TrimSpace(rawDC))
+		if rawClean == "" {
+			return "", false
+		}
+		if strings.EqualFold(rawClean, targetAPIDC) {
+			return targetAPIDC, true
+		}
+		if strings.EqualFold(catalog.NormalizeDisplayDatacenter(rawClean), catalog.NormalizeDisplayDatacenter(targetDisplayDC)) {
+			return rawClean, true
+		}
+		return "", false
+	}
+
 	for _, displayDC := range targetDCs {
 		apiDC := catalog.NormalizeAPIDatacenter(displayDC)
 		for _, av := range availItems {
@@ -948,11 +980,11 @@ func (s *Service) findAvailableDatacenter(
 				continue
 			}
 			for _, dc := range av.Datacenters {
-				if strings.EqualFold(dc.Datacenter, apiDC) &&
+				if resolvedAPIDC, ok := matchesDC(dc.Datacenter, displayDC, apiDC); ok &&
 					dc.Availability != "" &&
 					!strings.EqualFold(dc.Availability, "unavailable") &&
 					!strings.EqualFold(dc.Availability, "unknown") {
-					return displayDC, apiDC, nil
+					return displayDC, resolvedAPIDC, nil
 				}
 			}
 		}
@@ -964,11 +996,11 @@ func (s *Service) findAvailableDatacenter(
 			apiDC := catalog.NormalizeAPIDatacenter(displayDC)
 			for _, av := range availItems {
 				for _, dc := range av.Datacenters {
-					if strings.EqualFold(dc.Datacenter, apiDC) &&
+					if resolvedAPIDC, ok := matchesDC(dc.Datacenter, displayDC, apiDC); ok &&
 						dc.Availability != "" &&
 						!strings.EqualFold(dc.Availability, "unavailable") &&
 						!strings.EqualFold(dc.Availability, "unknown") {
-						return displayDC, apiDC, nil
+						return displayDC, resolvedAPIDC, nil
 					}
 				}
 			}

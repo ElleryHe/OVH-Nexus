@@ -5,8 +5,8 @@ description: Configurez des tâches d'achat automatisé de serveurs dédiés et 
 
 OVH Nexus propose deux moteurs complémentaires pour automatiser l'acquisition de serveurs dédiés lorsque des modèles très demandés (`KS-LE`, `KS-A` ou ventes flash) ne restent en stock que quelques secondes :
 
-1. **File d'Achat (`/queue`)** : Surveille un `planCode` cible sur un ou plusieurs datacenters prioritaires avec options matérielles.
-2. **Moniteur de Configuration (`/monitor` & `/ovh-availability`)** : Cible une sous-configuration matérielle exacte (`planCode + mémoire + stockage + datacenter`) directement depuis la Matrice de Disponibilité en Direct avec commande rapide (`POST /api/orders/quick-order`).
+1. **File d'Achat (`/queue`)** : Surveille un `planCode` cible sur un ou plusieurs datacenters prioritaires avec options matérielles, en enregistrant l'origine de chaque tâche (`source: "manual" | "stock-monitor" | "mcp"`).
+2. **Moniteur de Stock & Configuration (`/monitor`, `/availability`, `/servers`)** : Surveille les variations de stock par datacenter et sous-configuration matérielle (`mémoire` + `stockage`) via la fenêtre **Surveillance rapide (`QuickMonitorDialog`)**. Lorsque l'option `autoOrder` est activée sur un abonnement, le moteur backend (`internal/monitor/stock.go`) déclenche l'achat de manière centralisée (sans appels doublons depuis le navigateur) et crée une tâche marquée `source: "stock-monitor"` avec liens de navigation bidirectionnels entre **Surveillance de Stock (`/monitor`)** et **File d'Achat (`/queue`)**.
 
 ## Déroulement du Processus d'Achat Automatisé
 

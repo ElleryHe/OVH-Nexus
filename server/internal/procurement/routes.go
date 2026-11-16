@@ -78,6 +78,8 @@ func (s *Service) HandleCreateQueue(w http.ResponseWriter, r *http.Request) {
 		RetryInterval:           intFromAny(raw["retryInterval"], 30),
 		AutoPay:                 boolFromAnyKeys(raw, "auto_pay", "autoPay"),
 		WaiveRetractationPeriod: boolFromAnyKeys(raw, "waive_retractation_period", "waiveRetractationPeriod"),
+		Source:                  stringFromAny(raw["source"]),
+		SourceRef:               stringFromAny(raw["sourceRef"]),
 	}
 	if len(req.Datacenters) == 0 {
 		if dc := stringFromAny(raw["datacenter"]); dc != "" {
@@ -240,6 +242,8 @@ func (s *Service) HandleQuickOrder(w http.ResponseWriter, r *http.Request) {
 		SkipDuplicateCheck:      boolFromAnyKeys(raw, "skipDuplicateCheck"),
 		AutoPay:                 boolFromAnyKeys(raw, "auto_pay", "autoPay"),
 		WaiveRetractationPeriod: boolFromAnyKeys(raw, "waive_retractation_period", "waiveRetractationPeriod"),
+		Source:                  stringFromAny(raw["source"]),
+		SourceRef:               stringFromAny(raw["sourceRef"]),
 	})
 
 	if !res.Success {

@@ -46,6 +46,7 @@ type DatacenterAvailability struct {
 	Region       string `json:"region"`
 	Availability string `json:"availability"`
 	CountryCode  string `json:"countryCode,omitempty"`
+	Flag         string `json:"flag,omitempty"`
 }
 
 // ServerPlan represents an enriched bare-metal server plan returned by GET /api/servers.
@@ -62,6 +63,9 @@ type ServerPlan struct {
 	MonthlyPrice     *float64                 `json:"monthlyPrice,omitempty"`
 	Currency         string                   `json:"currency,omitempty"`
 	CatalogSource    string                   `json:"catalogSource,omitempty"`
+	ListingState     string                   `json:"listingState"`
+	Orderable        bool                     `json:"orderable"`
+	Generation       int                      `json:"generation,omitempty"`
 	Datacenters      []DatacenterAvailability `json:"datacenters"`
 	DefaultOptions   []ServerOption           `json:"defaultOptions"`
 	AvailableOptions []ServerOption           `json:"availableOptions"`
@@ -133,11 +137,14 @@ type RawAvailabilityItem struct {
 
 // ConfigAvailability holds configuration-level availability and matched catalog addons.
 type ConfigAvailability struct {
-	FQN         string            `json:"fqn"`
-	Memory      string            `json:"memory"`
-	Storage     string            `json:"storage"`
-	Datacenters map[string]string `json:"datacenters"`
-	Options     []string          `json:"options"`
+	FQN          string            `json:"fqn"`
+	Memory       string            `json:"memory"`
+	Storage      string            `json:"storage"`
+	Datacenters  map[string]string `json:"datacenters"`
+	Options      []string          `json:"options"`
+	ListingState string            `json:"listingState,omitempty"`
+	Orderable    bool              `json:"orderable"`
+	Generation   int               `json:"generation,omitempty"`
 }
 
 // ServerPriceValues holds structured tax-inclusive and tax-exclusive monthly pricing.
@@ -801,6 +808,7 @@ func ResolvePlanWithDict(planCode, serverCode string, dict *CatalogDictionary) P
 				BaseCode:      nonEmpty(baseCode, planCode),
 				Name:          name,
 				Range:         rng,
+				Generation:    InferPlanGeneration(planCode),
 				CPU:           match.CPU,
 				Region:        regionInfo,
 				Price:         match.Price,
@@ -811,6 +819,30 @@ func ResolvePlanWithDict(planCode, serverCode string, dict *CatalogDictionary) P
 		}
 	}
 	return InferPlanFromCode(planCode)
+}
+
+// IsPlanListedInDict reports whether planCode is present as a listed bare-metal plan in the public catalog dictionary.
+func IsPlanListedInDict(planCode string, dict *CatalogDictionary) bool {
+	if dict == nil || len(dict.Plans) == 0 {
+		return false
+	}
+	pc := strings.TrimSpace(planCode)
+	if pc == "" {
+		return false
+	}
+	if entry, ok := dict.Plans[pc]; ok && !strings.EqualFold(entry.CatalogSource, "vps") {
+		return true
+	}
+	low := strings.ToLower(pc)
+	if entry, ok := dict.Plans[low]; ok && !strings.EqualFold(entry.CatalogSource, "vps") {
+		return true
+	}
+	for k, entry := range dict.Plans {
+		if strings.EqualFold(k, pc) && !strings.EqualFold(entry.CatalogSource, "vps") {
+			return true
+		}
+	}
+	return false
 }
 
 // ListServers fetches/returns the enriched bare-metal server list with TTL + disk caching and singleflight dedup.
@@ -943,10 +975,14 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 
 	// Index datacenter availabilities by planCode (merging configs per planCode using best availability).
 	availByPlan := make(map[string]map[string]string)
+	firstAvailByPlan := make(map[string]RawAvailabilityItem)
 	for _, item := range availItems {
 		pc := strings.TrimSpace(item.PlanCode)
 		if pc == "" {
 			continue
+		}
+		if _, exists := firstAvailByPlan[pc]; !exists {
+			firstAvailByPlan[pc] = item
 		}
 		dcMap, ok := availByPlan[pc]
 		if !ok {
@@ -964,6 +1000,7 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 	}
 
 	seen := make(map[string]struct{})
+	seenLow := make(map[string]struct{})
 	out := make([]ServerPlan, 0, 128)
 
 	type catPair struct {
@@ -984,6 +1021,7 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 				continue
 			}
 			seen[pc] = struct{}{}
+			seenLow[strings.ToLower(pc)] = struct{}{}
 
 			meta := ResolvePlanWithDict(pc, "", dict)
 			sp := buildSingleServerPlan(plan, meta, cat.source, availByPlan[pc])
@@ -991,7 +1029,92 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 		}
 	}
 
+	var presalePlans []ServerPlan
+	for pc, dcAvail := range availByPlan {
+		if _, ok := seen[pc]; ok {
+			continue
+		}
+		if _, ok := seenLow[strings.ToLower(pc)]; ok {
+			continue
+		}
+		if IsNonServerAddonCode(pc) {
+			continue
+		}
+		firstItem := firstAvailByPlan[pc]
+		meta := ResolvePlanWithDict(pc, firstItem.Server, dict)
+		if strings.EqualFold(meta.Range, "VPS") {
+			continue
+		}
+
+		memStr := "N/A"
+		if firstItem.Memory != "" {
+			parsedMem := ParseMemoryCode(firstItem.Memory, nil)
+			if parsedMem.SizeGB > 0 {
+				memStr = FormatMemory(parsedMem, "en")
+			} else {
+				memStr = firstItem.Memory
+			}
+		}
+		stoStr := "N/A"
+		if firstItem.Storage != "" {
+			parsedSto := ParseStorageCode(firstItem.Storage, false)
+			if !parsedSto.None && len(parsedSto.Groups) > 0 {
+				stoStr = FormatStorage(parsedSto, "en")
+			} else {
+				stoStr = firstItem.Storage
+			}
+		}
+
+		dcs := buildSortedDatacenterAvailabilities(dcAvail)
+		presalePlans = append(presalePlans, ServerPlan{
+			PlanCode:         pc,
+			Name:             nonEmpty(meta.Name, pc),
+			Description:      "Presale / Unlisted Server Model",
+			Range:            meta.Range,
+			CPU:              nonEmpty(FormatCPU(meta.CPU, "en"), "TBD"),
+			Memory:           memStr,
+			Storage:          stoStr,
+			Bandwidth:        "N/A",
+			VRackBandwidth:   "N/A",
+			MonthlyPrice:     nil,
+			Currency:         nonEmpty(meta.Currency, dict.Currency),
+			CatalogSource:    "presale",
+			ListingState:     "presale",
+			Orderable:        false,
+			Generation:       InferPlanGeneration(pc),
+			Datacenters:      dcs,
+			DefaultOptions:   []ServerOption{},
+			AvailableOptions: []ServerOption{},
+		})
+	}
+	slices.SortFunc(presalePlans, func(a, b ServerPlan) int {
+		return strings.Compare(a.PlanCode, b.PlanCode)
+	})
+	out = append(out, presalePlans...)
+
 	return out, nil
+}
+
+func buildSortedDatacenterAvailabilities(dcAvail map[string]string) []DatacenterAvailability {
+	dcs := make([]DatacenterAvailability, 0, len(dcAvail))
+	for dc, avail := range dcAvail {
+		name, region, cc := DatacenterMeta(dc)
+		if avail == "" {
+			avail = "unknown"
+		}
+		dcs = append(dcs, DatacenterAvailability{
+			Datacenter:   dc,
+			DCName:       name,
+			Region:       region,
+			Availability: avail,
+			CountryCode:  cc,
+			Flag:         DatacenterFlag(dc),
+		})
+	}
+	slices.SortFunc(dcs, func(a, b DatacenterAvailability) int {
+		return strings.Compare(a.Datacenter, b.Datacenter)
+	})
+	return dcs
 }
 
 func buildSingleServerPlan(plan map[string]any, meta PlanMeta, catalogSource string, dcAvail map[string]string) ServerPlan {
@@ -1077,23 +1200,7 @@ func buildSingleServerPlan(plan map[string]any, meta PlanMeta, catalogSource str
 		}
 	}
 
-	dcs := make([]DatacenterAvailability, 0, len(dcAvail))
-	for dc, avail := range dcAvail {
-		name, region, cc := DatacenterMeta(dc)
-		if avail == "" {
-			avail = "unknown"
-		}
-		dcs = append(dcs, DatacenterAvailability{
-			Datacenter:   dc,
-			DCName:       name,
-			Region:       region,
-			Availability: avail,
-			CountryCode:  cc,
-		})
-	}
-	slices.SortFunc(dcs, func(a, b DatacenterAvailability) int {
-		return strings.Compare(a.Datacenter, b.Datacenter)
-	})
+	dcs := buildSortedDatacenterAvailabilities(dcAvail)
 
 	displayName := meta.Name
 	if displayName == "" {
@@ -1113,6 +1220,9 @@ func buildSingleServerPlan(plan map[string]any, meta PlanMeta, catalogSource str
 		MonthlyPrice:     meta.Price,
 		Currency:         meta.Currency,
 		CatalogSource:    catalogSource,
+		ListingState:     "listed",
+		Orderable:        true,
+		Generation:       InferPlanGeneration(planCode),
 		Datacenters:      dcs,
 		DefaultOptions:   defaultOpts,
 		AvailableOptions: availOpts,
@@ -1184,7 +1294,10 @@ func (s *Service) GetAvailability(ctx context.Context, endpoint, planCode string
 		if av == "" {
 			av = "unknown"
 		}
-		res[code] = av
+		res[code] = pickBetterAvailability(res[code], av)
+		if norm := NormalizeDisplayDatacenter(code); norm != "" && norm != code {
+			res[norm] = pickBetterAvailability(res[norm], av)
+		}
 	}
 	return res, nil
 }
@@ -1217,8 +1330,19 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 		}
 	}
 
+	listingState := "presale"
+	orderable := false
+	if catalogPlan != nil {
+		listingState = "listed"
+		orderable = true
+	}
+	gen := InferPlanGeneration(planCode)
+
 	out := make(map[string]*ConfigAvailability, len(items))
 	for _, item := range items {
+		if planCode != "" && item.PlanCode != "" && !strings.EqualFold(item.PlanCode, planCode) {
+			continue
+		}
 		dcs := make(map[string]string, len(item.Datacenters))
 		for _, dc := range item.Datacenters {
 			code := strings.ToLower(strings.TrimSpace(dc.Datacenter))
@@ -1227,21 +1351,30 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 				if av == "" {
 					av = "unknown"
 				}
-				dcs[code] = av
+				dcs[code] = pickBetterAvailability(dcs[code], av)
+				if norm := NormalizeDisplayDatacenter(code); norm != "" && norm != code {
+					dcs[norm] = pickBetterAvailability(dcs[norm], av)
+				}
 			}
 		}
 
 		matchedOptions := matchAddonOptionsForConfig(catalogPlan, item.Memory, item.Storage)
+		if matchedOptions == nil {
+			matchedOptions = []string{}
+		}
 		key := item.FQN
 		if key == "" {
-			key = fmt.Sprintf("%s.%s.%s", item.PlanCode, item.Memory, item.Storage)
+			key = fmt.Sprintf("%s.%s.%s", nonEmpty(item.PlanCode, planCode), item.Memory, item.Storage)
 		}
 		out[key] = &ConfigAvailability{
-			FQN:         key,
-			Memory:      nonEmpty(item.Memory, "N/A"),
-			Storage:     nonEmpty(item.Storage, "N/A"),
-			Datacenters: dcs,
-			Options:     matchedOptions,
+			FQN:          key,
+			Memory:       nonEmpty(item.Memory, "N/A"),
+			Storage:      nonEmpty(item.Storage, "N/A"),
+			Datacenters:  dcs,
+			Options:      matchedOptions,
+			ListingState: listingState,
+			Orderable:    orderable,
+			Generation:   gen,
 		}
 	}
 	return out, nil

@@ -230,19 +230,28 @@ func (s *Service) CheckStockNow(ctx context.Context) (int, error) {
 				}
 
 				if sub.AutoOrder && s.procurement != nil {
-					_, _, qoErr := s.procurement.QuickOrder(ctx, procurement.QuickOrderRequest{
+					qoRes, statusCode, qoErr := s.procurement.QuickOrder(ctx, procurement.QuickOrderRequest{
 						AccountID:               sub.AccountID,
 						PlanCode:                sub.PlanCode,
 						Datacenter:              displayDC,
 						AutoPay:                 false,
 						WaiveRetractationPeriod: false,
+						Source:                  "stock-monitor",
+						SourceRef:               sub.PlanCode,
 					})
 					if qoErr != nil && s.log != nil {
-						s.log.Warn(logger.SourceStockMonitor, "Auto-order quick-order trigger skipped or failed",
-							"planCode", sub.PlanCode,
-							"datacenter", displayDC,
-							"error", qoErr.Error(),
-						)
+						if statusCode == http.StatusBadRequest && (errors.Is(qoErr, procurement.ErrNoPricedConfig) || (qoRes != nil && qoRes.Code == "NO_PRICED_CONFIG")) {
+							s.log.Info(logger.SourceStockMonitor, "Stock available for presale SKU; awaiting public catalog pricing before auto-order",
+								"planCode", sub.PlanCode,
+								"datacenter", displayDC,
+							)
+						} else {
+							s.log.Warn(logger.SourceStockMonitor, "Auto-order quick-order trigger skipped or failed",
+								"planCode", sub.PlanCode,
+								"datacenter", displayDC,
+								"error", qoErr.Error(),
+							)
+						}
 					}
 				}
 

@@ -5,8 +5,8 @@ description: Configure automated bare-metal server ordering tasks and configurat
 
 OVH Nexus provides two complementary engines for automated bare-metal procurement when high-demand OVHcloud servers (such as `KS-LE`, `KS-A`, or Flash Sale models) restock for only a few seconds:
 
-1. **Purchase Queue (`/queue`)**: Polls for a target `planCode` across one or more preferred datacenters and optional addon codes.
-2. **Configuration Monitor (`/monitor` & `/ovh-availability`)**: Targets a specific hardware configuration (`planCode + memory + storage + datacenter`) directly from the Live Availability Matrix with optional one-click auto-ordering (`POST /api/orders/quick-order`).
+1. **Purchase Queue (`/queue`)**: Polls for a target `planCode` across one or more preferred datacenters and optional addon codes, recording each task's origin (`source: "manual" | "stock-monitor" | "mcp"`).
+2. **Stock & Configuration Monitor (`/monitor`, `/availability`, `/servers`)**: Subscribes to stock transitions across selected datacenters and optional hardware configurations (`memory` + `storage`) via the one-click **Quick Monitor (`QuickMonitorDialog`)** modal. When `autoOrder` is enabled on a subscription, the backend stock monitor (`internal/monitor/stock.go`) acts as the single authoritative trigger (with no duplicate browser-side polling calls) and automatically enqueues/executes procurement with `source: "stock-monitor"` and bidirectional jump links between **Stock Monitor (`/monitor`)** and **Auto-Order Queue (`/queue`)**.
 
 ## How the Procurement Flow Works
 

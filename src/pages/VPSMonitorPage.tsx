@@ -6,6 +6,7 @@ import { Bell, BellOff, Plus, Trash2, Settings, RefreshCw, History, ChevronUp, S
 import { useAPI } from '@/context/APIContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/components/ToastContainer';
+import { DCLabel } from '@/components/DCLabel';
 
 interface VPSSubscription {
   id: string;
@@ -509,11 +510,23 @@ const VPSMonitorPage = () => {
                         {sub.ovhSubsidiary}
                       </span>
                     </div>
-                    <p className="text-xs text-cyber-muted mt-1">
-                      {sub.datacenters.length > 0 
-                        ? `监控数据中心: ${sub.datacenters.join(', ')}`
-                        : '监控所有数据中心'}
-                    </p>
+                    <div className="text-xs text-cyber-muted mt-1 flex flex-wrap items-center gap-1.5">
+                      {sub.datacenters.length > 0 ? (
+                        <>
+                          <span>监控数据中心:</span>
+                          {sub.datacenters.map((dc) => (
+                            <span
+                              key={dc}
+                              className="px-1.5 py-0.5 rounded bg-cyber-surface border border-cyber-grid text-cyber-text text-[11px] font-medium"
+                            >
+                              <DCLabel code={dc} mode="compact" />
+                            </span>
+                          ))}
+                        </>
+                      ) : (
+                        <span>监控所有数据中心</span>
+                      )}
+                    </div>
                     <div className="flex gap-2 mt-2 flex-wrap">
                       {sub.notifyAvailable && (
                         <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded">
@@ -576,7 +589,9 @@ const VPSMonitorPage = () => {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium text-cyber-accent">{entry.datacenter}</span>
+                                  <span className="font-medium text-cyber-accent">
+                                    <DCLabel code={entry.datacenterCode || entry.datacenter} mode="full" />
+                                  </span>
                                   <span className={`px-1.5 py-0.5 rounded ${
                                     entry.changeType === 'available' 
                                       ? 'bg-green-500/20 text-green-400' 

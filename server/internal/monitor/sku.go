@@ -31,6 +31,11 @@ type TrackedSKU struct {
 	Price          *float64 `json:"price,omitempty"`
 	Currency       string   `json:"currency,omitempty"`
 	FirstSeen      string   `json:"firstSeen"`
+	Baseline       bool     `json:"baseline,omitempty"`
+	ListingState   string   `json:"listingState,omitempty"`
+	PresaleSince   string   `json:"presaleSince,omitempty"`
+	ListedAt       string   `json:"listedAt,omitempty"`
+	Generation     int      `json:"generation,omitempty"`
 	CPUText        string   `json:"cpuText,omitempty"`
 	MemorySummary  string   `json:"memorySummary,omitempty"`
 	StorageSummary string   `json:"storageSummary,omitempty"`
@@ -42,6 +47,8 @@ type TrackedSKU struct {
 type SKUChangeRecord struct {
 	ID             string   `json:"id"`
 	Type           string   `json:"type"`
+	ListingState   string   `json:"listingState,omitempty"`
+	Generation     int      `json:"generation,omitempty"`
 	SKUKey         string   `json:"skuKey"`
 	PlanCode       string   `json:"planCode"`
 	PlanCodes      []string `json:"planCodes,omitempty"`
@@ -77,6 +84,7 @@ type SKUWatcherStatus struct {
 	RecentChangesCount int                     `json:"recentChangesCount"`
 	RecentChanges      []SKUChangeRecord       `json:"recentChanges"`
 	RecentFirstSeen    map[string]string       `json:"recentFirstSeen"`
+	PresaleSKUs        map[string]string       `json:"presaleSkus,omitempty"`
 	Rules              store.NotificationRules `json:"rules"`
 }
 
@@ -216,14 +224,14 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 		}, nil
 	}
 
+	var availItems []catalog.RawAvailabilityItem
 	var availSummaryMap map[string]*skuAvailSummary
-	if rules.SKUTrackConfigs {
-		if availItems, aErr := s.catalog.GetRawAvailabilities(ctx, ep, ""); aErr == nil {
-			availSummaryMap = buildSKUAvailSummaries(availItems, locale)
-		}
+	if items, aErr := s.catalog.GetRawAvailabilities(ctx, ep, ""); aErr == nil {
+		availItems = items
+		availSummaryMap = buildSKUAvailSummaries(availItems, locale)
 	}
 
-	currSKUs := collectCatalogSKUs(dict, rules, availSummaryMap, locale)
+	currSKUs := collectCatalogSKUs(dict, rules, availItems, availSummaryMap, locale)
 	if len(currSKUs) == 0 {
 		return &SKUCheckResult{
 			Status:   "empty_filtered_catalog",
@@ -241,6 +249,7 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 
 	prevSKUs := make(map[string]TrackedSKU)
 	_ = json.Unmarshal(state.SKUsJSON, &prevSKUs)
+	normalizeLoadedSKUs(prevSKUs, state.Initialized)
 	missingCounts := make(map[string]int)
 	_ = json.Unmarshal(state.MissingJSON, &missingCounts)
 	var history []SKUChangeRecord
@@ -253,7 +262,15 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 	// Anti-false-positive Rule 1: First initialization or endpoint switch builds silent baseline.
 	if !state.Initialized || state.Endpoint != ep || len(prevSKUs) == 0 {
 		for k, entry := range currSKUs {
+			entry.Baseline = true
 			entry.FirstSeen = nowUTC
+			entry.ListedAt = ""
+			if entry.ListingState == "presale" {
+				entry.PresaleSince = nowUTC
+			} else {
+				entry.ListingState = "listed"
+				entry.PresaleSince = ""
+			}
 			currSKUs[k] = entry
 		}
 		if err := s.saveSKUState(ctx, true, ep, currSKUs, map[string]int{}, history); err != nil {
@@ -310,11 +327,23 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 		skuKey := nonEmpty(curr.Key, curr.PlanCode)
 		prev, existed := prevSKUs[k]
 		if !existed {
+			curr.Baseline = false
 			curr.FirstSeen = nowUTC
+			details := fmt.Sprintf("New SKU detected: %s (%s)", curr.Name, curr.PlanCode)
+			if curr.ListingState == "presale" {
+				curr.PresaleSince = nowUTC
+				curr.ListedAt = ""
+				details = fmt.Sprintf("New presale SKU detected: %s (%s)", curr.Name, curr.PlanCode)
+			} else {
+				curr.ListingState = "listed"
+				curr.ListedAt = nowUTC
+			}
 			nextSKUs[k] = curr
 			rec := SKUChangeRecord{
 				ID:             newShortID(),
 				Type:           "added",
+				ListingState:   curr.ListingState,
+				Generation:     curr.Generation,
 				SKUKey:         skuKey,
 				PlanCode:       curr.PlanCode,
 				PlanCodes:      append([]string(nil), curr.PlanCodes...),
@@ -328,17 +357,49 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 				MemorySummary:  curr.MemorySummary,
 				StorageSummary: curr.StorageSummary,
 				StockState:     curr.StockState,
-				Details:        fmt.Sprintf("New SKU detected: %s (%s)", curr.Name, curr.PlanCode),
+				Details:        details,
 			}
 			addedRecords = append(addedRecords, rec)
 			newChanges = append(newChanges, rec)
 			continue
 		}
 
+		curr.Baseline = prev.Baseline
 		if prev.FirstSeen != "" {
 			curr.FirstSeen = prev.FirstSeen
 		} else {
 			curr.FirstSeen = nowUTC
+		}
+		curr.PresaleSince = prev.PresaleSince
+		curr.ListedAt = prev.ListedAt
+
+		if prev.ListingState == "presale" && curr.ListingState == "listed" {
+			curr.ListedAt = nowUTC
+			curr.PresaleSince = nonEmpty(prev.PresaleSince, prev.FirstSeen)
+			rec := SKUChangeRecord{
+				ID:             newShortID(),
+				Type:           "added",
+				ListingState:   "listed",
+				Generation:     curr.Generation,
+				SKUKey:         skuKey,
+				PlanCode:       curr.PlanCode,
+				PlanCodes:      append([]string(nil), curr.PlanCodes...),
+				Name:           curr.Name,
+				Range:          curr.Range,
+				Endpoint:       ep,
+				Timestamp:      nowUTC,
+				Price:          curr.Price,
+				Currency:       curr.Currency,
+				CPUText:        curr.CPUText,
+				MemorySummary:  curr.MemorySummary,
+				StorageSummary: curr.StorageSummary,
+				StockState:     curr.StockState,
+				Details:        fmt.Sprintf("Presale SKU officially listed: %s (%s)", curr.Name, curr.PlanCode),
+			}
+			addedRecords = append(addedRecords, rec)
+			newChanges = append(newChanges, rec)
+		} else if curr.ListingState == "presale" && curr.PresaleSince == "" {
+			curr.PresaleSince = nonEmpty(prev.PresaleSince, curr.FirstSeen)
 		}
 
 		if rules.SKUTrackConfigs && len(prev.Configs) > 0 && len(curr.Configs) > 0 {
@@ -511,6 +572,7 @@ func (s *Service) saveSKUState(
 func collectCatalogSKUs(
 	dict *catalog.CatalogDictionary,
 	rules store.NotificationRules,
+	availItems []catalog.RawAvailabilityItem,
 	availSummaries map[string]*skuAvailSummary,
 	locale string,
 ) map[string]TrackedSKU {
@@ -576,6 +638,8 @@ func collectCatalogSKUs(
 				Range:          rng,
 				Price:          entry.Price,
 				Currency:       nonEmpty(entry.Currency, dict.Currency),
+				ListingState:   "listed",
+				Generation:     catalog.InferPlanGeneration(displayCode),
 				CPUText:        cpuText,
 				MemorySummary:  memSum,
 				StorageSummary: stoSum,
@@ -585,6 +649,10 @@ func collectCatalogSKUs(
 			continue
 		}
 
+		existing.ListingState = "listed"
+		if existing.Generation == 0 {
+			existing.Generation = catalog.InferPlanGeneration(displayCode)
+		}
 		if !slices.Contains(existing.PlanCodes, planCode) {
 			existing.PlanCodes = append(existing.PlanCodes, planCode)
 		}
@@ -619,7 +687,131 @@ func collectCatalogSKUs(
 		out[key] = existing
 	}
 
+	// Include availability-only SKUs not yet present in the public catalog as presale SKUs.
+	for _, it := range availItems {
+		planCode := strings.TrimSpace(it.PlanCode)
+		if planCode == "" || catalog.IsNonServerAddonCode(planCode) {
+			continue
+		}
+		if catalog.IsPlanListedInDict(planCode, dict) {
+			continue
+		}
+
+		meta := catalog.ResolvePlanWithDict(planCode, it.Server, dict)
+		rng := strings.ToUpper(strings.TrimSpace(meta.Range))
+		if rng == "" {
+			rng = catalog.ClassifyProductRange(meta.Name, "", planCode)
+		}
+		if rng == "VPS" {
+			continue
+		}
+		if len(allowedRanges) > 0 && !allowedRanges[rng] {
+			continue
+		}
+
+		key := strings.ToLower(planCode)
+		displayCode := planCode
+		if rules.SKUMergeRegional {
+			baseCode, _ := catalog.ParsePlanRegion(planCode)
+			if baseCode != "" {
+				key = strings.ToLower(baseCode)
+				displayCode = baseCode
+			}
+		}
+
+		cpuText := catalog.FormatCPU(meta.CPU, locale)
+		if cpuText == "-" {
+			cpuText = ""
+		}
+
+		var cfgs []string
+		var memSum, stoSum, stockState string
+		if sum := availSummaries[strings.ToLower(planCode)]; sum != nil {
+			cfgs = append([]string(nil), sum.configs...)
+			memSum = sum.memorySummary
+			stoSum = sum.storageSummary
+			stockState = sum.stockState
+		}
+
+		existing, ok := out[key]
+		if !ok {
+			out[key] = TrackedSKU{
+				Key:            key,
+				PlanCode:       displayCode,
+				PlanCodes:      []string{planCode},
+				Name:           nonEmpty(meta.Name, displayCode),
+				Range:          rng,
+				Price:          nil,
+				Currency:       nonEmpty(meta.Currency, dict.Currency),
+				ListingState:   "presale",
+				Generation:     catalog.InferPlanGeneration(displayCode),
+				CPUText:        cpuText,
+				MemorySummary:  memSum,
+				StorageSummary: stoSum,
+				StockState:     stockState,
+				Configs:        cfgs,
+			}
+			continue
+		}
+
+		if !slices.Contains(existing.PlanCodes, planCode) {
+			existing.PlanCodes = append(existing.PlanCodes, planCode)
+		}
+		if existing.MemorySummary == "" {
+			existing.MemorySummary = memSum
+		}
+		if existing.StorageSummary == "" {
+			existing.StorageSummary = stoSum
+		}
+		if stockState == "in_stock" || existing.StockState == "" {
+			existing.StockState = stockState
+		}
+		for _, c := range cfgs {
+			if !slices.Contains(existing.Configs, c) {
+				existing.Configs = append(existing.Configs, c)
+			}
+		}
+		slices.Sort(existing.Configs)
+		out[key] = existing
+	}
+
 	return out
+}
+
+// normalizeLoadedSKUs applies a one-time migration guard for legacy v1.3.0 baseline snapshots
+// where Initialized == true and all entries lack Baseline/ListedAt and share the exact same FirstSeen timestamp.
+func normalizeLoadedSKUs(skus map[string]TrackedSKU, initialized bool) {
+	if len(skus) == 0 {
+		return
+	}
+	allUnmigratedSameTS := initialized
+	var sharedFirstSeen string
+	for _, entry := range skus {
+		if entry.Baseline || entry.ListedAt != "" || entry.PresaleSince != "" || entry.FirstSeen == "" {
+			allUnmigratedSameTS = false
+			break
+		}
+		if sharedFirstSeen == "" {
+			sharedFirstSeen = entry.FirstSeen
+		} else if entry.FirstSeen != sharedFirstSeen {
+			allUnmigratedSameTS = false
+			break
+		}
+	}
+
+	for k, entry := range skus {
+		if allUnmigratedSameTS {
+			entry.Baseline = true
+			entry.ListedAt = ""
+		}
+		if entry.ListingState == "" {
+			entry.ListingState = "listed"
+		}
+		if entry.Generation == 0 {
+			entry.Generation = catalog.InferPlanGeneration(entry.PlanCode)
+		}
+		skus[k] = entry
+	}
 }
 
 func buildSKUAvailSummaries(items []catalog.RawAvailabilityItem, locale string) map[string]*skuAvailSummary {
@@ -738,6 +930,11 @@ func newShortID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// GetSKUStatusAndChanges returns the current SKU Watcher status and change timeline.
+func (s *Service) GetSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStatus, []SKUChangeRecord, error) {
+	return s.buildSKUStatusAndChanges(ctx)
+}
+
 func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStatus, []SKUChangeRecord, error) {
 	state, err := s.store.LoadSKUWatcherState(ctx)
 	if err != nil {
@@ -751,36 +948,52 @@ func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStat
 
 	skus := make(map[string]TrackedSKU)
 	_ = json.Unmarshal(state.SKUsJSON, &skus)
+	normalizeLoadedSKUs(skus, state.Initialized)
 	var changes []SKUChangeRecord
 	_ = json.Unmarshal(state.ChangesJSON, &changes)
 	if changes == nil {
 		changes = []SKUChangeRecord{}
 	}
 
-	cutoff := time.Now().Add(-7 * 24 * time.Hour)
-	recentFirstSeen := make(map[string]string)
-	for _, entry := range skus {
-		ts, parseErr := time.Parse(time.RFC3339Nano, entry.FirstSeen)
-		if parseErr != nil || !ts.After(cutoff) {
-			continue
+	recordPlanCodeTimestamp := func(target map[string]string, entry TrackedSKU, tsStr string) {
+		if tsStr == "" {
+			return
 		}
 		if entry.PlanCode != "" {
-			recentFirstSeen[entry.PlanCode] = entry.FirstSeen
+			target[entry.PlanCode] = tsStr
 			if base, _ := catalog.ParsePlanRegion(entry.PlanCode); base != "" {
-				recentFirstSeen[base] = entry.FirstSeen
+				target[base] = tsStr
 			}
 		}
 		if entry.Key != "" {
-			recentFirstSeen[entry.Key] = entry.FirstSeen
+			target[entry.Key] = tsStr
 		}
 		for _, pc := range entry.PlanCodes {
 			if pc != "" {
-				recentFirstSeen[pc] = entry.FirstSeen
+				target[pc] = tsStr
 				if base, _ := catalog.ParsePlanRegion(pc); base != "" {
-					recentFirstSeen[base] = entry.FirstSeen
+					target[base] = tsStr
 				}
 			}
 		}
+	}
+
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	recentFirstSeen := make(map[string]string)
+	presaleSKUs := make(map[string]string)
+	for _, entry := range skus {
+		if entry.ListingState == "presale" {
+			recordPlanCodeTimestamp(presaleSKUs, entry, nonEmpty(entry.PresaleSince, entry.FirstSeen))
+			continue
+		}
+		if entry.ListedAt == "" {
+			continue
+		}
+		ts, parseErr := time.Parse(time.RFC3339Nano, entry.ListedAt)
+		if parseErr != nil || !ts.After(cutoff) {
+			continue
+		}
+		recordPlanCodeTimestamp(recentFirstSeen, entry, entry.ListedAt)
 	}
 
 	recentChanges := changes
@@ -815,6 +1028,7 @@ func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStat
 		RecentChangesCount: len(changes),
 		RecentChanges:      recentChanges,
 		RecentFirstSeen:    recentFirstSeen,
+		PresaleSKUs:        presaleSKUs,
 		Rules:              rules,
 	}
 	return status, changes, nil

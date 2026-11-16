@@ -6,6 +6,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useAPI } from "@/context/APIContext";
 import { useLocale } from "@/context/LocaleContext";
 import { useToast } from "@/components/ToastContainer";
+import { DCLabel } from "@/components/DCLabel";
 import {
   useCatalogDictionary,
   resolvePlanDisplay,
@@ -305,7 +306,10 @@ const HistoryPage = () => {
                             <span>{resolvePlanDisplay(head.planCode, '', locale, catalogDict).name}</span>
                             <span className="text-xs font-mono text-cyber-muted font-normal">({head.planCode})</span>
                           </div>
-                          <div className="text-xs text-cyber-text-dimmed mt-1">{(head.datacenter || "-").toUpperCase()} · {timeRange}</div>
+                          <div className="text-xs text-cyber-text-dimmed mt-1 flex items-center gap-1.5 flex-wrap">
+                            {head.datacenter ? <DCLabel code={head.datacenter} mode="full" /> : '-'}
+                            <span>· {timeRange}</span>
+                          </div>
                           {head.accountId && (
                             <div className="text-[10px] text-slate-300 mt-1">账户：{getAccountLabel(head.accountId)}</div>
                           )}
@@ -319,7 +323,10 @@ const HistoryPage = () => {
                         {g.items.map((item) => (
                           <div key={item.id} className="p-3 border border-cyber-grid/30 rounded">
                             <div className="flex justify-between">
-                              <div className="text-xs text-cyber-text-dimmed">{(item.datacenter || "-").toUpperCase()} · {new Date(item.purchaseTime).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                              <div className="text-xs text-cyber-text-dimmed flex items-center gap-1">
+                                {item.datacenter ? <DCLabel code={item.datacenter} mode="compact" /> : '-'}
+                                <span>· {new Date(item.purchaseTime).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                              </div>
                               <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${item.status === "success" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>{item.status === "success" ? "成功" : "失败"}</span>
                             </div>
                             {typeof item.sequence === 'number' && (
@@ -369,8 +376,9 @@ const HistoryPage = () => {
                       <span>{resolvePlanDisplay(item.planCode, '', locale, catalogDict).name}</span>
                       <span className="text-xs font-mono text-cyber-muted font-normal">({item.planCode})</span>
                     </div>
-                    <div className="text-xs text-cyber-text-dimmed mt-1">
-                      {item.datacenter.toUpperCase()} · {new Date(item.purchaseTime).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    <div className="text-xs text-cyber-text-dimmed mt-1 flex items-center gap-1.5 flex-wrap">
+                      <DCLabel code={item.datacenter} mode="full" />
+                      <span>· {new Date(item.purchaseTime).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                     {typeof item.sequence === 'number' && (
                       <div className="text-[10px] text-cyber-accent mt-1">第 {item.sequence} 次成功</div>
@@ -464,7 +472,9 @@ const HistoryPage = () => {
                         <div className="text-[10px] font-mono text-cyber-muted truncate">{item.planCode}</div>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-cyber-text-dimmed text-xs whitespace-nowrap">{item.datacenter.toUpperCase()}</td>
+                    <td className="px-3 py-2.5 text-cyber-text-dimmed text-xs whitespace-nowrap">
+                      <DCLabel code={item.datacenter} mode="compact" />
+                    </td>
                     <td className="px-3 py-2.5 text-xs text-cyber-text-dimmed whitespace-nowrap">{typeof item.sequence === 'number' ? item.sequence : ''}</td>
                     <td className="px-3 py-2.5 text-xs text-cyber-text-dimmed max-w-[240px]">
                       <div className="break-words line-clamp-2" title={item.options && item.options.length > 0 ? item.options.join(', ') : '默认配置'}>

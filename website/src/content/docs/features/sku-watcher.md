@@ -11,8 +11,9 @@ The **Public SKU Change Watcher** (`internal/monitor`) monitors the entire publi
 
 Public availability APIs occasionally experience transient CDN cache glitches or partial responses. To prevent false removal storms, the watcher implements a 4-layer protection engine:
 
-1. **Silent Baseline Initialization (`initialized: false → true`)**:
-   - On the very first scan (or after changing the monitored OVH endpoint), the watcher records all current SKUs into `/data/nexus.db` (`sku_watcher_state`) as the baseline **without sending any notifications**.
+1. **Silent Baseline Initialization (`baseline: true`) & Two-Stage Listing Tracking (`presale -> listed`)**:
+   - On initial deployment (or after changing the monitored OVH endpoint), all existing SKUs are recorded in `/data/nexus.db` (`sku_watcher_state`) with `baseline: true` **without sending any notifications or marking existing inventory as newly listed**.
+   - For post-baseline discoveries, the watcher tracks two distinct lifecycle timestamps: `presaleSince` (when an unlisted SKU first appears in live datacenter availability feeds, emitting `sku.presale`) and `listedAt` (when a SKU enters or transitions from `presale -> listed` in the public catalog, emitting `sku.listed` and marking the model as **New**).
 2. **2-Round Consecutive Removal Confirmation (`missingCounts >= 2`)**:
    - When a previously known SKU disappears in a check round, it is **not** immediately reported as removed. Instead, its `missingCounts` counter is incremented to `1`.
    - Only if the SKU remains absent in the **next consecutive round** (`missingCounts >= 2`) is a `sku.changed` (`SKU Removed`) event emitted. If it reappears on the next check, the counter resets to `0`.
