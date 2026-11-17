@@ -32,10 +32,14 @@ import {
   buildConfigKey,
   formatConfigLabel,
   getCurrencySymbol,
+  resolvePricingModeDuration,
+  synthesizePricingModes,
+  resolvePricingModeEntry,
 } from '@/utils/hardwareFormat';
 import type {
   ListingState,
   PlanConfigOption,
+  PlanPricingMode,
   StockTarget,
   StockSubscription,
 } from '@/types';
@@ -45,6 +49,18 @@ export interface QuickMonitorInitialConfig {
   options?: string[];
   label?: string;
   estimatedMonthlyPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
+  pricingMode?: string;
+  duration?: string;
+  coupon?: string;
   currency?: string;
   memory?: string;
   storage?: string;
@@ -76,6 +92,15 @@ interface NormalizedConfigChoice {
   options: string[];
   isDefault: boolean;
   estimatedMonthlyPrice: number | null;
+  originalMonthlyPrice: number | null;
+  setupFee: number | null;
+  originalSetupFee: number | null;
+  freeSetup: boolean;
+  hasPromo: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes: PlanPricingMode[];
   currency: string;
   dcStatuses: Record<string, string>;
   inStockCount: number;
@@ -163,6 +188,63 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
         ? raw.price
         : priceCalc.totalPrice;
 
+    const originalMonthlyPrice =
+      typeof raw.originalMonthlyPrice === 'number' && raw.originalMonthlyPrice > 0
+        ? raw.originalMonthlyPrice
+        : typeof raw.originalPrice === 'number' && raw.originalPrice > 0
+        ? raw.originalPrice
+        : fallbackMeta.originalMonthlyPrice ?? null;
+
+    const setupFee =
+      typeof raw.setupFee === 'number'
+        ? raw.setupFee
+        : typeof fallbackMeta.setupFee === 'number'
+        ? fallbackMeta.setupFee
+        : null;
+
+    const originalSetupFee =
+      typeof raw.originalSetupFee === 'number'
+        ? raw.originalSetupFee
+        : typeof fallbackMeta.originalSetupFee === 'number'
+        ? fallbackMeta.originalSetupFee
+        : null;
+
+    const freeSetup = Boolean(
+      raw.freeSetup ||
+        fallbackMeta.freeSetup ||
+        (setupFee === 0 && (originalSetupFee ?? 0) > 0)
+    );
+
+    const hasPromo = Boolean(
+      raw.hasPromo ||
+        fallbackMeta.hasPromo ||
+        freeSetup ||
+        (originalMonthlyPrice &&
+          estPrice &&
+          originalMonthlyPrice > estPrice + 0.01)
+    );
+
+    const promoCode = raw.promoCode || fallbackMeta.promoCode;
+    const promoBadge = raw.promoBadge || fallbackMeta.promoBadge;
+    const promoDescription =
+      raw.promoDescription || fallbackMeta.promoDescription;
+
+    const pricingModes = synthesizePricingModes({
+      pricingModes:
+        Array.isArray(raw.pricingModes) && raw.pricingModes.length > 0
+          ? raw.pricingModes
+          : fallbackMeta.pricingModes,
+      estimatedMonthlyPrice: estPrice ?? null,
+      originalMonthlyPrice,
+      setupFee,
+      originalSetupFee,
+      freeSetup,
+      hasPromo,
+      promoCode,
+      promoBadge,
+      promoDescription,
+    });
+
     const currency =
       raw.currency || fallbackMeta.currency || priceCalc.currency || 'EUR';
 
@@ -196,6 +278,15 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
       options: opts,
       isDefault: Boolean(raw.isDefault),
       estimatedMonthlyPrice: estPrice ?? null,
+      originalMonthlyPrice,
+      setupFee,
+      originalSetupFee,
+      freeSetup,
+      hasPromo,
+      promoCode,
+      promoBadge,
+      promoDescription,
+      pricingModes,
       currency,
       dcStatuses,
       inStockCount,
@@ -392,109 +483,165 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
                     ? resolvedInitialChoice
                     : matchedCfg;
 
-                return {
-                  id: tItem.id || `tgt-${idx + 1}`,
-                  configKey: useChoice ? useChoice.configKey : tItem.configKey || '',
-                  options:
-                    useChoice && useChoice.options.length > 0
-                      ? useChoice.options
-                      : Array.isArray(tItem.options)
-                      ? tItem.options
-                      : [],
-                  label:
-                    useChoice?.label ||
-                    tItem.label ||
-                    '',
-                  datacenters: Array.isArray(tItem.datacenters)
-                    ? tItem.datacenters
-                        .map((d) => normalizeDatacenterCode(d))
-                        .filter(Boolean)
-                    : [],
-                  notifyAvailable: tItem.notifyAvailable !== false,
-                  notifyUnavailable: Boolean(tItem.notifyUnavailable),
-                  autoOrder: Boolean(tItem.autoOrder),
-                  quantity:
-                    typeof tItem.quantity === 'number' && tItem.quantity > 0
-                      ? tItem.quantity
-                      : 1,
-                  maxMonthlyPrice:
+                  const initPricingMode =
+                    tItem.pricingMode ||
+                    (idx === 0 && initialConfig?.pricingMode) ||
+                    'default';
+                  const modeEntry = resolvePricingModeEntry(
+                    useChoice?.pricingModes,
+                    initPricingMode
+                  );
+                  const resolvedMonthlyCap =
                     typeof tItem.maxMonthlyPrice === 'number' &&
                     tItem.maxMonthlyPrice > 0
                       ? tItem.maxMonthlyPrice
-                      : useChoice?.estimatedMonthlyPrice ?? undefined,
+                      : modeEntry && modeEntry.monthlyEquivalentPrice > 0
+                      ? modeEntry.monthlyEquivalentPrice
+                      : useChoice?.estimatedMonthlyPrice ?? undefined;
+
+                  return {
+                    id: tItem.id || `tgt-${idx + 1}`,
+                    configKey: useChoice ? useChoice.configKey : tItem.configKey || '',
+                    options:
+                      useChoice && useChoice.options.length > 0
+                        ? useChoice.options
+                        : Array.isArray(tItem.options)
+                        ? tItem.options
+                        : [],
+                    label:
+                      useChoice?.label ||
+                      tItem.label ||
+                      '',
+                    datacenters: Array.isArray(tItem.datacenters)
+                      ? tItem.datacenters
+                          .map((d) => normalizeDatacenterCode(d))
+                          .filter(Boolean)
+                      : [],
+                    notifyAvailable: tItem.notifyAvailable !== false,
+                    notifyUnavailable: Boolean(tItem.notifyUnavailable),
+                    autoOrder: Boolean(tItem.autoOrder),
+                    quantity:
+                      typeof tItem.quantity === 'number' && tItem.quantity > 0
+                        ? tItem.quantity
+                        : 1,
+                    maxMonthlyPrice: resolvedMonthlyCap,
+                    pricingMode: initPricingMode,
+                    duration:
+                      tItem.duration ||
+                      modeEntry?.duration ||
+                      resolvePricingModeDuration(
+                        initPricingMode,
+                        useChoice?.pricingModes
+                      ),
+                    coupon:
+                      tItem.coupon ??
+                      (idx === 0 ? initialConfig?.coupon || '' : ''),
+                    currency:
+                      tItem.currency ||
+                      useChoice?.currency ||
+                      planMeta.currency ||
+                      'EUR',
+                    lastStatus: tItem.lastStatus || {},
+                  };
+                }
+              );
+              setTargets(loadedTargets);
+            } else {
+              // Convert legacy top-level subscription into a single StockTarget
+              const subDcs = Array.isArray(foundExisting.datacenters)
+                ? foundExisting.datacenters
+                    .map((d) => normalizeDatacenterCode(d))
+                    .filter(Boolean)
+                : [];
+              const initPricingMode = initialConfig?.pricingMode || 'default';
+              const modeEntry = resolvePricingModeEntry(
+                resolvedInitialChoice?.pricingModes,
+                initPricingMode
+              );
+              setTargets([
+                {
+                  id: 'tgt-1',
+                  configKey: resolvedInitialChoice?.configKey || '',
+                  options: resolvedInitialChoice?.options || [],
+                  label: resolvedInitialChoice?.label || '',
+                  datacenters: subDcs,
+                  notifyAvailable: foundExisting.notifyAvailable !== false,
+                  notifyUnavailable: Boolean(foundExisting.notifyUnavailable),
+                  autoOrder: Boolean(foundExisting.autoOrder),
+                  quantity:
+                    typeof foundExisting.autoOrderQuantity === 'number' &&
+                    foundExisting.autoOrderQuantity > 0
+                      ? foundExisting.autoOrderQuantity
+                      : 1,
+                  maxMonthlyPrice:
+                    modeEntry && modeEntry.monthlyEquivalentPrice > 0
+                      ? modeEntry.monthlyEquivalentPrice
+                      : resolvedInitialChoice?.estimatedMonthlyPrice ?? undefined,
+                  pricingMode: initPricingMode,
+                  duration:
+                    initialConfig?.duration ||
+                    modeEntry?.duration ||
+                    resolvePricingModeDuration(
+                      initPricingMode,
+                      resolvedInitialChoice?.pricingModes
+                    ),
+                  coupon: initialConfig?.coupon || '',
                   currency:
-                    tItem.currency ||
-                    useChoice?.currency ||
-                    planMeta.currency ||
-                    'EUR',
-                  lastStatus: tItem.lastStatus || {},
-                };
-              }
-            );
-            setTargets(loadedTargets);
+                    resolvedInitialChoice?.currency || planMeta.currency || 'EUR',
+                  lastStatus: foundExisting.lastStatus || {},
+                },
+              ]);
+            }
           } else {
-            // Convert legacy top-level subscription into a single StockTarget
-            const subDcs = Array.isArray(foundExisting.datacenters)
-              ? foundExisting.datacenters
-                  .map((d) => normalizeDatacenterCode(d))
-                  .filter(Boolean)
-              : [];
+            setIsExistingSub(false);
+            setNeedsConfigSelection(false);
+            const initPricingMode = initialConfig?.pricingMode || 'default';
+            const modeEntry = resolvePricingModeEntry(
+              resolvedInitialChoice?.pricingModes || initialConfig?.pricingModes,
+              initPricingMode
+            );
             setTargets([
               {
                 id: 'tgt-1',
-                configKey: resolvedInitialChoice?.configKey || '',
-                options: resolvedInitialChoice?.options || [],
-                label: resolvedInitialChoice?.label || '',
-                datacenters: subDcs,
-                notifyAvailable: foundExisting.notifyAvailable !== false,
-                notifyUnavailable: Boolean(foundExisting.notifyUnavailable),
-                autoOrder: Boolean(foundExisting.autoOrder),
-                quantity:
-                  typeof foundExisting.autoOrderQuantity === 'number' &&
-                  foundExisting.autoOrderQuantity > 0
-                    ? foundExisting.autoOrderQuantity
-                    : 1,
+                configKey: resolvedInitialChoice?.configKey || initialConfig?.configKey || '',
+                options:
+                  resolvedInitialChoice?.options ||
+                  initialConfig?.options ||
+                  [],
+                label:
+                  resolvedInitialChoice?.label ||
+                  initialConfig?.label ||
+                  '',
+                datacenters: callerDcs,
+                notifyAvailable: true,
+                notifyUnavailable: false,
+                autoOrder: false,
+                quantity: 1,
                 maxMonthlyPrice:
-                  resolvedInitialChoice?.estimatedMonthlyPrice ?? undefined,
+                  modeEntry && modeEntry.monthlyEquivalentPrice > 0
+                    ? modeEntry.monthlyEquivalentPrice
+                    : resolvedInitialChoice?.estimatedMonthlyPrice ??
+                      initialConfig?.estimatedMonthlyPrice ??
+                      undefined,
+                pricingMode: initPricingMode,
+                duration:
+                  initialConfig?.duration ||
+                  modeEntry?.duration ||
+                  resolvePricingModeDuration(
+                    initPricingMode,
+                    resolvedInitialChoice?.pricingModes ||
+                      initialConfig?.pricingModes
+                  ),
+                coupon: initialConfig?.coupon || '',
                 currency:
-                  resolvedInitialChoice?.currency || planMeta.currency || 'EUR',
-                lastStatus: foundExisting.lastStatus || {},
+                  resolvedInitialChoice?.currency ||
+                  initialConfig?.currency ||
+                  planMeta.currency ||
+                  'EUR',
+                lastStatus: {},
               },
             ]);
           }
-        } else {
-          setIsExistingSub(false);
-          setNeedsConfigSelection(false);
-          setTargets([
-            {
-              id: 'tgt-1',
-              configKey: resolvedInitialChoice?.configKey || initialConfig?.configKey || '',
-              options:
-                resolvedInitialChoice?.options ||
-                initialConfig?.options ||
-                [],
-              label:
-                resolvedInitialChoice?.label ||
-                initialConfig?.label ||
-                '',
-              datacenters: callerDcs,
-              notifyAvailable: true,
-              notifyUnavailable: false,
-              autoOrder: false,
-              quantity: 1,
-              maxMonthlyPrice:
-                resolvedInitialChoice?.estimatedMonthlyPrice ??
-                initialConfig?.estimatedMonthlyPrice ??
-                undefined,
-              currency:
-                resolvedInitialChoice?.currency ||
-                initialConfig?.currency ||
-                planMeta.currency ||
-                'EUR',
-              lastStatus: {},
-            },
-          ]);
-        }
 
         if (statusRes.status === 'fulfilled' && statusRes.value?.data) {
           const running = Boolean(statusRes.value.data.running);
@@ -548,15 +695,53 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
     }
     const chosen = configChoices.find((c) => c.configKey === configKey);
     if (!chosen) return;
+    const currentMode = targets[index]?.pricingMode || 'default';
+    const modeEntry = resolvePricingModeEntry(chosen.pricingModes, currentMode);
+    const nextMode = modeEntry?.mode || currentMode;
+    const nextDuration =
+      modeEntry?.duration ||
+      resolvePricingModeDuration(nextMode, chosen.pricingModes);
+    const nextMonthlyEq =
+      modeEntry && modeEntry.monthlyEquivalentPrice > 0
+        ? modeEntry.monthlyEquivalentPrice
+        : chosen.estimatedMonthlyPrice;
+
     updateTarget(index, {
       configKey: chosen.configKey,
       options: chosen.options,
       label: chosen.label,
+      pricingMode: nextMode,
+      duration: nextDuration,
       currency: chosen.currency || planMeta.currency || 'EUR',
       maxMonthlyPrice:
-        chosen.estimatedMonthlyPrice && chosen.estimatedMonthlyPrice > 0
-          ? chosen.estimatedMonthlyPrice
+        nextMonthlyEq && nextMonthlyEq > 0
+          ? Number(nextMonthlyEq.toFixed(2))
           : targets[index]?.maxMonthlyPrice,
+    });
+  };
+
+  const handleSelectPricingModeForTarget = (index: number, mode: string) => {
+    const tgt = targets[index];
+    const chosen =
+      configChoices.find((c) => c.configKey === tgt?.configKey) ||
+      configChoices.find((c) => c.isDefault) ||
+      configChoices[0];
+    const modeEntry = resolvePricingModeEntry(chosen?.pricingModes, mode);
+    const nextDuration =
+      modeEntry?.duration ||
+      resolvePricingModeDuration(mode, chosen?.pricingModes);
+    const nextMonthlyEq =
+      modeEntry && modeEntry.monthlyEquivalentPrice > 0
+        ? modeEntry.monthlyEquivalentPrice
+        : chosen?.estimatedMonthlyPrice;
+
+    updateTarget(index, {
+      pricingMode: mode,
+      duration: nextDuration,
+      maxMonthlyPrice:
+        nextMonthlyEq && nextMonthlyEq > 0
+          ? Number(nextMonthlyEq.toFixed(2))
+          : tgt?.maxMonthlyPrice,
     });
   };
 
@@ -575,6 +760,10 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
   const addTarget = () => {
     const defaultChoice =
       configChoices.find((c) => c.isDefault) || configChoices[0];
+    const modeEntry = resolvePricingModeEntry(
+      defaultChoice?.pricingModes,
+      'default'
+    );
     setTargets((prev) => [
       ...prev,
       {
@@ -587,7 +776,13 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
         notifyUnavailable: false,
         autoOrder: false,
         quantity: 1,
-        maxMonthlyPrice: defaultChoice?.estimatedMonthlyPrice ?? undefined,
+        maxMonthlyPrice:
+          modeEntry && modeEntry.monthlyEquivalentPrice > 0
+            ? modeEntry.monthlyEquivalentPrice
+            : defaultChoice?.estimatedMonthlyPrice ?? undefined,
+        pricingMode: 'default',
+        duration: modeEntry?.duration || 'P1M',
+        coupon: '',
         currency: defaultChoice?.currency || planMeta.currency || 'EUR',
         lastStatus: {},
       },
@@ -647,6 +842,12 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
         const isAllSelected =
           tgt.datacenters.length === 0 ||
           tgt.datacenters.length >= availableDcCodes.length;
+        const chosen = configChoices.find((c) => c.configKey === tgt.configKey);
+        const mode = (tgt.pricingMode || 'default').trim();
+        const duration =
+          tgt.duration ||
+          resolvePricingModeDuration(mode, chosen?.pricingModes);
+        const trimmedCoupon = (tgt.coupon || '').trim();
         return {
           id: tgt.id || `tgt-${idx + 1}`,
           configKey: tgt.configKey || '',
@@ -661,6 +862,9 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
             tgt.maxMonthlyPrice && Number(tgt.maxMonthlyPrice) > 0
               ? Number(tgt.maxMonthlyPrice)
               : undefined,
+          pricingMode: mode,
+          duration,
+          coupon: trimmedCoupon || undefined,
           currency: tgt.currency || planMeta.currency || 'EUR',
           lastStatus: tgt.lastStatus || {},
         };
@@ -887,46 +1091,376 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
                           )}
                         </div>
 
-                        {/* 1. Configuration Selector */}
-                        <div>
-                          <label className="block text-xs font-semibold text-cyber-text mb-1">
-                            {t('quickMonitor.configSelectLabel')}
-                          </label>
-                          <select
-                            value={target.configKey}
-                            onChange={(e) =>
-                              handleSelectConfigForTarget(idx, e.target.value)
-                            }
-                            className={`cyber-input w-full text-xs py-2 ${
-                              isConfigMissingForAutoOrder
-                                ? 'border-amber-500 ring-1 ring-amber-500/50'
-                                : ''
-                            }`}
-                          >
-                            <option value="">
-                              {t('quickMonitor.anyConfigNotifyOnly')}
-                            </option>
-                            {configChoices.map((cfg) => {
-                              const cfgSym = getCurrencySymbol(cfg.currency);
-                              const defaultTag = cfg.isDefault
-                                ? `[${t('catalog.defaultConfigBadge')}] `
-                                : '';
-                              const priceTag =
-                                cfg.estimatedMonthlyPrice &&
-                                cfg.estimatedMonthlyPrice > 0
-                                  ? ` — ${cfgSym}${cfg.estimatedMonthlyPrice.toFixed(2)}${t('availability.perMonth')}`
-                                  : '';
-                              const stockTag = ` (${t('availability.inStockDcCount', {
-                                count: cfg.inStockCount,
-                              })})`;
-                              return (
-                                <option key={cfg.configKey} value={cfg.configKey}>
-                                  {`${defaultTag}${cfg.label}${priceTag}${stockTag}`}
-                                </option>
-                              );
-                            })}
-                          </select>
-                        </div>
+                        {/* 1. Configuration Selector + Setup Fee / Promo Summary */}
+                        {(() => {
+                          const selectedChoice =
+                            configChoices.find(
+                              (c) => c.configKey === target.configKey
+                            ) ||
+                            configChoices.find((c) => c.isDefault) ||
+                            configChoices[0] ||
+                            null;
+                          const activeMode = target.pricingMode || 'default';
+                          const availableModes: PlanPricingMode[] =
+                            selectedChoice &&
+                            selectedChoice.pricingModes.length > 0
+                              ? selectedChoice.pricingModes
+                              : [
+                                  {
+                                    mode: 'default',
+                                    duration: 'P1M',
+                                    intervalMonths: 1,
+                                    commitmentMonths: 0,
+                                    periodPrice:
+                                      selectedChoice?.estimatedMonthlyPrice ?? 0,
+                                    originalPeriodPrice:
+                                      selectedChoice?.originalMonthlyPrice ??
+                                      selectedChoice?.estimatedMonthlyPrice ??
+                                      0,
+                                    monthlyEquivalentPrice:
+                                      selectedChoice?.estimatedMonthlyPrice ?? 0,
+                                    originalMonthlyPrice:
+                                      selectedChoice?.originalMonthlyPrice ??
+                                      selectedChoice?.estimatedMonthlyPrice ??
+                                      0,
+                                    setupFee: selectedChoice?.setupFee ?? 0,
+                                    originalSetupFee:
+                                      selectedChoice?.originalSetupFee ?? 0,
+                                    freeSetup: Boolean(
+                                      selectedChoice?.freeSetup
+                                    ),
+                                    hasPromo: Boolean(selectedChoice?.hasPromo),
+                                    promoBadge: selectedChoice?.promoBadge,
+                                    promoDescription:
+                                      selectedChoice?.promoDescription,
+                                  },
+                                ];
+                          // Ensure standard commitment modes are selectable if backend only returned 1 synthesized mode
+                          const modeChoices: PlanPricingMode[] =
+                            availableModes.length > 1
+                              ? availableModes
+                              : [
+                                  availableModes[0],
+                                  {
+                                    ...availableModes[0],
+                                    mode: 'upfront12',
+                                    duration: 'P12M',
+                                    intervalMonths: 12,
+                                    commitmentMonths: 12,
+                                    periodPrice: Number(
+                                      (
+                                        (availableModes[0]
+                                          ?.monthlyEquivalentPrice || 0) * 12
+                                      ).toFixed(2)
+                                    ),
+                                    originalPeriodPrice: Number(
+                                      (
+                                        (availableModes[0]
+                                          ?.originalMonthlyPrice || 0) * 12
+                                      ).toFixed(2)
+                                    ),
+                                    setupFee: 0,
+                                    freeSetup: true,
+                                  },
+                                  {
+                                    ...availableModes[0],
+                                    mode: 'upfront24',
+                                    duration: 'P24M',
+                                    intervalMonths: 24,
+                                    commitmentMonths: 24,
+                                    periodPrice: Number(
+                                      (
+                                        (availableModes[0]
+                                          ?.monthlyEquivalentPrice || 0) * 24
+                                      ).toFixed(2)
+                                    ),
+                                    originalPeriodPrice: Number(
+                                      (
+                                        (availableModes[0]
+                                          ?.originalMonthlyPrice || 0) * 24
+                                      ).toFixed(2)
+                                    ),
+                                    setupFee: 0,
+                                    freeSetup: true,
+                                  },
+                                ];
+                          const activeModeEntry =
+                            resolvePricingModeEntry(modeChoices, activeMode) ||
+                            modeChoices[0];
+
+                          return (
+                            <div className="space-y-3">
+                              <div>
+                                <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                                  <label className="block text-xs font-semibold text-cyber-text">
+                                    {t('quickMonitor.configSelectLabel')}
+                                  </label>
+                                  {selectedChoice && (
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                                      {(activeModeEntry?.hasPromo ||
+                                        selectedChoice.hasPromo) && (
+                                        <span
+                                          title={
+                                            activeModeEntry?.promoDescription ||
+                                            selectedChoice.promoDescription
+                                          }
+                                          className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/35 font-bold"
+                                        >
+                                          🔥{' '}
+                                          {activeModeEntry?.promoBadge ||
+                                            selectedChoice.promoBadge ||
+                                            t('promo.badge')}
+                                        </span>
+                                      )}
+                                      {activeModeEntry &&
+                                        activeModeEntry.monthlyEquivalentPrice >
+                                          0 && (
+                                          <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-mono font-semibold">
+                                            {activeModeEntry.intervalMonths > 1
+                                              ? `${t('billing.periodTotal', {
+                                                  price: `${symbol}${activeModeEntry.periodPrice.toFixed(
+                                                    2
+                                                  )}`,
+                                                  months:
+                                                    activeModeEntry.intervalMonths,
+                                                })} (${t(
+                                                  'billing.monthlyEquivalent',
+                                                  {
+                                                    price: `${symbol}${activeModeEntry.monthlyEquivalentPrice.toFixed(
+                                                      2
+                                                    )}`,
+                                                  }
+                                                )})`
+                                              : `${symbol}${activeModeEntry.monthlyEquivalentPrice.toFixed(
+                                                  2
+                                                )}${t('availability.perMonth')}`}
+                                            {activeModeEntry.originalMonthlyPrice >
+                                              activeModeEntry.monthlyEquivalentPrice +
+                                                0.01 && (
+                                              <span className="line-through text-[10px] opacity-70 ml-1">
+                                                {symbol}
+                                                {activeModeEntry.originalMonthlyPrice.toFixed(
+                                                  2
+                                                )}
+                                              </span>
+                                            )}
+                                          </span>
+                                        )}
+                                      {activeModeEntry &&
+                                        (activeModeEntry.setupFee === 0 ||
+                                          activeModeEntry.freeSetup) && (
+                                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
+                                            {t('promo.freeSetup')}
+                                            {activeModeEntry.originalSetupFee >
+                                              0 && (
+                                              <span className="line-through text-[10px] opacity-70 ml-1 font-mono">
+                                                {symbol}
+                                                {activeModeEntry.originalSetupFee.toFixed(
+                                                  2
+                                                )}
+                                              </span>
+                                            )}
+                                          </span>
+                                        )}
+                                      {activeModeEntry &&
+                                        activeModeEntry.setupFee > 0 && (
+                                          <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted border border-cyber-grid font-mono">
+                                            {t('promo.setupFee', {
+                                              price: `${symbol}${activeModeEntry.setupFee.toFixed(
+                                                2
+                                              )}`,
+                                            })}
+                                          </span>
+                                        )}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <select
+                                  value={target.configKey}
+                                  onChange={(e) =>
+                                    handleSelectConfigForTarget(
+                                      idx,
+                                      e.target.value
+                                    )
+                                  }
+                                  className={`cyber-input w-full text-xs py-2 ${
+                                    isConfigMissingForAutoOrder
+                                      ? 'border-amber-500 ring-1 ring-amber-500/50'
+                                      : ''
+                                  }`}
+                                >
+                                  <option value="">
+                                    {t('quickMonitor.anyConfigNotifyOnly')}
+                                  </option>
+                                  {configChoices.map((cfg) => {
+                                    const cfgSym = getCurrencySymbol(
+                                      cfg.currency
+                                    );
+                                    const cfgMode =
+                                      resolvePricingModeEntry(
+                                        cfg.pricingModes,
+                                        activeMode
+                                      ) || null;
+                                    const displayMo =
+                                      cfgMode &&
+                                      cfgMode.monthlyEquivalentPrice > 0
+                                        ? cfgMode.monthlyEquivalentPrice
+                                        : cfg.estimatedMonthlyPrice;
+                                    const defaultTag = cfg.isDefault
+                                      ? `[${t('catalog.defaultConfigBadge')}] `
+                                      : '';
+                                    const promoTag =
+                                      cfgMode?.hasPromo || cfg.hasPromo
+                                        ? `🔥${
+                                            cfgMode?.promoBadge ||
+                                            cfg.promoBadge ||
+                                            t('promo.badge')
+                                          } `
+                                        : '';
+                                    const priceTag =
+                                      displayMo && displayMo > 0
+                                        ? ` — ${cfgSym}${displayMo.toFixed(2)}${t(
+                                            'availability.perMonth'
+                                          )}`
+                                        : '';
+                                    const setupVal =
+                                      cfgMode?.setupFee ?? cfg.setupFee;
+                                    const setupTag =
+                                      setupVal === 0
+                                        ? ` · ${t('promo.freeSetup')}`
+                                        : typeof setupVal === 'number' &&
+                                          setupVal > 0
+                                        ? ` · ${t('promo.setupFee', {
+                                            price: `${cfgSym}${setupVal.toFixed(
+                                              2
+                                            )}`,
+                                          })}`
+                                        : '';
+                                    const stockTag = ` (${t(
+                                      'availability.inStockDcCount',
+                                      {
+                                        count: cfg.inStockCount,
+                                      }
+                                    )})`;
+                                    return (
+                                      <option
+                                        key={cfg.configKey}
+                                        value={cfg.configKey}
+                                      >
+                                        {`${defaultTag}${promoTag}${cfg.label}${priceTag}${setupTag}${stockTag}`}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </div>
+
+                              {/* Billing / Commitment Mode Selector + Coupon Input */}
+                              <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
+                                <div className="md:col-span-8 space-y-1">
+                                  <label className="block text-xs font-semibold text-cyber-text">
+                                    {t('billing.modeSelectorTitle')}
+                                  </label>
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                                    {modeChoices.map((m) => {
+                                      const isSelectedMode =
+                                        activeMode === m.mode;
+                                      const modeLabelKey = `billing.mode.${m.mode}`;
+                                      const modeTitle =
+                                        t(modeLabelKey) !== modeLabelKey
+                                          ? t(modeLabelKey)
+                                          : m.mode;
+                                      return (
+                                        <button
+                                          key={m.mode}
+                                          type="button"
+                                          onClick={() =>
+                                            handleSelectPricingModeForTarget(
+                                              idx,
+                                              m.mode
+                                            )
+                                          }
+                                          className={`px-2.5 py-1.5 rounded-lg border text-left transition-all flex flex-col justify-between gap-0.5 ${
+                                            isSelectedMode
+                                              ? 'bg-cyber-accent/15 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/40'
+                                              : 'bg-cyber-bg/50 border-cyber-grid text-cyber-muted hover:border-cyber-accent/40 hover:text-cyber-text'
+                                          }`}
+                                        >
+                                          <div className="flex items-center justify-between gap-1">
+                                            <span className="text-[11px] font-bold truncate">
+                                              {modeTitle}
+                                            </span>
+                                            {m.hasPromo && (
+                                              <span className="text-[10px] text-rose-300 font-semibold flex-shrink-0">
+                                                🔥{m.promoBadge || ''}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-mono">
+                                            {m.monthlyEquivalentPrice > 0 ? (
+                                              <span className="text-emerald-400 font-semibold">
+                                                {symbol}
+                                                {m.monthlyEquivalentPrice.toFixed(
+                                                  2
+                                                )}
+                                                {t('availability.perMonth')}
+                                              </span>
+                                            ) : (
+                                              <span>{m.duration}</span>
+                                            )}
+                                            <span
+                                              className={
+                                                m.setupFee === 0
+                                                  ? 'text-emerald-300'
+                                                  : 'text-cyber-muted'
+                                              }
+                                            >
+                                              {m.setupFee === 0
+                                                ? t('promo.freeSetup')
+                                                : t('promo.setupFee', {
+                                                    price: `${symbol}${m.setupFee.toFixed(
+                                                      2
+                                                    )}`,
+                                                  })}
+                                            </span>
+                                          </div>
+                                          {m.intervalMonths > 1 &&
+                                            m.periodPrice > 0 && (
+                                              <div className="text-[10px] text-cyber-muted font-mono truncate">
+                                                {t('billing.periodTotal', {
+                                                  price: `${symbol}${m.periodPrice.toFixed(
+                                                    2
+                                                  )}`,
+                                                  months: m.intervalMonths,
+                                                })}
+                                              </div>
+                                            )}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+
+                                <div className="md:col-span-4 space-y-1">
+                                  <label className="block text-xs font-semibold text-cyber-text">
+                                    {t('coupon.label')}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={target.coupon || ''}
+                                    onChange={(e) =>
+                                      updateTarget(idx, {
+                                        coupon: e.target.value,
+                                      })
+                                    }
+                                    placeholder={t('coupon.placeholder')}
+                                    className="cyber-input w-full text-xs py-1.5 font-mono"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
 
                         {/* 2. Datacenter Multi-Select */}
                         <div className="space-y-2">
@@ -1054,14 +1588,23 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
                                   const selectedCfg = configChoices.find(
                                     (c) => c.configKey === target.configKey
                                   );
+                                  const modeEntry = resolvePricingModeEntry(
+                                    selectedCfg?.pricingModes,
+                                    target.pricingMode
+                                  );
+                                  const fallbackMonthly =
+                                    modeEntry &&
+                                    modeEntry.monthlyEquivalentPrice > 0
+                                      ? modeEntry.monthlyEquivalentPrice
+                                      : selectedCfg?.estimatedMonthlyPrice;
                                   updateTarget(idx, {
                                     autoOrder: enabled,
                                     maxMonthlyPrice:
                                       enabled &&
                                       (!target.maxMonthlyPrice ||
                                         target.maxMonthlyPrice <= 0) &&
-                                      selectedCfg?.estimatedMonthlyPrice
-                                        ? selectedCfg.estimatedMonthlyPrice
+                                      fallbackMonthly
+                                        ? Number(fallbackMonthly.toFixed(2))
                                         : target.maxMonthlyPrice,
                                   });
                                 }}

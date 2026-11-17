@@ -56,18 +56,19 @@ var toolDefinitions = []ToolDefinition{
 	{
 		Name:        "catalog_availability",
 		Scope:       "read",
-		Description: "Query real-time global OVHcloud bare-metal server stock matrix, configuration keys (`configKey`), ex-VAT `estimatedMonthlyPrice`, and `listingState` ('listed', 'announced', 'presale') without requiring an API key. Includes catalog-announced models (e.g. Limited Edition SKUs with 0 datacenter availability rows).",
+		Description: "Query real-time global OVHcloud bare-metal server stock matrix, configuration keys (`configKey`), ex-VAT `estimatedMonthlyPrice`, `originalMonthlyPrice`, `setupFee`, promotions (`hasPromo`, `promoBadge`, `pricingModes`), and `listingState` ('listed', 'announced', 'presale', 'promo') without requiring an API key. Includes catalog-announced models (e.g. Limited Edition SKUs with 0 datacenter availability rows).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"plan_code":      map[string]any{"type": "string", "description": "Optional exact or partial planCode / model name filter (e.g. '24ska01', '27skle', 'KS-A', 'rise')."},
 				"datacenter":     map[string]any{"type": "string", "description": "Optional datacenter filter (e.g. 'gra', 'rbx', 'sbg', 'bhs', 'fra', 'vin')."},
 				"only_available": map[string]any{"type": "boolean", "description": "If true, return only configurations currently in stock."},
-				"listing_state":  map[string]any{"type": "string", "enum": []string{"all", "listed", "announced", "presale"}, "default": "all", "description": "Filter by listingState: 'all', 'listed' (orderable in catalog), 'announced' (in public catalog with 0 availability rows, not yet on sale), or 'presale' (in availability feed but not yet in public catalog)."},
+				"listing_state":  map[string]any{"type": "string", "enum": []string{"all", "listed", "announced", "presale", "promo"}, "default": "all", "description": "Filter by listingState: 'all', 'listed' (orderable in catalog), 'announced' (in public catalog with 0 availability rows, not yet on sale), 'presale' (in availability feed but not yet in public catalog), or 'promo' (active recurring or setup fee promotion)."},
+				"only_promo":     map[string]any{"type": "boolean", "default": false, "description": "If true, only return server plans with active recurring or setup fee promotions (hasPromo=true)."},
 				"only_announced": map[string]any{"type": "boolean", "default": false, "description": "If true, only return 'announced' models (in public catalog with 0 availability rows, not yet on sale)."},
 				"only_presale":   map[string]any{"type": "boolean", "default": false, "description": "If true, only return 'presale' models that appear in datacenter availability feeds but are not yet in the public catalog."},
 				"presale_only":   map[string]any{"type": "boolean", "default": false, "description": "Alias for only_presale: if true, only return 'presale' / unlisted models."},
-				"mode":           map[string]any{"type": "string", "enum": []string{"summary", "compact", "full"}, "default": "summary", "description": "Output detail mode ('summary', 'compact', or 'full'). All modes include listingState, configKey, isDefault, estimatedMonthlyPrice, currency, and listedAt."},
+				"mode":           map[string]any{"type": "string", "enum": []string{"summary", "compact", "full"}, "default": "summary", "description": "Output detail mode ('summary', 'compact', or 'full'). All modes include listingState, configKey, isDefault, estimatedMonthlyPrice, setupFee, hasPromo, promoBadge, pricingModes, currency, and listedAt."},
 				"offset":         map[string]any{"type": "integer", "default": 0, "description": "Pagination offset (0-based) for browsing beyond the first page."},
 				"limit":          map[string]any{"type": "integer", "default": 50, "description": "Max plans to return (1-200, default 50)."},
 			},
@@ -645,15 +646,33 @@ func (s *Service) toolProfileList(ctx context.Context, cfg *store.MCPConfig) (ma
 	}, fmt.Sprintf("Listed %d whitelisted OVH account profile(s).", len(profiles)), nil
 }
 
+func entryHasPromo(it CatalogEntry) bool {
+	if it.HasPromo {
+		return true
+	}
+	for _, m := range it.PricingModes {
+		if m.HasPromo {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]any) (map[string]any, string, error) {
 	planFilter := strings.TrimSpace(asString(args["plan_code"]))
 	dcFilter := strings.TrimSpace(asString(args["datacenter"]))
 	onlyAvail := asBool(args["only_available"])
+	onlyPromo := asBool(args["only_promo"]) || asBool(args["promo_only"])
 	presaleOnly := asBool(args["presale_only"]) || asBool(args["only_presale"])
 	onlyAnnounced := asBool(args["only_announced"]) || asBool(args["announced_only"])
 	listingState := strings.ToLower(strings.TrimSpace(asString(args["listing_state"])))
-	if listingState == "" || listingState == "all" {
-		if onlyAnnounced {
+	if listingState == "promo" {
+		onlyPromo = true
+		listingState = "promo"
+	} else if listingState == "" || listingState == "all" {
+		if onlyPromo {
+			listingState = "promo"
+		} else if onlyAnnounced {
 			listingState = "announced"
 		} else if presaleOnly {
 			listingState = "presale"
@@ -679,12 +698,22 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 			totalMatched int
 			err          error
 		)
-		if filterReader, ok := s.deps.Catalog.(CatalogAvailabilityFilterReader); ok {
+		if filterReader, ok := s.deps.Catalog.(CatalogAvailabilityFilterReader); ok && (!onlyPromo || listingState == "promo") {
 			items, totalMatched, err = filterReader.QueryAvailabilityFiltered(ctx, planFilter, dcFilter, listingState, onlyAvail, presaleOnly, onlyAnnounced, offset, limit)
-		} else if listingState == "all" || listingState == "presale" {
+		} else if !onlyPromo && (listingState == "all" || listingState == "presale") {
 			items, totalMatched, err = s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, listingState == "presale", offset, limit)
 		} else {
-			allItems, _, qErr := s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, false, 0, 10000)
+			var allItems []CatalogEntry
+			var qErr error
+			if filterReader, ok := s.deps.Catalog.(CatalogAvailabilityFilterReader); ok {
+				stateQuery := listingState
+				if stateQuery == "promo" {
+					stateQuery = "all"
+				}
+				allItems, _, qErr = filterReader.QueryAvailabilityFiltered(ctx, planFilter, dcFilter, stateQuery, onlyAvail, presaleOnly, onlyAnnounced, 0, 10000)
+			} else {
+				allItems, _, qErr = s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, false, 0, 10000)
+			}
 			if qErr != nil {
 				return nil, "", qErr
 			}
@@ -694,9 +723,13 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 				if st == "" {
 					st = "listed"
 				}
-				if st == listingState {
-					matched = append(matched, it)
+				if listingState != "all" && listingState != "promo" && st != listingState {
+					continue
 				}
+				if (onlyPromo || listingState == "promo") && !entryHasPromo(it) {
+					continue
+				}
+				matched = append(matched, it)
 			}
 			totalMatched = len(matched)
 			off := min(offset, totalMatched)
@@ -733,6 +766,10 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 			if strings.TrimSpace(items[i].Currency) == "" {
 				items[i].Currency = "EUR"
 			}
+			if items[i].OriginalMonthlyPrice == 0 && items[i].EstimatedMonthlyPrice > 0 {
+				items[i].OriginalMonthlyPrice = items[i].EstimatedMonthlyPrice
+			}
+			items[i].FreeSetup = items[i].SetupFee <= 0
 			if items[i].Generation == 0 {
 				items[i].Generation = catalog.InferPlanGeneration(items[i].PlanCode)
 			}
@@ -787,7 +824,11 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 			st = "listed"
 		}
 		orderable := st == "listed"
-		if listingState != "all" && st != listingState {
+		if listingState != "all" && listingState != "promo" && st != listingState {
+			continue
+		}
+		hasPromo := asBool(entry["hasPromo"])
+		if (onlyPromo || listingState == "promo") && !hasPromo {
 			continue
 		}
 
@@ -837,6 +878,11 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 				CPU:                  asString(entry["server"]),
 				ConfigKey:            cfgKey,
 				IsDefault:            true,
+				FreeSetup:            true,
+				HasPromo:             hasPromo,
+				PromoCode:            asString(entry["promoCode"]),
+				PromoBadge:           asString(entry["promoBadge"]),
+				PromoDescription:     asString(entry["promoDescription"]),
 				Currency:             currency,
 				ListingState:         st,
 				ListedAt:             asString(entry["listedAt"]),

@@ -21,25 +21,31 @@ OVHcloud 原始库存接口仅返回内部简写代码（如 `24ska01`、`memory
    - **内存规格**：将 `ram-64g-ecc-3200` 解析为 `64 GB DDR4 ECC 3200 MHz`。
    - **存储与系统盘**：将 `softraid-2x512nvme` 解析为 `2 × 512 GB NVMe (软 RAID)`；将复合盘代码 `raid-r1-2x480ssd-s10-2x6000sa` 拆解为清晰的系统盘（`2 × 480 GB SSD, 硬 RAID 1`）与数据盘（`2 × 6 TB SATA, 硬 RAID 10`）。
 
-## 配置级不含税预估月价与紧凑双视图
+## 配置级价格、安装费展示、黑五促销与多周期合约报价
 
-普通库存工具往往只能展示某个 `planCode` 的最低起步价，而同一型号下的高配内存或大容量 NVMe 子配置往往存在加价。OVH Nexus 通过 `/api/catalog/availability`、`/api/catalog/plans` 以及 `GET /api/catalog/plans/{planCode}/configs` 为**每一个具体的硬件子配置（`configKey`：`内存+硬盘`）计算不含税预估月价（`estimatedMonthlyPrice`）**：
+普通库存工具往往只能展示某个 `planCode` 的最低起步价，而同一型号下的高配内存或大容量 NVMe 子配置往往存在加价。OVH Nexus 通过 `/api/catalog/availability`、`/api/catalog/plans` 以及 `GET /api/catalog/plans/{planCode}/configs` 为**每一个具体的硬件子配置（`configKey`：`内存+硬盘`）同步计算不含税折后月价（`estimatedMonthlyPrice`）、一次性安装费（`setupFee`）、促销活动（`promotions`）以及多周期合约报价（`pricingModes`）**：
 
 ```text
-配置预估月价（不含税） = 基础型号月付价格 (Base Plan P1M)
-                       + 该内存代码附加月费 (Memory Addon P1M)
-                       + 该存储代码附加月费 (Storage Addon P1M)
+配置预估月价（不含税） = 基础型号月付价格（若有促销则取折后价）
+                       + 该内存代码附加月费 (Memory Addon)
+                       + 该存储代码附加月费 (Storage Addon)
 ```
 
+- **下单前安装费 / 初装费 (`installation`) 完整透出**：
+  - 自动解析公开目录中的 `capacities: ["installation"]` 定价项，在目录卡片、库存矩阵行与下单弹窗中直接展示折后安装费 `setupFee`（遇到免初装费促销或切换至年付合约时展示 `免安装费` 与原安装费划线价 `originalSetupFee`）。
+- **促销优惠 (`promotions`) 自动识别与「🔥 促销优惠」筛选标签**：
+  - 自动解析 OVHcloud 公开目录中的活动促销规则（如黑五 `20% OFF` 周期折扣与 `FREE SETUP` 免安装费），在卡片与矩阵行中直接展示促销徽标（`🔥 -20%`、`🔥 免安装费`）、折后月价 + 原价划线（`originalMonthlyPrice`），并在 `/servers` 与 `/availability` 顶部提供带实时计数的 **「🔥 促销优惠 (Promo)」** 筛选标签。
+- **多周期合约付款模式 (`pricingModes`)**：
+  - 为每套配置解析其支持的全部付款周期：月付无合约（`default` / `P1M`）、12 个月一次性年付（`upfront12` / `P12M`）、24 个月一次性两年付（`upfront24` / `P24M`）及合约月付（`degressivity12` / `degressivity24`），完整返回周期总价（`periodPrice`）、折合月均不含税价（`monthlyEquivalentPrice = periodPrice / intervalMonths`）及年付免安装费（`€0.00`）信息。
 - **紧凑单行实时库存矩阵 (`/availability`)**：
   - 将同一 `planCode` 的多套配置合并为**一机一行**（`-sgp`、`-syd`、`-mum` 等独立区域变体仍各自单独成行）。
   - 每行内置**配置下拉选择器**：
     - **全部配置 (`N`)** *(默认)*：每个机房单元格显示该型号所有配置中**最好的库存状态**以及有货配置数量角标。
     - **单个具体配置 (`内存 + 硬盘 — €XX.XX/月 · K 个机房`)**：选中某套具体配置后，该行的价格与所有机房单元格立即切换为该配置专属的不含税月价与实时库存状态。
-- **紧凑可折叠服务器目录卡片 (`/servers`)**：
-  - 桌面端采用每行 3～4 张的**默认折叠卡片网格**，折叠态仅展示：商业型号与 `planCode`、CPU、单行标配摘要、起始月价（`€XX.XX/月 起`）、有货机房紧凑国旗徽标与状态徽章。
-  - 展开卡片后，原本分离的「默认配置」与「可选配置」合并为**单一可选配置列表**（标配带 `标配` 徽章且默认选中，每项显示不含税预估月价与机房库存）；默认仅列出有货配置与机房，支持勾选**「显示全部库存（含无货）」**查看完整列表，并将带宽、vRack 等附加包收纳在默认折叠的**「高级选项」**中。
-- 支持按**价格从低到高**、**价格从高到低**一键排序，或按产品线（`KS`、`SYS`、`RISE`、`ADV`、`SCALE`、`HGR`）、目标机房（`GRA`、`SBG`、`RBX`、`FRA`、`BHS`、`TOR`、`SGP`、`SYD` 等）与上架状态（`全部`、`正式在售`、`已公布未开售`、`预售`、`新上架`）快速筛选。
+- **3 列固定高度模块化卡片与独立配置下单弹窗 (`/servers`)**：
+  - 采用 3 列固定高度卡片网格，展示商业型号与 `planCode`、促销与上架状态徽章、折后起步月价（附原价划线与安装费说明）、2×2 模块化硬件规格宫格（**CPU**、**内存**、**存储**、**带宽**）及有货机房国旗徽标。
+  - 点击卡片打开**服务器配置与下单独立弹窗**，支持统一配置列表选择（标配带 `标配` 徽章并默认选中）、付款周期切换器（`default` / `upfront12` / `upfront24`）、可选自定义**优惠码（`coupon`）**输入、「显示全部库存（含无货）」勾选框、折叠的「高级选项（带宽 / vRack）」，并在底栏直接联动「快速监控此配置」「加入抢购队列」与「立即下单」。
+- 支持按**价格从低到高**、**价格从高到低**一键排序，或按产品线（`KS`、`SYS`、`RISE`、`ADV`、`SCALE`、`HGR`）、目标机房（`GRA`、`SBG`、`RBX`、`FRA`、`BHS`、`TOR`、`SGP`、`SYD` 等）与上架/促销状态（`全部`、`🔥 促销优惠`、`正式在售`、`已公布未开售`、`预售`、`新上架`）快速筛选。
 
 ## 三态生命周期 (`listed` / `announced` / `presale`) 与一键多目标监控
 

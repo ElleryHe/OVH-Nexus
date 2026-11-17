@@ -13,7 +13,11 @@ import {
   useCatalogDictionary,
   resolvePlanDisplay,
   formatOptionCode,
+  getCurrencySymbol,
+  resolvePricingModeDuration,
+  synthesizePricingModes,
 } from "@/utils/hardwareFormat";
+import type { PlanPricingMode } from "@/types";
 import { 
   API_URL, 
   TASK_RETRY_INTERVAL, 
@@ -35,6 +39,12 @@ interface QueueItem {
   datacenter?: string;
   datacenters?: string[];
   options: string[];
+  configKey?: string;
+  configLabel?: string;
+  currency?: string;
+  pricingMode?: string;
+  duration?: string;
+  coupon?: string;
   status: "pending" | "running" | "paused" | "completed" | "failed";
   createdAt: string;
   updatedAt: string;
@@ -64,6 +74,19 @@ interface ServerPlan {
   cpu: string;
   memory: string;
   storage: string;
+  monthlyPrice?: number | null;
+  startingPrice?: number | null;
+  originalPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
+  currency?: string;
   datacenters: {
     datacenter: string;
     dcName: string;
@@ -106,6 +129,8 @@ const QueuePage = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false); // 清空确认对话框
   const [isGettingConfig, setIsGettingConfig] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [pricingMode, setPricingMode] = useState<string>('default');
+  const [coupon, setCoupon] = useState<string>('');
   const [autoPay, setAutoPay] = useState<boolean>(false);
   const [waiveRetractationPeriod, setWaiveRetractationPeriod] = useState<boolean>(false);
 
@@ -176,12 +201,20 @@ const QueuePage = () => {
     }
 
     try {
+      const mode = pricingMode || 'default';
+      const duration = resolvePricingModeDuration(
+        mode,
+        selectedServer?.pricingModes
+      );
       await api.post(`/queue`, {
         planCode: planCodeInput.trim(),
         datacenters: selectedDatacenters,
         retryInterval: retryInterval,
         options: selectedOptions,
         quantity: quantity,
+        pricingMode: mode,
+        duration,
+        coupon: coupon.trim() || undefined,
         auto_pay: autoPay,
         waive_retractation_period: waiveRetractationPeriod,
       });
@@ -193,6 +226,8 @@ const QueuePage = () => {
       setQuantity(1);
       setSelectedOptions([]);
       setOptionsInput('');
+      setPricingMode('default');
+      setCoupon('');
       setAutoPay(false);
       setWaiveRetractationPeriod(false);
     } catch (error) {
@@ -209,6 +244,8 @@ const QueuePage = () => {
     setQuantity(Math.min(Math.max(item.quantity || 1, 1), 100));
     setSelectedOptions(Array.isArray(item.options) ? item.options : []);
     setOptionsInput((Array.isArray(item.options) ? item.options : []).join(', '));
+    setPricingMode(item.pricingMode || 'default');
+    setCoupon(item.coupon || '');
     setAutoPay(Boolean(item.auto_pay ?? item.autoPay ?? false));
     setWaiveRetractationPeriod(
       Boolean(item.waive_retractation_period ?? item.waiveRetractationPeriod ?? false)
@@ -232,18 +269,28 @@ const QueuePage = () => {
       return;
     }
     try {
+      const mode = pricingMode || 'default';
+      const duration = resolvePricingModeDuration(
+        mode,
+        selectedServer?.pricingModes
+      );
       await api.put(`/queue/${editingItemId}`, {
         planCode: planCodeInput.trim(),
         datacenters: selectedDatacenters,
         retryInterval,
         options: selectedOptions,
         quantity,
+        pricingMode: mode,
+        duration,
+        coupon: coupon.trim(),
         auto_pay: autoPay,
         waive_retractation_period: waiveRetractationPeriod,
       });
       toast.success('队列已更新');
       setEditingItemId(null);
       setPlanCodeInput("");
+      setPricingMode('default');
+      setCoupon('');
       setAutoPay(false);
       setWaiveRetractationPeriod(false);
       fetchQueueItems(true);
@@ -887,6 +934,214 @@ const QueuePage = () => {
             </div>
             </div>
 
+            {/* 付款周期与优惠码选择面板 */}
+            {(() => {
+              const planMeta = resolvePlanDisplay(
+                planCodeInput.trim(),
+                '',
+                locale,
+                catalogDict
+              );
+              const symbol = getCurrencySymbol(
+                selectedServer?.currency || planMeta.currency
+              );
+              const rawModes =
+                selectedServer?.pricingModes &&
+                selectedServer.pricingModes.length > 0
+                  ? selectedServer.pricingModes
+                  : planMeta.pricingModes && planMeta.pricingModes.length > 0
+                  ? planMeta.pricingModes
+                  : synthesizePricingModes({
+                      estimatedMonthlyPrice:
+                        selectedServer?.startingPrice ??
+                        selectedServer?.monthlyPrice ??
+                        planMeta.basePrice ??
+                        0,
+                      originalMonthlyPrice:
+                        selectedServer?.originalMonthlyPrice ??
+                        planMeta.originalMonthlyPrice ??
+                        0,
+                      setupFee:
+                        selectedServer?.setupFee ?? planMeta.setupFee ?? 0,
+                      originalSetupFee:
+                        selectedServer?.originalSetupFee ??
+                        planMeta.originalSetupFee ??
+                        0,
+                      freeSetup: Boolean(
+                        selectedServer?.freeSetup || planMeta.freeSetup
+                      ),
+                      hasPromo: Boolean(
+                        selectedServer?.hasPromo || planMeta.hasPromo
+                      ),
+                      promoBadge:
+                        selectedServer?.promoBadge || planMeta.promoBadge,
+                      promoDescription:
+                        selectedServer?.promoDescription ||
+                        planMeta.promoDescription,
+                    });
+
+              const modeChoices: PlanPricingMode[] =
+                rawModes.length > 1
+                  ? rawModes
+                  : [
+                      rawModes[0] || {
+                        mode: 'default',
+                        duration: 'P1M',
+                        intervalMonths: 1,
+                        commitmentMonths: 0,
+                        periodPrice: 0,
+                        originalPeriodPrice: 0,
+                        monthlyEquivalentPrice: 0,
+                        originalMonthlyPrice: 0,
+                        setupFee: 0,
+                        originalSetupFee: 0,
+                        freeSetup: false,
+                        hasPromo: false,
+                      },
+                      {
+                        ...(rawModes[0] || {}),
+                        mode: 'upfront12',
+                        duration: 'P12M',
+                        intervalMonths: 12,
+                        commitmentMonths: 12,
+                        periodPrice: Number(
+                          (
+                            ((rawModes[0]?.monthlyEquivalentPrice || 0) * 12)
+                          ).toFixed(2)
+                        ),
+                        originalPeriodPrice: Number(
+                          (
+                            ((rawModes[0]?.originalMonthlyPrice || 0) * 12)
+                          ).toFixed(2)
+                        ),
+                        monthlyEquivalentPrice:
+                          rawModes[0]?.monthlyEquivalentPrice || 0,
+                        originalMonthlyPrice:
+                          rawModes[0]?.originalMonthlyPrice || 0,
+                        setupFee: 0,
+                        originalSetupFee: rawModes[0]?.originalSetupFee || 0,
+                        freeSetup: true,
+                        hasPromo: Boolean(rawModes[0]?.hasPromo),
+                      },
+                      {
+                        ...(rawModes[0] || {}),
+                        mode: 'upfront24',
+                        duration: 'P24M',
+                        intervalMonths: 24,
+                        commitmentMonths: 24,
+                        periodPrice: Number(
+                          (
+                            ((rawModes[0]?.monthlyEquivalentPrice || 0) * 24)
+                          ).toFixed(2)
+                        ),
+                        originalPeriodPrice: Number(
+                          (
+                            ((rawModes[0]?.originalMonthlyPrice || 0) * 24)
+                          ).toFixed(2)
+                        ),
+                        monthlyEquivalentPrice:
+                          rawModes[0]?.monthlyEquivalentPrice || 0,
+                        originalMonthlyPrice:
+                          rawModes[0]?.originalMonthlyPrice || 0,
+                        setupFee: 0,
+                        originalSetupFee: rawModes[0]?.originalSetupFee || 0,
+                        freeSetup: true,
+                        hasPromo: Boolean(rawModes[0]?.hasPromo),
+                      },
+                    ];
+
+              return (
+                <div className="p-3.5 sm:p-4 rounded-lg border border-cyber-accent/25 bg-cyber-grid/10 grid grid-cols-1 md:grid-cols-12 gap-3 mb-4">
+                  <div className="md:col-span-8 space-y-1.5">
+                    <label className="block text-xs sm:text-sm font-semibold text-cyber-text">
+                      {t('billing.modeSelectorTitle')}
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {modeChoices.map((m) => {
+                        const isSelectedMode =
+                          (pricingMode || 'default') === m.mode;
+                        const modeLabelKey = `billing.mode.${m.mode}`;
+                        const modeTitle =
+                          t(modeLabelKey) !== modeLabelKey
+                            ? t(modeLabelKey)
+                            : m.mode;
+                        return (
+                          <button
+                            key={m.mode}
+                            type="button"
+                            onClick={() => setPricingMode(m.mode)}
+                            className={`px-3 py-2 rounded-lg border text-left transition-all flex flex-col justify-between gap-1 ${
+                              isSelectedMode
+                                ? 'bg-cyber-accent/15 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/40'
+                                : 'bg-cyber-surface/70 border-cyber-grid text-cyber-muted hover:border-cyber-accent/40 hover:text-cyber-text'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-bold truncate">
+                                {modeTitle}
+                              </span>
+                              {m.hasPromo && (
+                                <span className="text-[10px] text-rose-300 font-bold flex-shrink-0">
+                                  🔥 {m.promoBadge || t('promo.badge')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-mono">
+                              {m.monthlyEquivalentPrice > 0 ? (
+                                <span className="text-emerald-400 font-semibold">
+                                  {symbol}
+                                  {m.monthlyEquivalentPrice.toFixed(2)}
+                                  {t('availability.perMonth')}
+                                </span>
+                              ) : (
+                                <span>{m.duration}</span>
+                              )}
+                              <span
+                                className={
+                                  m.setupFee === 0
+                                    ? 'text-emerald-300 font-semibold'
+                                    : 'text-cyber-muted'
+                                }
+                              >
+                                {m.setupFee === 0
+                                  ? t('promo.freeSetup')
+                                  : t('promo.setupFee', {
+                                      price: `${symbol}${m.setupFee.toFixed(
+                                        2
+                                      )}`,
+                                    })}
+                              </span>
+                            </div>
+                            {m.intervalMonths > 1 && m.periodPrice > 0 && (
+                              <div className="text-[10px] text-cyber-muted font-mono truncate">
+                                {t('billing.periodTotal', {
+                                  price: `${symbol}${m.periodPrice.toFixed(2)}`,
+                                  months: m.intervalMonths,
+                                })}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-4 space-y-1.5">
+                    <label className="block text-xs sm:text-sm font-semibold text-cyber-text">
+                      {t('coupon.label')}
+                    </label>
+                    <input
+                      type="text"
+                      value={coupon}
+                      onChange={(e) => setCoupon(e.target.value)}
+                      placeholder={t('coupon.placeholder')}
+                      className="cyber-input w-full text-xs py-2 font-mono bg-cyber-surface"
+                    />
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* 支付策略与欧盟 14 天撤回权控制面板 */}
             <div className="p-3.5 sm:p-4 rounded-lg border border-cyber-accent/25 bg-cyber-grid/10 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1087,6 +1342,20 @@ const QueuePage = () => {
                     <span className="px-2 py-0.5 text-[10px] rounded-md bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30 flex items-center gap-1">
                       <ShoppingCart size={12} /> {Math.min(item.purchased || 0, item.quantity || 0)} / {item.quantity || 0}
                     </span>
+                    {item.pricingMode && (
+                      <span className="px-2 py-0.5 text-[10px] rounded-md bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                        {(() => {
+                          const k = `billing.modeShort.${item.pricingMode}`;
+                          const lbl = t(k);
+                          return lbl !== k ? lbl : item.pricingMode;
+                        })()}
+                      </span>
+                    )}
+                    {item.coupon && (
+                      <span className="px-2 py-0.5 text-[10px] rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">
+                        {t('coupon.badge', { coupon: item.coupon })}
+                      </span>
+                    )}
                     <span
                       className={`px-2 py-0.5 text-[10px] rounded-md border ${
                         item.auto_pay

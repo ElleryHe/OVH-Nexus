@@ -9,7 +9,7 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
 
-## [1.3.3] - 2026-11-17 — 密码管理器兼容登录 (`ADMIN_USERNAME`)、服务器目录 3 列固定卡片与独立配置下单弹窗
+## [1.3.3] - 2026-11-17 — 密码管理器兼容登录 (`ADMIN_USERNAME`)、安装费与黑五促销展示、多周期合约下单与优惠码强校验
 
 ### 新增功能 (Added)
 
@@ -17,6 +17,15 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
   - 新增 `ADMIN_USERNAME` 环境变量（兼容别名 `NEXUS_USERNAME`，默认值 `Nexus`，严格区分大小写并与 `API_SECRET_KEY` 一同执行恒定时间校验），并将登录表单升级为包含标准 `username` + `current-password` 字段的 `<form autoComplete="on">` 结构，完美支持浏览器与密码管理器（1Password、Bitwarden、Apple 密码）自动保存与填充。
 - **服务器配置选择与下单独立弹窗 (`/servers`)**：
   - 在服务器目录中新增独立的**服务器配置与下单弹窗**，集中展示合并后的标配（带 `标配` 徽章并默认选中）与可选配置、不含税预估月价、机房实时库存筛选（「显示全部库存（含无货）」勾选框）及折叠的「高级选项（带宽 / vRack）」，并在弹窗底栏直接联动「快速监控此配置」「加入抢购队列」与「立即下单」。
+- **下单前安装费 / 初装费 (`installation`) 完整展示**：
+  - 自动解析所有机型与硬件配置的一次性初装费（`capacities: ["installation"]`）及免安装费促销，在服务器目录（`/servers`）、实时库存矩阵（`/availability`）、配置与下单弹窗以及快速监控弹窗（`QuickMonitorDialog`）中清晰展示折后安装费 `setupFee` 与原安装费划线价 `originalSetupFee`。
+- **目录促销优惠 (`promotions`) 自动识别与「🔥 促销优惠」专属筛选**：
+  - 自动解析 OVHcloud 公开目录中的活动促销规则（如黑五 `20% OFF` 周期折扣与 `FREE SETUP` 免安装费），在卡片与矩阵行中直接渲染促销徽标（`🔥 -20%`、`🔥 免安装费`）、折后价 + 原价划线（`originalMonthlyPrice`），并在 `/servers` 与 `/availability` 顶部新增带实时计数角标的 **「🔥 促销优惠 (Promo)」** 筛选标签。
+- **多周期合约付款模式 (`pricingMode` & `duration`)**：
+  - 在配置与下单弹窗、快速监控自动下单目标（`targets[]`）与采购抢购队列（`/queue`）中全面支持月付无合约（`default` / `P1M`）、12 个月一次性年付（`upfront12` / `P12M`）、24 个月一次性两年付（`upfront24` / `P24M`）及合约月付（`degressivity12` / `degressivity24`）。
+  - 切换付款周期时实时联动更新周期总价、折合月均不含税价（`monthlyEquivalentPrice`）及安装费减免（如切换至 `upfront12`/`upfront24` 自动免除安装费 `€0.00`），并统一按**折后折合月均不含税价（`周期总价 / 月数`）**与最高月价上限 `maxMonthlyPrice` 比对。
+- **自定义优惠码 (`coupon`) 支持与失效立停保护 (`400 INVALID_COUPON`)**：
+  - 在配置下单弹窗、快速监控目标与采购队列中支持填入可选自定义优惠码（`coupon`），下单时自动调用 `POST /order/cart/{cartId}/coupons`；若 OVHcloud 拒绝该优惠码，立即中止结算并返回 `400 INVALID_COUPON`（同步清理临时购物车、记录 `WARNING` 日志并发送 `order.failed` 告警），严防优惠码失效或输错时按原价误下单。
 
 ### 变更与优化 (Changed)
 

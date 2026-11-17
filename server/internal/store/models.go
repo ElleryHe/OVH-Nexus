@@ -12,6 +12,9 @@ type StockTarget struct {
 	AutoOrder         bool              `json:"autoOrder"`
 	Quantity          int               `json:"quantity"`        // default 1
 	MaxMonthlyPrice   float64           `json:"maxMonthlyPrice"` // 0 = no limit, >0 = ex-VAT monthly price cap
+	PricingMode       string            `json:"pricingMode,omitempty"`
+	Duration          string            `json:"duration,omitempty"`
+	Coupon            string            `json:"coupon,omitempty"`
 	Currency          string            `json:"currency,omitempty"`
 	LastStatus        map[string]string `json:"lastStatus"`
 }

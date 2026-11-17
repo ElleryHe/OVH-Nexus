@@ -76,6 +76,9 @@ func (s *Service) HandleCreateQueue(w http.ResponseWriter, r *http.Request) {
 		Options:                 stringsFromAny(raw["options"]),
 		ConfigKey:               stringFromAny(raw["configKey"]),
 		ConfigLabel:             stringFromAny(raw["configLabel"]),
+		PricingMode:             stringFromAny(raw["pricingMode"]),
+		Duration:                stringFromAny(raw["duration"]),
+		Coupon:                  stringFromAny(raw["coupon"]),
 		MaxMonthlyPrice:         floatFromAny(raw["maxMonthlyPrice"], 0),
 		Currency:                stringFromAny(raw["currency"]),
 		Quantity:                intFromAny(raw["quantity"], 1),
@@ -133,6 +136,22 @@ func (s *Service) HandleUpdateQueue(w http.ResponseWriter, r *http.Request) {
 	if v, ok := raw["configLabel"]; ok {
 		str := stringFromAny(v)
 		req.ConfigLabel = &str
+	}
+	if v, ok := raw["pricingMode"]; ok {
+		str := stringFromAny(v)
+		req.PricingMode = &str
+	}
+	if v, ok := raw["duration"]; ok {
+		str := stringFromAny(v)
+		req.Duration = &str
+	}
+	if v, ok := raw["coupon"]; ok {
+		str := stringFromAny(v)
+		req.Coupon = &str
+	}
+	if v, ok := raw["currency"]; ok {
+		str := stringFromAny(v)
+		req.Currency = &str
 	}
 	if v, ok := raw["maxMonthlyPrice"]; ok {
 		f := floatFromAny(v, 0)
@@ -257,6 +276,9 @@ func (s *Service) HandleQuickOrder(w http.ResponseWriter, r *http.Request) {
 		Options:                 stringsFromAny(raw["options"]),
 		ConfigKey:               stringFromAny(raw["configKey"]),
 		ConfigLabel:             stringFromAny(raw["configLabel"]),
+		PricingMode:             stringFromAny(raw["pricingMode"]),
+		Duration:                stringFromAny(raw["duration"]),
+		Coupon:                  stringFromAny(raw["coupon"]),
 		Quantity:                intFromAny(raw["quantity"], 1),
 		MaxMonthlyPrice:         floatFromAny(raw["maxMonthlyPrice"], 0),
 		Currency:                stringFromAny(raw["currency"]),
@@ -270,13 +292,32 @@ func (s *Service) HandleQuickOrder(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if !res.Success {
-		writeJSON(w, statusCode, map[string]any{
+		errPayload := map[string]any{
 			"success":   false,
 			"code":      res.Code,
 			"errorCode": res.ErrorCode,
 			"error":     res.Error,
 			"message":   res.Error,
-		})
+		}
+		if res.PricingMode != "" {
+			errPayload["pricingMode"] = res.PricingMode
+		}
+		if res.Duration != "" {
+			errPayload["duration"] = res.Duration
+		}
+		if res.Coupon != "" {
+			errPayload["coupon"] = res.Coupon
+		}
+		if res.PeriodPrice > 0 {
+			errPayload["periodPrice"] = res.PeriodPrice
+		}
+		if res.MonthlyPrice > 0 {
+			errPayload["monthlyPrice"] = res.MonthlyPrice
+		}
+		if res.SetupFee > 0 {
+			errPayload["setupFee"] = res.SetupFee
+		}
+		writeJSON(w, statusCode, errPayload)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)

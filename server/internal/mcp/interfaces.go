@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"ovh-nexus/server/internal/auth"
+	"ovh-nexus/server/internal/catalog"
 	"ovh-nexus/server/internal/config"
 	"ovh-nexus/server/internal/logger"
 	"ovh-nexus/server/internal/ovhclient"
@@ -26,21 +27,30 @@ type TOTPChecker interface {
 
 // CatalogEntry summarizes a dedicated server model and its current availability.
 type CatalogEntry struct {
-	PlanCode               string   `json:"planCode"`
-	ModelName              string   `json:"modelName"`
-	Range                  string   `json:"range"`
-	CPU                    string   `json:"cpu"`
-	ConfigKey              string   `json:"configKey"`
-	Options                []string `json:"options,omitempty"`
-	IsDefault              bool     `json:"isDefault"`
-	EstimatedMonthlyPrice  float64  `json:"estimatedMonthlyPrice"`
-	Currency               string   `json:"currency"`
-	ListingState           string   `json:"listingState"`
-	ListedAt               string   `json:"listedAt,omitempty"`
-	Orderable              bool     `json:"orderable"`
-	Generation             int      `json:"generation,omitempty"`
-	AvailableDatacenters   []string `json:"availableDatacenters"`
-	MatchingConfigurations int      `json:"matchingConfigurations"`
+	PlanCode               string                    `json:"planCode"`
+	ModelName              string                    `json:"modelName"`
+	Range                  string                    `json:"range"`
+	CPU                    string                    `json:"cpu"`
+	ConfigKey              string                    `json:"configKey"`
+	Options                []string                  `json:"options,omitempty"`
+	IsDefault              bool                      `json:"isDefault"`
+	EstimatedMonthlyPrice  float64                   `json:"estimatedMonthlyPrice"`
+	OriginalMonthlyPrice   float64                   `json:"originalMonthlyPrice"`
+	SetupFee               float64                   `json:"setupFee"`
+	OriginalSetupFee       float64                   `json:"originalSetupFee"`
+	FreeSetup              bool                      `json:"freeSetup"`
+	HasPromo               bool                      `json:"hasPromo"`
+	PromoCode              string                    `json:"promoCode,omitempty"`
+	PromoBadge             string                    `json:"promoBadge,omitempty"`
+	PromoDescription       string                    `json:"promoDescription,omitempty"`
+	PricingModes           []catalog.PlanPricingMode `json:"pricingModes,omitempty"`
+	Currency               string                    `json:"currency"`
+	ListingState           string                    `json:"listingState"`
+	ListedAt               string                    `json:"listedAt,omitempty"`
+	Orderable              bool                      `json:"orderable"`
+	Generation             int                       `json:"generation,omitempty"`
+	AvailableDatacenters   []string                  `json:"availableDatacenters"`
+	MatchingConfigurations int                       `json:"matchingConfigurations"`
 }
 
 // CatalogReader abstracts catalog resolution, global stock availability, and SKU changes.

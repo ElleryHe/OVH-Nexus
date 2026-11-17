@@ -17,6 +17,7 @@ import (
 func (s *Service) MountRoutes(r chi.Router) {
 	r.Get("/servers", s.HandleListServers)
 	r.Post("/servers/refresh", s.HandleRefreshServers)
+	r.Get("/servers/{planCode}/price", s.HandleGetServerPrice)
 	r.Post("/servers/{planCode}/price", s.HandleGetServerPrice)
 	r.Get("/servers/{planCode}/configs", s.HandleGetPlanConfigs)
 
@@ -101,22 +102,38 @@ func (s *Service) HandleRefreshServers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// HandleGetServerPrice handles POST /api/servers/{planCode}/price.
+// HandleGetServerPrice handles GET|POST /api/servers/{planCode}/price.
 func (s *Service) HandleGetServerPrice(w http.ResponseWriter, r *http.Request) {
 	planCode := strings.TrimSpace(chi.URLParam(r, "planCode"))
+	q := r.URL.Query()
 	var body struct {
-		Datacenter string   `json:"datacenter"`
-		Options    []string `json:"options"`
+		Datacenter  string   `json:"datacenter"`
+		Options     []string `json:"options"`
+		PricingMode string   `json:"pricingMode"`
+		Duration    string   `json:"duration"`
+		Coupon      string   `json:"coupon"`
 	}
-	_ = json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&body)
+	if r.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&body)
+	}
 	if strings.TrimSpace(body.Datacenter) == "" {
-		body.Datacenter = "gra"
+		body.Datacenter = nonEmpty(q.Get("datacenter"), "gra")
 	}
+	if len(body.Options) == 0 && strings.TrimSpace(q.Get("options")) != "" {
+		for _, part := range strings.Split(q.Get("options"), ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				body.Options = append(body.Options, trimmed)
+			}
+		}
+	}
+	pricingMode := nonEmpty(body.PricingMode, q.Get("pricingMode"))
+	duration := nonEmpty(body.Duration, q.Get("duration"))
+	coupon := nonEmpty(body.Coupon, q.Get("coupon"))
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
 
-	res, err := s.GetServerPrice(r.Context(), accountID, planCode, body.Datacenter, body.Options)
+	res, err := s.GetServerPriceWithMode(r.Context(), accountID, planCode, body.Datacenter, body.Options, pricingMode, duration, coupon)
 	if err != nil {
-		if errors.Is(err, ovhclient.ErrCredentialsMissing) {
+		if errors.Is(err, ovhclient.ErrCredentialsMissing) || (res != nil && res.Code == "INVALID_COUPON") {
 			writeJSON(w, http.StatusBadRequest, res)
 			return
 		}

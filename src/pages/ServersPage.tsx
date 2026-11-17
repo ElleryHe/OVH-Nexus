@@ -54,55 +54,18 @@ import {
   buildConfigKey,
   formatConfigLabel,
   getCurrencySymbol,
+  resolvePricingModeDuration,
+  synthesizePricingModes,
+  resolvePricingModeEntry,
 } from '@/utils/hardwareFormat';
 import type {
   ListingState,
   OVHAvailabilityRow,
   PlanConfigOption,
+  PlanPricingMode,
+  ServerOption,
+  ServerPlan,
 } from '@/types';
-
-interface ServerOption {
-  label: string;
-  value: string;
-  family?: string;
-  configKey?: string;
-  options?: string[];
-  isDefault?: boolean;
-  estimatedMonthlyPrice?: number;
-  price?: number;
-  currency?: string;
-}
-
-interface ServerPlan {
-  planCode: string;
-  name: string;
-  description?: string;
-  range?: string;
-  cpu: string;
-  memory: string;
-  storage: string;
-  bandwidth: string;
-  vrackBandwidth: string;
-  monthlyPrice?: number | null;
-  startingPrice?: number | null;
-  defaultConfigKey?: string;
-  currency?: string;
-  catalogSource?: string;
-  listingState?: ListingState | 'delisted' | string;
-  listedAt?: string;
-  orderable?: boolean;
-  generation?: number;
-  defaultOptions: ServerOption[];
-  availableOptions: ServerOption[];
-  datacenters: {
-    datacenter: string;
-    dcName: string;
-    region: string;
-    availability: string;
-    countryCode: string;
-    flag?: string;
-  }[];
-}
 
 interface UnifiedCardConfig {
   configKey: string;
@@ -112,12 +75,27 @@ interface UnifiedCardConfig {
   options: string[];
   isDefault: boolean;
   estimatedMonthlyPrice: number | null;
+  originalMonthlyPrice: number | null;
+  setupFee: number | null;
+  originalSetupFee: number | null;
+  freeSetup: boolean;
+  hasPromo: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes: PlanPricingMode[];
   currency: string;
   dcStatuses: Record<string, string>;
   inStockDcs: string[];
 }
 
-type ListingFilterTab = 'all' | 'listed' | 'announced' | 'presale' | 'new';
+type ListingFilterTab =
+  | 'all'
+  | 'listed'
+  | 'promo'
+  | 'announced'
+  | 'presale'
+  | 'new';
 
 const isAvailStatus = (status?: string): boolean =>
   Boolean(status && status !== 'unavailable' && status !== 'unknown');
@@ -226,6 +204,9 @@ const ServersPage = () => {
     datacenters: string[];
     selectedConfig: UnifiedCardConfig | null;
     extraOptions: string[];
+    pricingMode: string;
+    duration: string;
+    coupon: string;
   } | null>(null);
   const [queueAutoPay, setQueueAutoPay] = useState(false);
   const [queueWaiveRetractation, setQueueWaiveRetractation] = useState(false);
@@ -260,6 +241,14 @@ const ServersPage = () => {
   >({});
   // Per-card selected configuration key: planCode -> configKey
   const [selectedConfigKeyMap, setSelectedConfigKeyMap] = useState<
+    Record<string, string>
+  >({});
+  // Per-card selected billing / commitment pricingMode: planCode -> pricingMode
+  const [selectedPricingModeMap, setSelectedPricingModeMap] = useState<
+    Record<string, string>
+  >({});
+  // Per-card custom coupon code: planCode -> coupon
+  const [selectedCouponMap, setSelectedCouponMap] = useState<
     Record<string, string>
   >({});
   // Per-card selected advanced addon options (bandwidth / vrack): planCode -> optionValue[]
@@ -593,6 +582,94 @@ const ServersPage = () => {
           : typeof server.monthlyPrice === 'number' && server.monthlyPrice > 0
           ? server.monthlyPrice
           : planMeta.basePrice ?? null;
+      const baseOrigMonthly =
+        typeof server.originalMonthlyPrice === 'number' &&
+        server.originalMonthlyPrice > 0
+          ? server.originalMonthlyPrice
+          : typeof server.originalPrice === 'number' && server.originalPrice > 0
+          ? server.originalPrice
+          : planMeta.originalMonthlyPrice ?? null;
+      const baseSetupFee =
+        typeof server.setupFee === 'number'
+          ? server.setupFee
+          : typeof planMeta.setupFee === 'number'
+          ? planMeta.setupFee
+          : null;
+      const baseOrigSetupFee =
+        typeof server.originalSetupFee === 'number'
+          ? server.originalSetupFee
+          : typeof planMeta.originalSetupFee === 'number'
+          ? planMeta.originalSetupFee
+          : null;
+      const baseFreeSetup = Boolean(
+        server.freeSetup ||
+          planMeta.freeSetup ||
+          (baseSetupFee === 0 && (baseOrigSetupFee ?? 0) > 0)
+      );
+      const baseHasPromo = Boolean(
+        server.hasPromo ||
+          planMeta.hasPromo ||
+          baseFreeSetup ||
+          (baseOrigMonthly && basePrice && baseOrigMonthly > basePrice + 0.01)
+      );
+      const basePricingModes =
+        Array.isArray(server.pricingModes) && server.pricingModes.length > 0
+          ? server.pricingModes
+          : Array.isArray(planMeta.pricingModes) &&
+            planMeta.pricingModes.length > 0
+          ? planMeta.pricingModes
+          : undefined;
+
+      const buildAdjustedModes = (
+        rawModes: PlanPricingMode[] | undefined,
+        estMonthly: number | null,
+        origMonthly: number | null,
+        setup: number | null,
+        origSetup: number | null,
+        freeSetupFlag: boolean,
+        hasPromoFlag: boolean,
+        promoCode?: string,
+        promoBadge?: string,
+        promoDescription?: string
+      ): PlanPricingMode[] => {
+        if (Array.isArray(rawModes) && rawModes.length > 0) {
+          return rawModes;
+        }
+        if (Array.isArray(basePricingModes) && basePricingModes.length > 0) {
+          const monthlyDelta =
+            estMonthly !== null && basePrice !== null
+              ? Math.max(0, Number((estMonthly - basePrice).toFixed(2)))
+              : 0;
+          return basePricingModes.map((m) => {
+            const interval = m.intervalMonths > 0 ? m.intervalMonths : 1;
+            const periodDelta = Number((monthlyDelta * interval).toFixed(2));
+            return {
+              ...m,
+              periodPrice: Number((m.periodPrice + periodDelta).toFixed(2)),
+              originalPeriodPrice: Number(
+                (m.originalPeriodPrice + periodDelta).toFixed(2)
+              ),
+              monthlyEquivalentPrice: Number(
+                (m.monthlyEquivalentPrice + monthlyDelta).toFixed(2)
+              ),
+              originalMonthlyPrice: Number(
+                (m.originalMonthlyPrice + monthlyDelta).toFixed(2)
+              ),
+            };
+          });
+        }
+        return synthesizePricingModes({
+          estimatedMonthlyPrice: estMonthly,
+          originalMonthlyPrice: origMonthly,
+          setupFee: setup,
+          originalSetupFee: origSetup,
+          freeSetup: freeSetupFlag,
+          hasPromo: hasPromoFlag,
+          promoCode,
+          promoBadge,
+          promoDescription,
+        });
+      };
 
       const serverDcMap: Record<string, string> = {
         ...(availability[server.planCode] || {}),
@@ -662,6 +739,37 @@ const ServersPage = () => {
               : typeof c.price === 'number' && c.price > 0
               ? c.price
               : priceCalc.totalPrice ?? basePrice;
+          const origMonthly =
+            typeof c.originalMonthlyPrice === 'number' &&
+            c.originalMonthlyPrice > 0
+              ? c.originalMonthlyPrice
+              : typeof c.originalPrice === 'number' && c.originalPrice > 0
+              ? c.originalPrice
+              : baseOrigMonthly;
+          const setupFee =
+            typeof c.setupFee === 'number' ? c.setupFee : baseSetupFee;
+          const origSetupFee =
+            typeof c.originalSetupFee === 'number'
+              ? c.originalSetupFee
+              : baseOrigSetupFee;
+          const freeSetup = Boolean(
+            c.freeSetup ||
+              baseFreeSetup ||
+              (setupFee === 0 && (origSetupFee ?? 0) > 0)
+          );
+          const hasPromo = Boolean(
+            c.hasPromo ||
+              baseHasPromo ||
+              freeSetup ||
+              (origMonthly && estPrice && origMonthly > estPrice + 0.01)
+          );
+          const promoCode = c.promoCode || server.promoCode || planMeta.promoCode;
+          const promoBadge =
+            c.promoBadge || server.promoBadge || planMeta.promoBadge;
+          const promoDescription =
+            c.promoDescription ||
+            server.promoDescription ||
+            planMeta.promoDescription;
 
           configMap.set(key, {
             configKey: key,
@@ -676,6 +784,26 @@ const ServersPage = () => {
                 : [mem, sto].filter((x) => x && x !== 'N/A'),
             isDefault: Boolean(c.isDefault || key === defaultKey),
             estimatedMonthlyPrice: estPrice,
+            originalMonthlyPrice: origMonthly,
+            setupFee,
+            originalSetupFee: origSetupFee,
+            freeSetup,
+            hasPromo,
+            promoCode,
+            promoBadge,
+            promoDescription,
+            pricingModes: buildAdjustedModes(
+              c.pricingModes,
+              estPrice,
+              origMonthly,
+              setupFee,
+              origSetupFee,
+              freeSetup,
+              hasPromo,
+              promoCode,
+              promoBadge,
+              promoDescription
+            ),
             currency: c.currency || baseCurrency,
             dcStatuses,
             inStockDcs,
@@ -716,6 +844,38 @@ const ServersPage = () => {
             : typeof row.price === 'number' && row.price > 0
             ? row.price
             : priceCalc.totalPrice ?? basePrice;
+        const origMonthly =
+          typeof row.originalMonthlyPrice === 'number' &&
+          row.originalMonthlyPrice > 0
+            ? row.originalMonthlyPrice
+            : typeof row.originalPrice === 'number' && row.originalPrice > 0
+            ? row.originalPrice
+            : baseOrigMonthly;
+        const setupFee =
+          typeof row.setupFee === 'number' ? row.setupFee : baseSetupFee;
+        const origSetupFee =
+          typeof row.originalSetupFee === 'number'
+            ? row.originalSetupFee
+            : baseOrigSetupFee;
+        const freeSetup = Boolean(
+          row.freeSetup ||
+            baseFreeSetup ||
+            (setupFee === 0 && (origSetupFee ?? 0) > 0)
+        );
+        const hasPromo = Boolean(
+          row.hasPromo ||
+            baseHasPromo ||
+            freeSetup ||
+            (origMonthly && estPrice && origMonthly > estPrice + 0.01)
+        );
+        const promoCode =
+          row.promoCode || server.promoCode || planMeta.promoCode;
+        const promoBadge =
+          row.promoBadge || server.promoBadge || planMeta.promoBadge;
+        const promoDescription =
+          row.promoDescription ||
+          server.promoDescription ||
+          planMeta.promoDescription;
 
         const existing = configMap.get(key);
         if (!existing) {
@@ -730,6 +890,26 @@ const ServersPage = () => {
                 : [mem, sto].filter((x) => x && x !== 'N/A'),
             isDefault: Boolean(row.isDefault || key === defaultKey),
             estimatedMonthlyPrice: estPrice,
+            originalMonthlyPrice: origMonthly,
+            setupFee,
+            originalSetupFee: origSetupFee,
+            freeSetup,
+            hasPromo,
+            promoCode,
+            promoBadge,
+            promoDescription,
+            pricingModes: buildAdjustedModes(
+              row.pricingModes,
+              estPrice,
+              origMonthly,
+              setupFee,
+              origSetupFee,
+              freeSetup,
+              hasPromo,
+              promoCode,
+              promoBadge,
+              promoDescription
+            ),
             currency: row.currency || baseCurrency,
             dcStatuses,
             inStockDcs,
@@ -743,6 +923,13 @@ const ServersPage = () => {
           existing.inStockDcs = Object.entries(existing.dcStatuses)
             .filter(([_, st]) => isAvailStatus(st))
             .map(([dc]) => dc);
+          if (
+            (!existing.pricingModes || existing.pricingModes.length === 0) &&
+            Array.isArray(row.pricingModes) &&
+            row.pricingModes.length > 0
+          ) {
+            existing.pricingModes = row.pricingModes;
+          }
         }
       });
 
@@ -755,6 +942,11 @@ const ServersPage = () => {
         const inStockDcs = Object.entries(serverDcMap)
           .filter(([_, st]) => isAvailStatus(st))
           .map(([dc]) => dc);
+        const estPrice = priceCalc.totalPrice ?? basePrice;
+        const promoCode = server.promoCode || planMeta.promoCode;
+        const promoBadge = server.promoBadge || planMeta.promoBadge;
+        const promoDescription =
+          server.promoDescription || planMeta.promoDescription;
 
         configMap.set(defaultKey, {
           configKey: defaultKey,
@@ -765,7 +957,27 @@ const ServersPage = () => {
             (x) => x && x !== 'N/A' && x !== '暂无数据'
           ),
           isDefault: true,
-          estimatedMonthlyPrice: priceCalc.totalPrice ?? basePrice,
+          estimatedMonthlyPrice: estPrice,
+          originalMonthlyPrice: baseOrigMonthly,
+          setupFee: baseSetupFee,
+          originalSetupFee: baseOrigSetupFee,
+          freeSetup: baseFreeSetup,
+          hasPromo: baseHasPromo,
+          promoCode,
+          promoBadge,
+          promoDescription,
+          pricingModes: buildAdjustedModes(
+            basePricingModes,
+            estPrice,
+            baseOrigMonthly,
+            baseSetupFee,
+            baseOrigSetupFee,
+            baseFreeSetup,
+            baseHasPromo,
+            promoCode,
+            promoBadge,
+            promoDescription
+          ),
           currency: baseCurrency,
           dcStatuses: serverDcMap,
           inStockDcs,
@@ -936,6 +1148,19 @@ const ServersPage = () => {
       return;
     }
 
+    const mode = selectedPricingModeMap[server.planCode] || 'default';
+    const modeEntry = resolvePricingModeEntry(
+      activeConfig?.pricingModes || server.pricingModes,
+      mode
+    );
+    const duration =
+      modeEntry?.duration ||
+      resolvePricingModeDuration(
+        mode,
+        activeConfig?.pricingModes || server.pricingModes
+      );
+    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+
     setQueueAutoPay(false);
     setQueueWaiveRetractation(false);
     setPendingQueueTarget({
@@ -943,6 +1168,9 @@ const ServersPage = () => {
       datacenters: effectiveDcs,
       selectedConfig: activeConfig,
       extraOptions: selectedAddonOptionsMap[server.planCode] || [],
+      pricingMode: mode,
+      duration,
+      coupon,
     });
   };
 
@@ -998,6 +1226,19 @@ const ServersPage = () => {
     const mergedOptions = Array.from(new Set([...configOpts, ...extraOptions]));
     const apiDc = convertDisplayDcToApiDc(targetDc);
 
+    const mode = selectedPricingModeMap[server.planCode] || 'default';
+    const modeEntry = resolvePricingModeEntry(
+      activeCfg?.pricingModes || server.pricingModes,
+      mode
+    );
+    const duration =
+      modeEntry?.duration ||
+      resolvePricingModeDuration(
+        mode,
+        activeCfg?.pricingModes || server.pricingModes
+      );
+    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+
     setIsQuickOrdering(true);
     try {
       const res = await api.post('/orders/quick-order', {
@@ -1007,6 +1248,9 @@ const ServersPage = () => {
         configKey: activeCfg?.configKey || undefined,
         configLabel: activeCfg?.label || undefined,
         currency: activeCfg?.currency || server.currency || undefined,
+        pricingMode: mode,
+        duration,
+        coupon: coupon || undefined,
       });
       const cfgLabel = activeCfg?.label ? ` (${activeCfg.label})` : '';
       toast.success(
@@ -1026,8 +1270,15 @@ const ServersPage = () => {
 
   const confirmAddToQueue = async () => {
     if (!pendingQueueTarget) return;
-    const { server, datacenters, selectedConfig, extraOptions } =
-      pendingQueueTarget;
+    const {
+      server,
+      datacenters,
+      selectedConfig,
+      extraOptions,
+      pricingMode,
+      duration,
+      coupon,
+    } = pendingQueueTarget;
 
     try {
       const configOpts =
@@ -1046,6 +1297,9 @@ const ServersPage = () => {
         configKey: selectedConfig?.configKey || undefined,
         configLabel: selectedConfig?.label || undefined,
         currency: selectedConfig?.currency || server.currency || undefined,
+        pricingMode: pricingMode || 'default',
+        duration: duration || 'P1M',
+        coupon: coupon || undefined,
         auto_pay: queueAutoPay,
         waive_retractation_period: queueWaiveRetractation,
       });
@@ -1080,11 +1334,18 @@ const ServersPage = () => {
     }
   };
 
+  const isServerPromo = useCallback((server: ServerPlan): boolean => {
+    return Boolean(
+      server.hasPromo || (server.pricingModes || []).some((m) => m.hasPromo)
+    );
+  }, []);
+
   // Tab counts
   const tabCounts = useMemo(() => {
     const counts = {
       all: servers.length,
       listed: 0,
+      promo: 0,
       announced: 0,
       presale: 0,
       new: 0,
@@ -1094,6 +1355,7 @@ const ServersPage = () => {
       if (st === 'listed') counts.listed += 1;
       else if (st === 'announced') counts.announced += 1;
       else if (st === 'presale') counts.presale += 1;
+      if (isServerPromo(srv)) counts.promo += 1;
       const isNew = Boolean(
         st === 'listed' &&
           (recentSkuMap[srv.planCode] ||
@@ -1103,7 +1365,7 @@ const ServersPage = () => {
       if (isNew) counts.new += 1;
     });
     return counts;
-  }, [servers, recentSkuMap]);
+  }, [servers, recentSkuMap, isServerPromo]);
 
   const filteredServers = useMemo(() => {
     let filtered = [...servers];
@@ -1112,6 +1374,8 @@ const ServersPage = () => {
       filtered = filtered.filter(
         (s) => resolveServerListingState(s) === 'listed'
       );
+    } else if (listingFilterTab === 'promo') {
+      filtered = filtered.filter((s) => isServerPromo(s));
     } else if (listingFilterTab === 'announced') {
       filtered = filtered.filter(
         (s) => resolveServerListingState(s) === 'announced'
@@ -1342,6 +1606,13 @@ const ServersPage = () => {
                   'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
               },
               {
+                id: 'promo',
+                label: t('listing.filter.promo'),
+                count: tabCounts.promo,
+                activeCls:
+                  'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
+              },
+              {
                 id: 'announced',
                 label: t('listing.filter.announced'),
                 count: tabCounts.announced,
@@ -1373,6 +1644,8 @@ const ServersPage = () => {
                 className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
                   isActive
                     ? tab.activeCls
+                    : tab.id === 'promo'
+                    ? 'bg-rose-500/10 text-rose-300/90 border-rose-500/30 hover:bg-rose-500/20'
                     : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-cyber-text'
                 }`}
               >
@@ -1475,6 +1748,59 @@ const ServersPage = () => {
                 ? server.monthlyPrice
                 : defaultCfg?.estimatedMonthlyPrice ?? null;
 
+            const originalMonthlyPrice =
+              typeof server.originalMonthlyPrice === 'number' &&
+              server.originalMonthlyPrice > 0
+                ? server.originalMonthlyPrice
+                : typeof server.originalPrice === 'number' &&
+                  server.originalPrice > 0
+                ? server.originalPrice
+                : defaultCfg?.originalMonthlyPrice ?? null;
+
+            const cardSetupFee =
+              typeof server.setupFee === 'number'
+                ? server.setupFee
+                : typeof defaultCfg?.setupFee === 'number'
+                ? defaultCfg.setupFee
+                : null;
+            const cardOrigSetupFee =
+              typeof server.originalSetupFee === 'number'
+                ? server.originalSetupFee
+                : typeof defaultCfg?.originalSetupFee === 'number'
+                ? defaultCfg.originalSetupFee
+                : null;
+            const cardFreeSetup = Boolean(
+              server.freeSetup ||
+                defaultCfg?.freeSetup ||
+                (cardSetupFee === 0 && (cardOrigSetupFee ?? 0) > 0)
+            );
+            const cardPricingModes =
+              (server.pricingModes && server.pricingModes.length > 0
+                ? server.pricingModes
+                : defaultCfg?.pricingModes) || [];
+            const hasAnnualFreeSetup = cardPricingModes.some(
+              (m) =>
+                (m.mode === 'upfront12' || m.mode === 'upfront24') &&
+                m.setupFee === 0
+            );
+            const cardHasPromo = Boolean(
+              server.hasPromo ||
+                defaultCfg?.hasPromo ||
+                cardPricingModes.some((m) => m.hasPromo) ||
+                cardFreeSetup ||
+                (originalMonthlyPrice !== null &&
+                  startingPrice !== null &&
+                  originalMonthlyPrice > startingPrice + 0.01)
+            );
+            const cardPromoBadge =
+              server.promoBadge ||
+              defaultCfg?.promoBadge ||
+              cardPricingModes.find((m) => m.promoBadge)?.promoBadge;
+            const cardPromoDescription =
+              server.promoDescription ||
+              defaultCfg?.promoDescription ||
+              cardPricingModes.find((m) => m.promoDescription)?.promoDescription;
+
             const symbol = getCurrencySymbol(
               activeCfg?.currency || server.currency
             );
@@ -1493,6 +1819,8 @@ const ServersPage = () => {
                     ? 'border-purple-500/40 hover:border-purple-500/60'
                     : isAnnounced
                     ? 'border-amber-500/40 hover:border-amber-500/60'
+                    : cardHasPromo
+                    ? 'border-rose-500/35 hover:border-rose-500/60'
                     : 'border-cyber-accent/30 hover:border-cyber-accent/55'
                 }`}
               >
@@ -1522,10 +1850,19 @@ const ServersPage = () => {
                             {t('presale.pricingTbd')}
                           </span>
                         ) : startingPrice !== null && startingPrice > 0 ? (
-                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
-                            {t('catalog.fromPrice', {
-                              price: `${symbol}${startingPrice.toFixed(2)}`,
-                            })}
+                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap inline-flex items-center">
+                            <span>
+                              {t('catalog.fromPrice', {
+                                price: `${symbol}${startingPrice.toFixed(2)}`,
+                              })}
+                            </span>
+                            {originalMonthlyPrice !== null &&
+                              originalMonthlyPrice > startingPrice + 0.01 && (
+                                <span className="line-through text-[10px] opacity-70 ml-1 font-mono">
+                                  {symbol}
+                                  {originalMonthlyPrice.toFixed(2)}
+                                </span>
+                              )}
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-cyber-grid/30 text-cyber-muted border border-cyber-grid whitespace-nowrap">
@@ -1535,8 +1872,16 @@ const ServersPage = () => {
                       </div>
                     </div>
 
-                    {/* Row 2: Status + Generation + Newly Listed + Subscribed Badges */}
+                    {/* Row 2: Promo + Status + Generation + Newly Listed + Subscribed Badges */}
                     <div className="flex items-center gap-1.5 h-6 overflow-hidden">
+                      {cardHasPromo && (
+                        <span
+                          title={cardPromoDescription}
+                          className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40 flex items-center gap-0.5 flex-shrink-0"
+                        >
+                          <span>🔥 {cardPromoBadge || t('promo.badge')}</span>
+                        </span>
+                      )}
                       {isAnnounced && (
                         <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 flex-shrink-0">
                           <Sparkles className="w-2.5 h-2.5" />
@@ -1661,7 +2006,7 @@ const ServersPage = () => {
                     </div>
                   </div>
 
-                  {/* Zone 3: Dedicated Datacenter Availability Row */}
+                  {/* Zone 3: Dedicated Datacenter Availability & Setup Fee Row */}
                   <div className="min-h-[30px] flex items-center justify-between gap-2 px-1">
                     <div className="flex items-center gap-1 min-w-0 overflow-hidden">
                       {isAnnounced ? (
@@ -1670,7 +2015,7 @@ const ServersPage = () => {
                         </span>
                       ) : allInStockDcs.length > 0 ? (
                         <>
-                          {allInStockDcs.slice(0, 5).map((dc) => (
+                          {allInStockDcs.slice(0, 4).map((dc) => (
                             <span
                               key={dc}
                               className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold flex-shrink-0"
@@ -1678,9 +2023,9 @@ const ServersPage = () => {
                               <DCLabel code={dc} mode="compact" />
                             </span>
                           ))}
-                          {allInStockDcs.length > 5 && (
+                          {allInStockDcs.length > 4 && (
                             <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
-                              +{allInStockDcs.length - 5}
+                              +{allInStockDcs.length - 4}
                             </span>
                           )}
                         </>
@@ -1691,11 +2036,46 @@ const ServersPage = () => {
                       )}
                     </div>
 
-                    <span className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
-                      {t('catalog.configCount', {
-                        count: unifiedConfigs.length,
-                      })}
-                    </span>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {!isPresale &&
+                        (cardSetupFee === 0 || cardFreeSetup ? (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-400 text-[10px] font-semibold inline-flex items-center">
+                            <span>{t('promo.freeSetup')}</span>
+                            {cardOrigSetupFee !== null &&
+                              cardOrigSetupFee > 0 && (
+                                <span className="line-through opacity-70 ml-1 font-mono text-[9px]">
+                                  {symbol}
+                                  {cardOrigSetupFee.toFixed(2)}
+                                </span>
+                              )}
+                          </span>
+                        ) : cardSetupFee !== null && cardSetupFee > 0 ? (
+                          <span
+                            title={
+                              hasAnnualFreeSetup
+                                ? t('promo.annualWaivesSetupHint')
+                                : undefined
+                            }
+                            className="px-1.5 py-0.5 rounded bg-cyber-grid/40 border border-cyber-grid text-cyber-muted text-[10px] font-mono inline-flex items-center gap-1"
+                          >
+                            <span>
+                              {t('promo.setupFee', {
+                                price: `${symbol}${cardSetupFee.toFixed(2)}`,
+                              })}
+                            </span>
+                            {hasAnnualFreeSetup && (
+                              <span className="text-emerald-400 font-sans">
+                                · {t('promo.annualFreeSetupShort')}
+                              </span>
+                            )}
+                          </span>
+                        ) : null)}
+                      <span className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
+                        {t('catalog.configCount', {
+                          count: unifiedConfigs.length,
+                        })}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Zone 4: Dedicated Bottom Action Footer */}
@@ -1712,6 +2092,17 @@ const ServersPage = () => {
                                 label: activeCfg.label,
                                 estimatedMonthlyPrice:
                                   activeCfg.estimatedMonthlyPrice ?? undefined,
+                                originalMonthlyPrice:
+                                  activeCfg.originalMonthlyPrice ?? undefined,
+                                setupFee: activeCfg.setupFee ?? undefined,
+                                originalSetupFee:
+                                  activeCfg.originalSetupFee ?? undefined,
+                                freeSetup: activeCfg.freeSetup,
+                                hasPromo: activeCfg.hasPromo,
+                                promoCode: activeCfg.promoCode,
+                                promoBadge: activeCfg.promoBadge,
+                                promoDescription: activeCfg.promoDescription,
+                                pricingModes: activeCfg.pricingModes,
                                 currency: activeCfg.currency,
                                 memory: activeCfg.memory,
                                 storage: activeCfg.storage,
@@ -1726,6 +2117,16 @@ const ServersPage = () => {
                             isDefault: c.isDefault,
                             estimatedMonthlyPrice:
                               c.estimatedMonthlyPrice ?? undefined,
+                            originalMonthlyPrice:
+                              c.originalMonthlyPrice ?? undefined,
+                            setupFee: c.setupFee ?? undefined,
+                            originalSetupFee: c.originalSetupFee ?? undefined,
+                            freeSetup: c.freeSetup,
+                            hasPromo: c.hasPromo,
+                            promoCode: c.promoCode,
+                            promoBadge: c.promoBadge,
+                            promoDescription: c.promoDescription,
+                            pricingModes: c.pricingModes,
                             currency: c.currency,
                             datacenters: c.dcStatuses,
                             inStockCount: c.inStockDcs.length,
@@ -1784,6 +2185,86 @@ const ServersPage = () => {
         const activeCfg =
           unifiedConfigs.find((c) => c.configKey === activeCfgKey) ||
           defaultCfg;
+
+        const selectedPricingMode =
+          selectedPricingModeMap[modalServer.planCode] || 'default';
+        const selectedCoupon =
+          selectedCouponMap[modalServer.planCode] || '';
+
+        // Available pricing modes for the active configuration
+        const rawModes =
+          activeCfg && activeCfg.pricingModes.length > 0
+            ? activeCfg.pricingModes
+            : modalServer.pricingModes && modalServer.pricingModes.length > 0
+            ? modalServer.pricingModes
+            : synthesizePricingModes({
+                estimatedMonthlyPrice:
+                  activeCfg?.estimatedMonthlyPrice ??
+                  modalServer.startingPrice ??
+                  modalServer.monthlyPrice ??
+                  0,
+                originalMonthlyPrice:
+                  activeCfg?.originalMonthlyPrice ??
+                  modalServer.originalMonthlyPrice ??
+                  0,
+                setupFee: activeCfg?.setupFee ?? modalServer.setupFee ?? 0,
+                originalSetupFee:
+                  activeCfg?.originalSetupFee ??
+                  modalServer.originalSetupFee ??
+                  0,
+                freeSetup: Boolean(
+                  activeCfg?.freeSetup || modalServer.freeSetup
+                ),
+                hasPromo: Boolean(activeCfg?.hasPromo || modalServer.hasPromo),
+                promoCode: activeCfg?.promoCode || modalServer.promoCode,
+                promoBadge: activeCfg?.promoBadge || modalServer.promoBadge,
+                promoDescription:
+                  activeCfg?.promoDescription || modalServer.promoDescription,
+              });
+
+        const availablePricingModes: PlanPricingMode[] =
+          rawModes.length > 1
+            ? rawModes
+            : rawModes.length === 1
+            ? [
+                rawModes[0],
+                {
+                  ...rawModes[0],
+                  mode: 'upfront12',
+                  duration: 'P12M',
+                  intervalMonths: 12,
+                  commitmentMonths: 12,
+                  periodPrice: Number(
+                    (rawModes[0].monthlyEquivalentPrice * 12).toFixed(2)
+                  ),
+                  originalPeriodPrice: Number(
+                    (rawModes[0].originalMonthlyPrice * 12).toFixed(2)
+                  ),
+                  setupFee: 0,
+                  freeSetup: true,
+                },
+                {
+                  ...rawModes[0],
+                  mode: 'upfront24',
+                  duration: 'P24M',
+                  intervalMonths: 24,
+                  commitmentMonths: 24,
+                  periodPrice: Number(
+                    (rawModes[0].monthlyEquivalentPrice * 24).toFixed(2)
+                  ),
+                  originalPeriodPrice: Number(
+                    (rawModes[0].originalMonthlyPrice * 24).toFixed(2)
+                  ),
+                  setupFee: 0,
+                  freeSetup: true,
+                },
+              ]
+            : [];
+
+        const activeModeEntry =
+          resolvePricingModeEntry(availablePricingModes, selectedPricingMode) ||
+          availablePricingModes[0] ||
+          null;
 
         const allInStockDcSet = new Set<string>();
         unifiedConfigs.forEach((c) => {
@@ -1857,6 +2338,16 @@ const ServersPage = () => {
             allInStockDcs.length > 0 ||
             selectedDcsForModal.length > 0);
 
+        const modalHasPromo = Boolean(
+          modalServer.hasPromo ||
+            activeModeEntry?.hasPromo ||
+            activeCfg?.hasPromo
+        );
+        const modalPromoBadge =
+          activeModeEntry?.promoBadge ||
+          activeCfg?.promoBadge ||
+          modalServer.promoBadge;
+
         return (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
@@ -1876,6 +2367,17 @@ const ServersPage = () => {
                     <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/50 text-cyber-muted">
                       {modalServer.planCode}
                     </span>
+                    {modalHasPromo && (
+                      <span
+                        title={
+                          activeModeEntry?.promoDescription ||
+                          modalServer.promoDescription
+                        }
+                        className="px-2 py-0.5 text-[11px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40"
+                      >
+                        🔥 {modalPromoBadge || t('promo.badge')}
+                      </span>
+                    )}
                     {isAnnounced && (
                       <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
                         <Sparkles className="w-3 h-3" />
@@ -1988,6 +2490,153 @@ const ServersPage = () => {
 
               {/* Scrollable Modal Body */}
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                {/* Billing / Commitment Mode Selector + Coupon Bar */}
+                {!isPresale && availablePricingModes.length > 0 && (
+                  <div className="p-3.5 rounded-xl border border-cyber-accent/30 bg-cyber-bg/50 space-y-3">
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-bold text-cyber-accent">
+                        {t('billing.modeSelectorTitle')}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {availablePricingModes.map((m) => {
+                          const isSelectedMode =
+                            (activeModeEntry?.mode || selectedPricingMode) ===
+                            m.mode;
+                          const modeLabelKey = `billing.mode.${m.mode}`;
+                          const modeTitle =
+                            t(modeLabelKey) !== modeLabelKey
+                              ? t(modeLabelKey)
+                              : m.mode;
+                          return (
+                            <button
+                              key={m.mode}
+                              type="button"
+                              onClick={() =>
+                                setSelectedPricingModeMap((prev) => ({
+                                  ...prev,
+                                  [modalServer.planCode]: m.mode,
+                                }))
+                              }
+                              className={`p-2.5 rounded-lg border text-left transition-all flex flex-col justify-between gap-1 ${
+                                isSelectedMode
+                                  ? 'bg-cyber-accent/15 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/40'
+                                  : 'bg-cyber-surface/60 border-cyber-grid text-cyber-muted hover:border-cyber-accent/40 hover:text-cyber-text'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-xs font-bold truncate">
+                                  {modeTitle}
+                                </span>
+                                {m.hasPromo && (
+                                  <span
+                                    title={m.promoDescription}
+                                    className="px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-300 border border-rose-500/35 text-[10px] font-bold flex-shrink-0"
+                                  >
+                                    🔥 {m.promoBadge || t('promo.badge')}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-baseline gap-1 font-mono">
+                                {m.monthlyEquivalentPrice > 0 ? (
+                                  <>
+                                    <span className="text-sm font-bold text-emerald-400">
+                                      {symbol}
+                                      {m.monthlyEquivalentPrice.toFixed(2)}
+                                      {t('availability.perMonth')}
+                                    </span>
+                                    {m.originalMonthlyPrice >
+                                      m.monthlyEquivalentPrice + 0.01 && (
+                                      <span className="line-through text-[10px] text-cyber-muted">
+                                        {symbol}
+                                        {m.originalMonthlyPrice.toFixed(2)}
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-xs text-cyber-muted">
+                                    {m.duration}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                                {m.intervalMonths > 1 && m.periodPrice > 0 ? (
+                                  <span className="text-cyber-muted font-mono">
+                                    {t('billing.periodTotal', {
+                                      price: `${symbol}${m.periodPrice.toFixed(
+                                        2
+                                      )}`,
+                                      months: m.intervalMonths,
+                                    })}
+                                  </span>
+                                ) : (
+                                  <span />
+                                )}
+
+                                {m.setupFee === 0 || m.freeSetup ? (
+                                  <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold font-mono">
+                                    {t('promo.freeSetupWithZero', {
+                                      zero: `${symbol}0.00`,
+                                    })}
+                                    {m.originalSetupFee > 0 && (
+                                      <span className="line-through opacity-70 ml-1">
+                                        {symbol}
+                                        {m.originalSetupFee.toFixed(2)}
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-cyber-grid/40 text-cyber-muted font-mono">
+                                    {t('promo.setupFee', {
+                                      price: `${symbol}${m.setupFee.toFixed(2)}`,
+                                    })}
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Optional Custom Coupon Code Input */}
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t border-cyber-grid/40">
+                      <label className="text-xs font-semibold text-cyber-muted flex-shrink-0">
+                        {t('coupon.label')}:
+                      </label>
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={selectedCoupon}
+                          onChange={(e) =>
+                            setSelectedCouponMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: e.target.value,
+                            }))
+                          }
+                          placeholder={t('coupon.placeholder')}
+                          className="cyber-input w-full text-xs py-1.5 pr-7 font-mono"
+                        />
+                        {selectedCoupon && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedCouponMap((prev) => ({
+                                ...prev,
+                                [modalServer.planCode]: '',
+                              }))
+                            }
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-cyber-muted hover:text-cyber-text"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Unified Configuration Selector Section */}
                 <div className="space-y-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2056,6 +2705,38 @@ const ServersPage = () => {
                       const isSelectedCfg =
                         activeCfg?.configKey === cfg.configKey;
                       const cfgSymbol = getCurrencySymbol(cfg.currency);
+                      const cfgMode =
+                        resolvePricingModeEntry(
+                          cfg.pricingModes,
+                          selectedPricingMode
+                        ) || null;
+                      const cfgMonthlyPrice =
+                        cfgMode && cfgMode.monthlyEquivalentPrice > 0
+                          ? cfgMode.monthlyEquivalentPrice
+                          : cfg.estimatedMonthlyPrice;
+                      const cfgOrigMonthly =
+                        cfgMode && cfgMode.originalMonthlyPrice > 0
+                          ? cfgMode.originalMonthlyPrice
+                          : cfg.originalMonthlyPrice;
+                      const cfgSetupFee =
+                        typeof cfgMode?.setupFee === 'number'
+                          ? cfgMode.setupFee
+                          : cfg.setupFee;
+                      const cfgOrigSetupFee =
+                        typeof cfgMode?.originalSetupFee === 'number'
+                          ? cfgMode.originalSetupFee
+                          : cfg.originalSetupFee;
+                      const cfgFreeSetup = Boolean(
+                        cfgMode?.freeSetup ||
+                          cfg.freeSetup ||
+                          (cfgSetupFee === 0 && (cfgOrigSetupFee ?? 0) > 0)
+                      );
+                      const cfgHasPromo = Boolean(
+                        cfgMode?.hasPromo || cfg.hasPromo
+                      );
+                      const cfgPromoBadge =
+                        cfgMode?.promoBadge || cfg.promoBadge;
+
                       const allCfgDcEntries = Object.entries(cfg.dcStatuses);
                       const cfgVisibleDcs =
                         showAllInventory || cfg.inStockDcs.length === 0
@@ -2100,6 +2781,11 @@ const ServersPage = () => {
                                   {t('catalog.defaultConfigBadge')}
                                 </span>
                               )}
+                              {cfgHasPromo && (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/35 flex-shrink-0">
+                                  🔥 {cfgPromoBadge || t('promo.badge')}
+                                </span>
+                              )}
                               {(cfg.memory || cfg.storage) && (
                                 <span className="text-[10px] font-mono text-cyber-muted">
                                   {[cfg.memory, cfg.storage]
@@ -2109,14 +2795,57 @@ const ServersPage = () => {
                               )}
                             </div>
 
-                            <div className="flex items-center gap-2 flex-shrink-0">
-                              {cfg.estimatedMonthlyPrice !== null &&
-                                cfg.estimatedMonthlyPrice > 0 && (
-                                  <span className="text-xs sm:text-sm font-bold text-emerald-400 font-mono">
-                                    {cfgSymbol}
-                                    {cfg.estimatedMonthlyPrice.toFixed(2)}
-                                    {t('availability.perMonth')}
-                                  </span>
+                            <div className="flex flex-wrap items-center justify-end gap-2 flex-shrink-0">
+                              {cfgSetupFee === 0 || cfgFreeSetup ? (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold font-mono">
+                                  {t('promo.freeSetup')}
+                                  {cfgOrigSetupFee !== null &&
+                                    cfgOrigSetupFee > 0 && (
+                                      <span className="line-through opacity-70 ml-1">
+                                        {cfgSymbol}
+                                        {cfgOrigSetupFee.toFixed(2)}
+                                      </span>
+                                    )}
+                                </span>
+                              ) : cfgSetupFee !== null && cfgSetupFee > 0 ? (
+                                <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted border border-cyber-grid text-[10px] font-mono">
+                                  {t('promo.setupFee', {
+                                    price: `${cfgSymbol}${cfgSetupFee.toFixed(
+                                      2
+                                    )}`,
+                                  })}
+                                </span>
+                              ) : null}
+
+                              {cfgMonthlyPrice !== null &&
+                                cfgMonthlyPrice > 0 && (
+                                  <div className="text-right font-mono">
+                                    <span className="text-xs sm:text-sm font-bold text-emerald-400">
+                                      {cfgSymbol}
+                                      {cfgMonthlyPrice.toFixed(2)}
+                                      {t('availability.perMonth')}
+                                    </span>
+                                    {cfgOrigMonthly !== null &&
+                                      cfgOrigMonthly >
+                                        cfgMonthlyPrice + 0.01 && (
+                                        <span className="line-through text-[10px] text-cyber-muted ml-1">
+                                          {cfgSymbol}
+                                          {cfgOrigMonthly.toFixed(2)}
+                                        </span>
+                                      )}
+                                    {cfgMode &&
+                                      cfgMode.intervalMonths > 1 &&
+                                      cfgMode.periodPrice > 0 && (
+                                        <div className="text-[10px] text-cyber-muted">
+                                          {t('billing.periodTotal', {
+                                            price: `${cfgSymbol}${cfgMode.periodPrice.toFixed(
+                                              2
+                                            )}`,
+                                            months: cfgMode.intervalMonths,
+                                          })}
+                                        </div>
+                                      )}
+                                  </div>
                                 )}
                             </div>
                           </div>
@@ -2339,96 +3068,245 @@ const ServersPage = () => {
               </div>
 
               {/* Modal Footer */}
-              <div className="px-5 py-3.5 border-t border-cyber-grid/60 bg-cyber-bg/60 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="min-w-0 flex items-center gap-2 text-xs">
-                  <span className="text-cyber-muted flex-shrink-0">
-                    {t('catalog.selectedConfigSummary')}:
-                  </span>
-                  <span className="font-semibold text-cyber-text truncate">
-                    {activeCfg?.label || modalServer.planCode}
-                  </span>
-                  {activeCfg?.estimatedMonthlyPrice !== null &&
-                    activeCfg?.estimatedMonthlyPrice !== undefined &&
-                    activeCfg.estimatedMonthlyPrice > 0 && (
-                      <span className="font-mono font-bold text-emerald-400 flex-shrink-0">
-                        {symbol}
-                        {activeCfg.estimatedMonthlyPrice.toFixed(2)}
-                        {t('availability.perMonth')}
-                      </span>
-                    )}
-                </div>
+              <div className="px-5 py-3.5 border-t border-cyber-grid/60 bg-cyber-bg/60 space-y-2.5">
+                {(() => {
+                  const periodPrice =
+                    activeModeEntry?.periodPrice ??
+                    activeCfg?.estimatedMonthlyPrice ??
+                    0;
+                  const origPeriodPrice =
+                    activeModeEntry?.originalPeriodPrice ??
+                    activeCfg?.originalMonthlyPrice ??
+                    periodPrice;
+                  const monthlyEq =
+                    activeModeEntry?.monthlyEquivalentPrice ??
+                    activeCfg?.estimatedMonthlyPrice ??
+                    0;
+                  const origMonthlyEq =
+                    activeModeEntry?.originalMonthlyPrice ??
+                    activeCfg?.originalMonthlyPrice ??
+                    monthlyEq;
+                  const setupFee =
+                    typeof activeModeEntry?.setupFee === 'number'
+                      ? activeModeEntry.setupFee
+                      : activeCfg?.setupFee ?? 0;
+                  const origSetupFee =
+                    typeof activeModeEntry?.originalSetupFee === 'number'
+                      ? activeModeEntry.originalSetupFee
+                      : activeCfg?.originalSetupFee ?? setupFee;
+                  const isFreeSetup = Boolean(
+                    activeModeEntry?.freeSetup ||
+                      activeCfg?.freeSetup ||
+                      setupFee === 0
+                  );
+                  const firstTotal = Number((periodPrice + setupFee).toFixed(2));
 
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setQuickMonitorTarget({
-                        server: modalServer,
-                        initialConfig: activeCfg
-                          ? {
-                              configKey: activeCfg.configKey,
-                              options: activeCfg.options,
-                              label: activeCfg.label,
-                              estimatedMonthlyPrice:
-                                activeCfg.estimatedMonthlyPrice ?? undefined,
-                              currency: activeCfg.currency,
-                              memory: activeCfg.memory,
-                              storage: activeCfg.storage,
-                            }
-                          : null,
-                        initialConfigs: unifiedConfigs.map((c) => ({
-                          configKey: c.configKey,
-                          label: c.label,
-                          memory: c.memory,
-                          storage: c.storage,
-                          options: c.options,
-                          isDefault: c.isDefault,
-                          estimatedMonthlyPrice:
-                            c.estimatedMonthlyPrice ?? undefined,
-                          currency: c.currency,
-                          datacenters: c.dcStatuses,
-                          inStockCount: c.inStockDcs.length,
-                        })),
-                        initialSelectedDcs: selectedDcsForModal,
-                      })
-                    }
-                    disabled={!isAuthenticated}
-                    className="px-3 py-1.5 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
-                  >
-                    <Bell size={13} />
-                    <span>{t('catalog.monitorThisConfig')}</span>
-                  </button>
+                  return (
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      <div className="space-y-1 text-xs min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-cyber-muted">
+                            {t('catalog.selectedConfigSummary')}:
+                          </span>
+                          <span className="font-semibold text-cyber-text truncate">
+                            {activeCfg?.label || modalServer.planCode}
+                          </span>
+                          {selectedCoupon.trim() && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/35 text-[10px] font-mono">
+                              {t('coupon.badge', {
+                                coupon: selectedCoupon.trim(),
+                              })}
+                            </span>
+                          )}
+                        </div>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleOpenAddToQueue(
-                        modalServer,
-                        activeCfg,
-                        activeCfg?.inStockDcs || allInStockDcs
-                      )
-                    }
-                    disabled={!isAuthenticated || isPresale || isAnnounced}
-                    className="px-3 py-1.5 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 text-cyber-accent border border-cyber-accent/40 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
-                  >
-                    <ShoppingCart size={13} />
-                    <span>{t('catalog.addToQueueBtn')}</span>
-                  </button>
+                        {!isPresale && periodPrice > 0 && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
+                            <span>
+                              <span className="text-cyber-muted font-sans">
+                                {t('billing.periodFeeLabel')}:{' '}
+                              </span>
+                              <span className="text-emerald-400 font-bold">
+                                {symbol}
+                                {periodPrice.toFixed(2)}
+                              </span>
+                              {origPeriodPrice > periodPrice + 0.01 && (
+                                <span className="line-through text-cyber-muted ml-1">
+                                  {symbol}
+                                  {origPeriodPrice.toFixed(2)}
+                                </span>
+                              )}
+                              <span className="text-cyber-muted ml-1">
+                                (
+                                {t('billing.monthlyEquivalent', {
+                                  price: `${symbol}${monthlyEq.toFixed(2)}`,
+                                })}
+                                {origMonthlyEq > monthlyEq + 0.01
+                                  ? ` / ${symbol}${origMonthlyEq.toFixed(2)}`
+                                  : ''}
+                                )
+                              </span>
+                            </span>
 
-                  <button
-                    type="button"
-                    onClick={() => quickOrderFromModal(modalServer)}
-                    disabled={!canQuickOrder || isQuickOrdering}
-                    className="px-3.5 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm"
-                  >
-                    <Zap size={13} />
-                    <span>
-                      {isQuickOrdering
-                        ? t('catalog.quickOrdering')
-                        : t('catalog.quickOrderNow')}
-                    </span>
-                  </button>
-                </div>
+                            <span>
+                              <span className="text-cyber-muted font-sans">
+                                {t('promo.setupFeeLabel')}:{' '}
+                              </span>
+                              {isFreeSetup ? (
+                                <span className="text-emerald-300 font-semibold">
+                                  {t('promo.freeSetupWithZero', {
+                                    zero: `${symbol}0.00`,
+                                  })}
+                                  {origSetupFee > 0 && (
+                                    <span className="line-through text-cyber-muted ml-1">
+                                      {symbol}
+                                      {origSetupFee.toFixed(2)}
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="text-cyber-text">
+                                  {symbol}
+                                  {setupFee.toFixed(2)}
+                                </span>
+                              )}
+                            </span>
+
+                            <span>
+                              <span className="text-cyber-muted font-sans">
+                                {t('billing.firstPaymentTotalLabel')}:{' '}
+                              </span>
+                              <span className="text-cyber-accent font-bold text-xs">
+                                {symbol}
+                                {firstTotal.toFixed(2)}
+                              </span>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-end gap-2 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setQuickMonitorTarget({
+                              server: modalServer,
+                              initialConfig: activeCfg
+                                ? {
+                                    configKey: activeCfg.configKey,
+                                    options: activeCfg.options,
+                                    label: activeCfg.label,
+                                    estimatedMonthlyPrice:
+                                      monthlyEq > 0
+                                        ? monthlyEq
+                                        : activeCfg.estimatedMonthlyPrice ??
+                                          undefined,
+                                    originalMonthlyPrice:
+                                      origMonthlyEq > 0
+                                        ? origMonthlyEq
+                                        : activeCfg.originalMonthlyPrice ??
+                                          undefined,
+                                    setupFee,
+                                    originalSetupFee: origSetupFee,
+                                    freeSetup: isFreeSetup,
+                                    hasPromo: Boolean(
+                                      activeModeEntry?.hasPromo ||
+                                        activeCfg.hasPromo
+                                    ),
+                                    promoCode:
+                                      activeModeEntry?.promoCode ||
+                                      activeCfg.promoCode,
+                                    promoBadge:
+                                      activeModeEntry?.promoBadge ||
+                                      activeCfg.promoBadge,
+                                    promoDescription:
+                                      activeModeEntry?.promoDescription ||
+                                      activeCfg.promoDescription,
+                                    pricingModes: activeCfg.pricingModes,
+                                    pricingMode:
+                                      activeModeEntry?.mode ||
+                                      selectedPricingMode,
+                                    duration:
+                                      activeModeEntry?.duration ||
+                                      resolvePricingModeDuration(
+                                        selectedPricingMode,
+                                        activeCfg.pricingModes
+                                      ),
+                                    coupon: selectedCoupon.trim() || undefined,
+                                    currency: activeCfg.currency,
+                                    memory: activeCfg.memory,
+                                    storage: activeCfg.storage,
+                                  }
+                                : null,
+                              initialConfigs: unifiedConfigs.map((c) => ({
+                                configKey: c.configKey,
+                                label: c.label,
+                                memory: c.memory,
+                                storage: c.storage,
+                                options: c.options,
+                                isDefault: c.isDefault,
+                                estimatedMonthlyPrice:
+                                  c.estimatedMonthlyPrice ?? undefined,
+                                originalMonthlyPrice:
+                                  c.originalMonthlyPrice ?? undefined,
+                                setupFee: c.setupFee ?? undefined,
+                                originalSetupFee:
+                                  c.originalSetupFee ?? undefined,
+                                freeSetup: c.freeSetup,
+                                hasPromo: c.hasPromo,
+                                promoCode: c.promoCode,
+                                promoBadge: c.promoBadge,
+                                promoDescription: c.promoDescription,
+                                pricingModes: c.pricingModes,
+                                currency: c.currency,
+                                datacenters: c.dcStatuses,
+                                inStockCount: c.inStockDcs.length,
+                              })),
+                              initialSelectedDcs: selectedDcsForModal,
+                            })
+                          }
+                          disabled={!isAuthenticated}
+                          className="px-3 py-1.5 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                        >
+                          <Bell size={13} />
+                          <span>{t('catalog.monitorThisConfig')}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleOpenAddToQueue(
+                              modalServer,
+                              activeCfg,
+                              activeCfg?.inStockDcs || allInStockDcs
+                            )
+                          }
+                          disabled={
+                            !isAuthenticated || isPresale || isAnnounced
+                          }
+                          className="px-3 py-1.5 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 text-cyber-accent border border-cyber-accent/40 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                        >
+                          <ShoppingCart size={13} />
+                          <span>{t('catalog.addToQueueBtn')}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => quickOrderFromModal(modalServer)}
+                          disabled={!canQuickOrder || isQuickOrdering}
+                          className="px-3.5 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm"
+                        >
+                          <Zap size={13} />
+                          <span>
+                            {isQuickOrdering
+                              ? t('catalog.quickOrdering')
+                              : t('catalog.quickOrderNow')}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -2479,26 +3357,46 @@ const ServersPage = () => {
             <AlertDialogDescription asChild>
               <div className="space-y-3 pt-2 text-xs text-cyber-muted">
                 {pendingQueueTarget?.selectedConfig && (
-                  <div className="p-2.5 rounded-md border border-cyber-accent/30 bg-cyber-accent/10 text-cyber-text flex items-center justify-between gap-2">
-                    <div>
+                  <div className="p-2.5 rounded-md border border-cyber-accent/30 bg-cyber-accent/10 text-cyber-text flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-cyber-muted">已选硬件配置：</span>
                       <span className="font-semibold text-cyber-accent">
                         {pendingQueueTarget.selectedConfig.label}
                       </span>
+                      {pendingQueueTarget.pricingMode && (
+                        <span className="px-1.5 py-0.2 rounded bg-cyber-grid/50 text-cyber-text text-[10px] font-semibold">
+                          {t(
+                            `billing.modeShort.${pendingQueueTarget.pricingMode}`
+                          )}
+                        </span>
+                      )}
+                      {pendingQueueTarget.coupon && (
+                        <span className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/35 text-[10px] font-mono">
+                          {t('coupon.badge', {
+                            coupon: pendingQueueTarget.coupon,
+                          })}
+                        </span>
+                      )}
                     </div>
-                    {pendingQueueTarget.selectedConfig.estimatedMonthlyPrice &&
-                      pendingQueueTarget.selectedConfig.estimatedMonthlyPrice >
-                        0 && (
+                    {(() => {
+                      const modeEntry = resolvePricingModeEntry(
+                        pendingQueueTarget.selectedConfig.pricingModes,
+                        pendingQueueTarget.pricingMode
+                      );
+                      const moPrice =
+                        modeEntry?.monthlyEquivalentPrice ??
+                        pendingQueueTarget.selectedConfig.estimatedMonthlyPrice;
+                      if (!moPrice || moPrice <= 0) return null;
+                      return (
                         <span className="font-mono font-bold text-emerald-400">
                           {getCurrencySymbol(
                             pendingQueueTarget.selectedConfig.currency
                           )}
-                          {pendingQueueTarget.selectedConfig.estimatedMonthlyPrice.toFixed(
-                            2
-                          )}
+                          {moPrice.toFixed(2)}
                           {t('availability.perMonth')}
                         </span>
-                      )}
+                      );
+                    })()}
                   </div>
                 )}
 

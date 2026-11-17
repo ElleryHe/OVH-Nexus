@@ -997,3 +997,111 @@ func TestStockMultiTargetMigrationAndConfigSpecificAutoOrder(t *testing.T) {
 		t.Fatalf("unexpected auto-order options: %+v", gotQ.Options)
 	}
 }
+
+func TestStockTargetPassesPricingModeDurationAndCouponToAutoOrder(t *testing.T) {
+	var dcStatus atomic.Value
+	dcStatus.Store("unavailable")
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/auth/time":
+			_ = json.NewEncoder(w).Encode(time.Now().Unix())
+		case r.URL.Path == "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24sys02-v3",
+						"invoiceName": "SYS-2",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "interval": 1, "price": 3799000000},
+							{"mode": "upfront12", "capacities": []string{"renew"}, "interval": 12, "commitment": 12, "price": 34647000000},
+						},
+					},
+				},
+			})
+		case r.URL.Path == "/order/catalog/public/baremetalServers" || r.URL.Path == "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case r.URL.Path == "/dedicated/server/datacenter/availabilities":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":      "24sys02-v3.ram-32g-ecc-2133.softraid-2x450nvme",
+					"planCode": "24sys02-v3",
+					"memory":   "ram-32g-ecc-2133",
+					"storage":  "softraid-2x450nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": dcStatus.Load().(string)},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+
+	env := newMonitorTestEnv(t, mockOVH)
+
+	var capturedMu sync.Mutex
+	var capturedReqs []AutoOrderRequest
+	env.svc.SetAutoOrderFunc(func(_ context.Context, req AutoOrderRequest) (*procurement.QuickOrderResult, int, error) {
+		capturedMu.Lock()
+		capturedReqs = append(capturedReqs, req)
+		capturedMu.Unlock()
+		return &procurement.QuickOrderResult{
+			Success:      true,
+			ID:           "mock-queue-1",
+			PricingMode:  req.PricingMode,
+			Duration:     req.Duration,
+			Coupon:       req.Coupon,
+			MonthlyPrice: 28.87,
+			PeriodPrice:  346.47,
+		}, http.StatusOK, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/monitor/subscriptions", strings.NewReader(`{
+		"planCode": "24sys02-v3",
+		"targets": [
+			{
+				"id": "tgt-upfront12",
+				"configKey": "ram-32g-ecc-2133+softraid-2x450nvme",
+				"options": ["ram-32g-ecc-2133-24sys02-v3", "softraid-2x450nvme-24sys02-v3"],
+				"label": "32GB ECC + 2x450GB NVMe",
+				"datacenters": ["gra"],
+				"notifyAvailable": false,
+				"autoOrder": true,
+				"quantity": 1,
+				"maxMonthlyPrice": 30.00,
+				"pricingMode": "upfront12",
+				"coupon": "BF26"
+			}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/monitor/subscriptions failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Baseline tick (unavailable).
+	if _, err := env.svc.CheckStockNow(context.Background()); err != nil {
+		t.Fatalf("baseline CheckStockNow failed: %v", err)
+	}
+
+	// Transition unavailable -> 1H-high -> must invoke autoOrderFn with PricingMode="upfront12", Duration="P12M", Coupon="BF26".
+	dcStatus.Store("1H-high")
+	if _, err := env.svc.CheckStockNow(context.Background()); err != nil {
+		t.Fatalf("transition CheckStockNow failed: %v", err)
+	}
+
+	capturedMu.Lock()
+	defer capturedMu.Unlock()
+	if len(capturedReqs) != 1 {
+		t.Fatalf("expected 1 autoOrderFn call, got %d", len(capturedReqs))
+	}
+	got := capturedReqs[0]
+	if got.PricingMode != "upfront12" || got.Duration != "P12M" || got.Coupon != "BF26" || got.MaxMonthlyPrice != 30.00 {
+		t.Fatalf("expected autoOrderFn to receive PricingMode=upfront12, Duration=P12M, Coupon=BF26, MaxMonthlyPrice=30.00; got %+v", got)
+	}
+}

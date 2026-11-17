@@ -44,6 +44,7 @@ type Service struct {
 	rootMu          sync.RWMutex
 	rootCtx         context.Context
 	accountClientFn func(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error)
+	autoOrderFn     AutoOrderFunc
 
 	// Dedicated Stock Monitor (5s interval)
 	stockMu           sync.Mutex
@@ -103,9 +104,30 @@ func NewService(
 	}
 	svc.vpsIntervalSec.Store(defaultVPSIntervalSec)
 	if proc != nil {
+		svc.autoOrderFn = proc.QuickOrder
 		proc.SetMonitorRunningFunc(svc.IsStockRunning)
 	}
 	return svc
+}
+
+// SetAutoOrderFunc overrides the automated quick-order callback invoked on stock-available transitions (intended for tests or custom adapters).
+func (s *Service) SetAutoOrderFunc(fn AutoOrderFunc) {
+	s.rootMu.Lock()
+	defer s.rootMu.Unlock()
+	s.autoOrderFn = fn
+}
+
+func (s *Service) getAutoOrderFunc() AutoOrderFunc {
+	s.rootMu.RLock()
+	fn := s.autoOrderFn
+	s.rootMu.RUnlock()
+	if fn != nil {
+		return fn
+	}
+	if s.procurement != nil {
+		return s.procurement.QuickOrder
+	}
+	return nil
 }
 
 // SetAccountClientFunc overrides OVH authenticated client lookup (intended for tests).

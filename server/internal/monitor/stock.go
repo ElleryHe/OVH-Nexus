@@ -23,6 +23,12 @@ import (
 // StockTarget aliases store.StockTarget for monitor consumers.
 type StockTarget = store.StockTarget
 
+// AutoOrderRequest aliases procurement.QuickOrderRequest for monitor auto-order callbacks and tests.
+type AutoOrderRequest = procurement.QuickOrderRequest
+
+// AutoOrderFunc executes an automated quick-order triggered by a stock transition.
+type AutoOrderFunc func(ctx context.Context, req AutoOrderRequest) (*procurement.QuickOrderResult, int, error)
+
 // ErrConfigRequiredForAutoOrder indicates auto-order was enabled without an explicit configuration selection.
 var ErrConfigRequiredForAutoOrder = errors.New("CONFIG_REQUIRED_FOR_AUTO_ORDER: auto-order requires an explicit configuration selection")
 
@@ -278,14 +284,19 @@ func (s *Service) CheckStockNow(ctx context.Context) (int, error) {
 						}))
 					}
 
-					if target.AutoOrder && s.procurement != nil {
-						qoRes, statusCode, qoErr := s.procurement.QuickOrder(ctx, procurement.QuickOrderRequest{
+					autoOrderFn := s.getAutoOrderFunc()
+					if target.AutoOrder && autoOrderFn != nil {
+						normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(target.PricingMode, target.Duration)
+						qoRes, statusCode, qoErr := autoOrderFn(ctx, AutoOrderRequest{
 							AccountID:               sub.AccountID,
 							PlanCode:                sub.PlanCode,
 							Datacenter:              displayDC,
 							Options:                 append([]string{}, target.Options...),
 							ConfigKey:               target.ConfigKey,
 							ConfigLabel:             target.Label,
+							PricingMode:             normMode,
+							Duration:                normDur,
+							Coupon:                  strings.TrimSpace(target.Coupon),
 							Quantity:                max(1, target.Quantity),
 							MaxMonthlyPrice:         target.MaxMonthlyPrice,
 							Currency:                target.Currency,
@@ -744,6 +755,8 @@ func (s *Service) AddOrUpdateSubscription(ctx context.Context, sub store.StockSu
 			t.Label = strings.TrimSpace(t.Label)
 			t.Options = cleanStrings(t.Options)
 			t.Currency = strings.TrimSpace(t.Currency)
+			t.Coupon = strings.TrimSpace(t.Coupon)
+			t.PricingMode, t.Duration, _ = catalog.NormalizePricingModeAndDuration(t.PricingMode, t.Duration)
 
 			tDCs := make([]string, 0, len(t.Datacenters))
 			for _, dc := range t.Datacenters {

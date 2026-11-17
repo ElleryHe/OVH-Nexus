@@ -798,3 +798,319 @@ func TestRealPlansAliasExclusionAnnouncedSynthesisAndPlanConfigs(t *testing.T) {
 	}
 }
 
+func TestBlackFridayPromotionsSetupFeesPricingModesAndCartHelpers(t *testing.T) {
+	svc, _, _, router := newTestCatalog(t)
+
+	var cartDurationsTried []string
+	var optionModeChosen, optionDurChosen string
+	var appliedCoupon string
+	rejectCoupon := false
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/auth/time":
+			_ = json.NewEncoder(w).Encode(time.Now().Unix())
+		case r.URL.Path == "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24sys02-v3",
+						"invoiceName": "SYS-2 | Intel Xeon-D 2141I",
+						"product":     "24sys02-1g",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "SYS-2"}},
+						"pricings": []map[string]any{
+							{
+								"mode":       "default",
+								"capacities": []string{"installation"},
+								"price":      3499000000,
+							},
+							{
+								"mode":       "default",
+								"capacities": []string{"renew"},
+								"interval":   1,
+								"commitment": 0,
+								"price":      3799000000,
+								"promotions": []map[string]any{
+									{
+										"name":        "BF26_ECO_20OFF",
+										"description": "Black Friday 20% off",
+										"value":       20,
+										"type":        "percentage",
+										"duration":    0,
+										"endDate":     "2026-12-03T13:00:00Z",
+										"total":       map[string]any{"value": 3039000000},
+									},
+								},
+							},
+							{
+								"mode":       "upfront12",
+								"capacities": []string{"installation"},
+								"price":      0,
+							},
+							{
+								"mode":       "upfront12",
+								"capacities": []string{"renew"},
+								"interval":   12,
+								"commitment": 12,
+								"price":      43309000000,
+								"promotions": []map[string]any{
+									{
+										"name":        "BF26_ECO_20OFF",
+										"description": "Black Friday 20% off",
+										"value":       20,
+										"type":        "percentage",
+										"duration":    1,
+										"endDate":     "2026-12-03T13:00:00Z",
+										"total":       map[string]any{"value": 34647000000},
+									},
+								},
+							},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-2133-24sys02-1g", "addons": []string{"ram-32g-ecc-2133-24sys02-1g", "ram-64g-ecc-2133-24sys02-1g"}},
+							{"name": "storage", "default": "softraid-2x512nvme-24sys02-1g", "addons": []string{"softraid-2x512nvme-24sys02-1g"}},
+						},
+					},
+				},
+				"addons": []map[string]any{
+					{
+						"planCode": "ram-32g-ecc-2133-24sys02-1g",
+						"product":  "ram-32g-ecc-2133",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 0},
+							{"mode": "upfront12", "capacities": []string{"renew"}, "interval": 12, "price": 0},
+						},
+					},
+					{
+						"planCode": "ram-64g-ecc-2133-24sys02-1g",
+						"product":  "ram-64g-ecc-2133",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 1200000000},
+							{"mode": "upfront12", "capacities": []string{"renew"}, "interval": 12, "price": 13680000000},
+						},
+					},
+					{
+						"planCode": "softraid-2x512nvme-24sys02-1g",
+						"product":  "softraid-2x512nvme",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 0},
+							{"mode": "upfront12", "capacities": []string{"renew"}, "interval": 12, "price": 0},
+						},
+					},
+				},
+			})
+		case r.URL.Path == "/order/catalog/public/baremetalServers":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24adv05-v3",
+						"invoiceName": "ADVANCE-5 | AMD EPYC",
+						"product":     "24adv05-v3",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "ADVANCE-5"}},
+						"pricings": []map[string]any{
+							{
+								"mode":       "default",
+								"capacities": []string{"installation"},
+								"price":      39499000000,
+								"promotions": []map[string]any{
+									{
+										"name":        "BF26_OVH_FREESETUP",
+										"description": "Free installation fee",
+										"value":       100,
+										"type":        "percentage",
+										"total":       map[string]any{"value": 0},
+									},
+								},
+							},
+							{
+								"mode":       "default",
+								"capacities": []string{"renew"},
+								"interval":   1,
+								"commitment": 0,
+								"price":      15099000000,
+							},
+						},
+					},
+				},
+			})
+		case r.URL.Path == "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case r.URL.Path == "/dedicated/server/datacenter/availabilities":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":      "24sys02-v3.ram-32g-ecc-2133.softraid-2x512nvme",
+					"planCode": "24sys02-v3",
+					"server":   "24sys02-1g",
+					"memory":   "ram-32g-ecc-2133",
+					"storage":  "softraid-2x512nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+					},
+				},
+				{
+					"fqn":      "24sys02-v3.ram-64g-ecc-2133.softraid-2x512nvme",
+					"planCode": "24sys02-v3",
+					"server":   "24sys02-1g",
+					"memory":   "ram-64g-ecc-2133",
+					"storage":  "softraid-2x512nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+					},
+				},
+				{
+					"fqn":      "24adv05-v3.default.default",
+					"planCode": "24adv05-v3",
+					"server":   "24adv05-v3",
+					"datacenters": []map[string]any{
+						{"datacenter": "rbx", "availability": "72H"},
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart":
+			_ = json.NewEncoder(w).Encode(map[string]any{"cartId": "cart-promo"})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-promo/assign":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-promo/eco":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			dur := fmt.Sprint(body["duration"])
+			cartDurationsTried = append(cartDurationsTried, dur)
+			if dur == "P12M" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "Duration P12M not accepted, use P1Y"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"itemId": 88})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-promo/item/88/configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-promo/eco/options":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"planCode": "ram-64g-ecc-2133-24sys02-1g", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "ram-64g-ecc-2133-24sys02-1g", "duration": "P12M", "pricingMode": "upfront12"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-promo/eco/options":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			optionModeChosen = fmt.Sprint(body["pricingMode"])
+			optionDurChosen = fmt.Sprint(body["duration"])
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-promo/coupons":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			appliedCoupon = fmt.Sprint(body["coupon"])
+			if rejectCoupon {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "Invalid coupon"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-promo/summary":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withTax":      map[string]any{"value": 415.76, "currencyCode": "EUR"},
+					"withoutTax":   map[string]any{"value": 346.47, "currencyCode": "EUR"},
+					"tax":          map[string]any{"value": 69.29, "currencyCode": "EUR"},
+					"currencyCode": "EUR",
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-promo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/order/cart/cart-promo":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+	svc.SetAccountClientFunc(func(_ context.Context, _ string) (*ovh.Client, *store.OVHAccount, error) {
+		c, err := ovh.NewClient(mockOVH.URL, "ak-test", "as-test", "ck-test")
+		if err != nil {
+			return nil, nil, err
+		}
+		return c, &store.OVHAccount{ID: "acc-1", Endpoint: "ovh-eu", Zone: "IE"}, nil
+	})
+
+	// 1. Verify ServerPlans parsing for 24sys02-v3 (-20% recurring promo) and 24adv05-v3 (FREE SETUP promo)
+	listResp, err := svc.ListServers(context.Background(), ListServersOptions{Endpoint: "ovh-eu", Zone: "IE", ForceRefresh: true})
+	if err != nil {
+		t.Fatalf("ListServers failed: %v", err)
+	}
+	if len(listResp.Servers) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(listResp.Servers))
+	}
+	var sys2, adv5 *ServerPlan
+	for i := range listResp.Servers {
+		switch listResp.Servers[i].PlanCode {
+		case "24sys02-v3":
+			sys2 = &listResp.Servers[i]
+		case "24adv05-v3":
+			adv5 = &listResp.Servers[i]
+		}
+	}
+	if sys2 == nil || !sys2.HasPromo || sys2.StartingPrice != 30.39 || sys2.OriginalMonthlyPrice != 37.99 || sys2.SetupFee != 34.99 || sys2.FreeSetup || sys2.PromoBadge != "-20%" || sys2.PromoCode != "BF26_ECO_20OFF" {
+		t.Fatalf("unexpected 24sys02-v3 ServerPlan promo/setup fields: %+v", sys2)
+	}
+	if len(sys2.PricingModes) != 2 || sys2.PricingModes[0].Mode != "default" || sys2.PricingModes[1].Mode != "upfront12" {
+		t.Fatalf("expected [default, upfront12] PricingModes on 24sys02-v3, got %+v", sys2.PricingModes)
+	}
+	up12 := sys2.PricingModes[1]
+	if up12.PeriodPrice != 346.47 || up12.OriginalPeriodPrice != 433.09 || up12.MonthlyEquivalentPrice != 28.87 || up12.OriginalMonthlyPrice != 36.09 || !up12.FreeSetup || up12.SetupFee != 0 {
+		t.Fatalf("unexpected upfront12 mode on 24sys02-v3: %+v", up12)
+	}
+	if adv5 == nil || !adv5.HasPromo || adv5.SetupFee != 0 || adv5.OriginalSetupFee != 394.99 || !adv5.FreeSetup || adv5.PromoBadge != "FREE SETUP" || adv5.PromoCode != "BF26_OVH_FREESETUP" {
+		t.Fatalf("unexpected 24adv05-v3 FREE SETUP promo fields: %+v", adv5)
+	}
+
+	// 2. Verify PlanConfigs multi-mode addon calculation for upgraded 64G RAM config
+	cfgResp, err := svc.GetPlanConfigs(context.Background(), "ovh-eu", "IE", "24sys02-v3")
+	if err != nil {
+		t.Fatalf("GetPlanConfigs failed: %v", err)
+	}
+	if len(cfgResp.Configs) != 2 || !cfgResp.HasPromo || cfgResp.OriginalMonthlyPrice != 37.99 {
+		t.Fatalf("unexpected PlanConfigsResponse: %+v", cfgResp)
+	}
+	upgradedCfg := cfgResp.Configs[1]
+	if upgradedCfg.EstimatedMonthlyPrice != 42.39 || upgradedCfg.OriginalMonthlyPrice != 49.99 {
+		t.Fatalf("expected upgraded default monthly 30.39+12=42.39 (orig 37.99+12=49.99), got %+v", upgradedCfg)
+	}
+	if len(upgradedCfg.PricingModes) != 2 || upgradedCfg.PricingModes[1].PeriodPrice != 483.27 || upgradedCfg.PricingModes[1].MonthlyEquivalentPrice != 40.27 {
+		t.Fatalf("expected upgraded upfront12 periodPrice 346.47+136.80=483.27 (monthly 40.27), got %+v", upgradedCfg.PricingModes)
+	}
+
+	// 3. Verify POST /api/servers/24sys02-v3/price with upfront12 (P12M -> P1Y fallback) and valid coupon
+	req := httptest.NewRequest(http.MethodPost, "/api/servers/24sys02-v3/price", strings.NewReader(`{"datacenter":"gra","options":["ram-64g-ecc-2133-24sys02-1g"],"pricingMode":"upfront12","coupon":"BF2026"}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/servers/24sys02-v3/price failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var priceRes ServerPriceResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &priceRes)
+	if !priceRes.Success || priceRes.PricingMode != "upfront12" || priceRes.Coupon != "BF2026" || priceRes.Price == nil || priceRes.Price.MonthlyEquivalentWithoutTax == nil || *priceRes.Price.MonthlyEquivalentWithoutTax != 28.87 {
+		t.Fatalf("unexpected priceRes for upfront12: %+v (price=%+v)", priceRes, priceRes.Price)
+	}
+	if len(cartDurationsTried) < 2 || cartDurationsTried[0] != "P12M" || cartDurationsTried[1] != "P1Y" {
+		t.Fatalf("expected AddCartServerItemWithMode to retry P12M -> P1Y, got %v", cartDurationsTried)
+	}
+	if optionModeChosen != "upfront12" || optionDurChosen != "P12M" {
+		t.Fatalf("expected AddCartOptionsWithMode to prefer upfront12/P12M option, got mode=%q dur=%q", optionModeChosen, optionDurChosen)
+	}
+	if appliedCoupon != "BF2026" {
+		t.Fatalf("expected ApplyCartCoupon to post BF2026, got %q", appliedCoupon)
+	}
+
+	// 4. Verify rejected coupon returns 400 INVALID_COUPON
+	rejectCoupon = true
+	reqBad := httptest.NewRequest(http.MethodPost, "/api/servers/24sys02-v3/price", strings.NewReader(`{"datacenter":"gra","coupon":"EXPIRED_CODE"}`))
+	recBad := httptest.NewRecorder()
+	router.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusBadRequest || !strings.Contains(recBad.Body.String(), "INVALID_COUPON") {
+		t.Fatalf("expected 400 INVALID_COUPON on rejected coupon, got %d %s", recBad.Code, recBad.Body.String())
+	}
+}
+
+

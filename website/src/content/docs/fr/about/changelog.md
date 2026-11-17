@@ -9,7 +9,7 @@ Retrouvez les versions officielles et les images Docker multi-architecture sur [
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
 
-## [1.3.3] - 2026-11-17 — Connexion Compatible Gestionnaire de Mots de Passe (`ADMIN_USERNAME`), Grille Modulaire 3 Colonnes & Fenêtre de Configuration
+## [1.3.3] - 2026-11-17 — Connexion Gestionnaire de Mots de Passe (`ADMIN_USERNAME`), Frais d'Installation, Promotions, Engagements Annuels & Codes Promo
 
 ### Ajouté (Added)
 
@@ -17,6 +17,15 @@ Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette pa
   - Ajout de la variable d'environnement `ADMIN_USERNAME` (alias compatible `NEXUS_USERNAME`, par défaut `Nexus`, strictement sensible à la casse et vérifiée en temps constant avec `API_SECRET_KEY`) et des champs standards `username` + `current-password` (`autoComplete="on"`) sur le formulaire de connexion pour la saisie automatique par les navigateurs et gestionnaires de mots de passe (1Password, Bitwarden, Mots de passe Apple).
 - **Fenêtre Dédiée de Configuration & Commande de Serveur (`/servers`)** :
   - Ajout d'une **Fenêtre de Configuration & Commande de Serveur** dans le Catalogue Serveurs permettant d'inspecter les configurations matérielles (badge `Par défaut`), la tarification mensuelle HT, la disponibilité par datacenter (option **Afficher tout l'inventaire (y compris hors stock)**), les **Options avancées** repliables (Bande passante / vRack), la surveillance rapide, l'ajout à la file d'attente et la commande directe.
+- **Affichage des Frais d'Installation (`installation`) avant Commande** :
+  - Analyse des frais de mise en service uniques (`capacities: ["installation"]`) et des exonérations promotionnelles sur l'ensemble des modèles et configurations, avec affichage de `setupFee` et du tarif initial barré `originalSetupFee` dans le Catalogue Serveurs (`/servers`), la Matrice de Disponibilité (`/availability`), la Fenêtre de Configuration & Commande et la Surveillance Rapide (`QuickMonitorDialog`).
+- **Détection & Filtrage Automatiques des Promotions Catalogue (`promotions`)** :
+  - Analyse automatique des promotions OVHcloud actives (remises en pourcentage comme le Black Friday `-20 %` et frais d'installation offerts `FREE SETUP`), affichant le prix remisé avec le prix d'origine barré (`originalMonthlyPrice`), des badges promotionnels (`🔥 -20%`, `🔥 FREE SETUP`) et un onglet de filtre dédié **🔥 Promo** dans `/servers` et `/availability`.
+- **Modes d'Engagement Multi-Périodes (`pricingMode` & `duration`)** :
+  - Prise en charge de la facturation mensuelle sans engagement (`default` / `P1M`), annuelle prépayée 12 mois (`upfront12` / `P12M`), biennale prépayée 24 mois (`upfront24` / `P24M`) et mensuelle dégressive (`degressivity12` / `degressivity24`) lors de la commande directe, dans les cibles d'achat automatique du moniteur de stock (`targets[]`) et dans la file d'achat (`/queue`).
+  - Mise à jour instantanée du total par période, de l'équivalent mensuel HT (`monthlyEquivalentPrice`) et des frais d'installation offerts (`0,00 €` en `upfront12`/`upfront24`), avec évaluation du plafond `maxMonthlyPrice` par rapport à l'équivalent mensuel HT remisé (`periodPrice / intervalMonths`).
+- **Prise en Charge des Codes Promo / Coupons (`coupon`) avec Validation Stricte (`INVALID_COUPON`)** :
+  - Ajout d'un champ optionnel `coupon` dans la Fenêtre de Configuration & Commande, la Surveillance Rapide et la File d'Achat, appliqué via `POST /order/cart/{cartId}/coupons` avec arrêt immédiat (`400 INVALID_COUPON`, suppression du panier temporaire, journal `WARNING` et alerte `order.failed`) si le code est refusé par OVHcloud afin de ne jamais commander au plein tarif par erreur.
 
 ### Modifié (Changed)
 

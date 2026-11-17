@@ -21,25 +21,31 @@ Les réponses brutes d'OVHcloud n'exposent que des codes techniques tels que `24
    - **Mémoire RAM** : Convertit `ram-64g-ecc-3200` en `64 Go DDR4 ECC 3200 MHz`.
    - **Stockage & Disques Système** : Convertit `softraid-2x512nvme` en `2 × 512 Go NVMe (Soft RAID)` et sépare `raid-r1-2x480ssd-s10-2x6000sa` en disque système (`2 × 480 Go SSD, HW RAID 1`) et disques de données (`2 × 6 To SATA, HW RAID 10`).
 
-## Tarification Mensuelle HT par Configuration & Vues Compactes
+## Tarification par Configuration, Frais d'Installation & Promotions
 
-Contrairement aux outils classiques qui n'affichent que le prix d'appel d'un `planCode`, OVH Nexus calcule le **prix mensuel estimé HT pour chaque configuration matérielle (`configKey` : `mémoire+stockage`)** via `/api/catalog/availability`, `/api/catalog/plans` et `GET /api/catalog/plans/{planCode}/configs` :
+Contrairement aux outils classiques qui n'affichent que le prix d'appel d'un `planCode`, OVH Nexus calcule le **prix mensuel estimé HT, les frais d'installation uniques (`setupFee`), les promotions catalogue actives (`promotions`) et les tarifs d'engagement multi-périodes (`pricingModes`) pour chaque configuration matérielle (`configKey` : `mémoire+stockage`)** via `/api/catalog/availability`, `/api/catalog/plans` et `GET /api/catalog/plans/{planCode}/configs` :
 
 ```text
-Prix Mensuel Estimé HT = Prix Mensuel du Plan de Base (P1M)
+Prix Mensuel Estimé HT = Prix Mensuel du Plan de Base (remisé si promotion active)
                        + Supplément Mensuel de l'Option RAM (si > 0)
                        + Supplément Mensuel de l'Option Stockage (si > 0)
 ```
 
+- **Affichage des Frais d'Installation (`installation`) avant Commande** :
+  - Extrait automatiquement les frais de mise en service (`capacities: ["installation"]`), en affichant `setupFee` (ou `Frais d'installation offerts` avec le montant initial barré `originalSetupFee` en cas d'exonération promotionnelle ou d'engagement annuel) sur les cartes catalogue, la matrice et les fenêtres de commande.
+- **Détection des Promotions (`promotions`) & Onglet de Filtre `🔥 Promo`** :
+  - Analyse automatiquement les promotions actives du catalogue OVHcloud (remises telles que Black Friday `-20 %` et frais d'installation offerts `FREE SETUP`), affiche les badges promotionnels (`🔥 -20%`, `🔥 FREE SETUP`), le tarif mensuel HT remisé à côté du prix initial barré (`originalMonthlyPrice`), ainsi qu'un onglet de filtre dédié **🔥 Promo** dans `/servers` et `/availability`.
+- **Modes d'Engagement Multi-Périodes (`pricingModes`)** :
+  - Calcule pour chaque configuration les tarifs de tous les modes de facturation pris en charge : mensuel sans engagement (`default` / `P1M`), annuel prépayé 12 mois (`upfront12` / `P12M`), biennal prépayé 24 mois (`upfront24` / `P24M`) et mensuel dégressif (`degressivity12` / `degressivity24`), avec le total par période (`periodPrice`), l'équivalent mensuel HT (`monthlyEquivalentPrice = periodPrice / intervalMonths`) et l'exonération automatique des frais d'installation (`0,00 €`) en mode `upfront12`/`upfront24`.
 - **Matrice de Disponibilité Compacte à 1 Ligne par `planCode` (`/availability`)** :
   - Regroupe les configurations d'un même `planCode` sur **une seule ligne** (tout en conservant des lignes distinctes pour les variantes régionales telles que `-sgp`, `-syd` et `-mum`).
   - Chaque ligne intègre un **menu déroulant de configuration** :
     - **Toutes les configurations (`N`)** *(par défaut)* : Chaque cellule datacenter affiche le **meilleur état de disponibilité** parmi les configurations du modèle ainsi que le nombre de configurations en stock.
     - **Configuration spécifique (`Mémoire + Stockage — XX,XX €/mois · K DCs`)** : La sélection d'une configuration affiche immédiatement son tarif mensuel HT et son état de stock exact dans chaque datacenter.
-- **Cartes Compactes Repliables du Catalogue Serveurs (`/servers`)** :
-  - Grille compacte de 3 à 4 cartes par ligne sur ordinateur, **repliées par défaut** (nom commercial, `planCode`, CPU, résumé standard sur 1 ligne, prix d'appel `à partir de XX,XX €/mois`, badges datacenters compacts et badge d'état).
-  - Le dépliage d'une carte présente **une liste unifiée de configurations sélectionnables** (la configuration par défaut étant marquée `Défaut` et présélectionnée, avec tarif mensuel HT et disponibilité par datacenter). Par défaut, seuls les datacenters et configurations en stock sont affichés ; cochez **Afficher tout l'inventaire (y compris hors stock)** pour tout voir, ou dépliez **Options avancées** pour la bande passante et le vRack.
-- Triez par **Prix croissant** ou **Prix décroissant**, ou filtrez par gamme (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `TOR`, `SGP`, `SYD`, etc.) et statut de publication (`Tous`, `En vente`, `Annoncé`, `Prévente`, `Nouveau`).
+- **Grille Modulaire 3 Colonnes & Fenêtre de Configuration (`/servers`)** :
+  - Grille de 3 colonnes à hauteur fixe affichant le nom commercial, le `planCode`, les badges d'état et de promotion, le prix mensuel remisé (avec prix barré et frais d'installation), une grille matérielle 2×2 (**CPU**, **Mémoire**, **Stockage**, **Bande passante**) et les badges de disponibilité par datacenter.
+  - La **Fenêtre de Configuration & Commande de Serveur** réunit la liste unifiée des configurations (badge `Par défaut`), le sélecteur de période d'engagement (`default` / `upfront12` / `upfront24`), un champ optionnel **Code Promo (`coupon`)**, la case **Afficher tout l'inventaire (y compris hors stock)**, les **Options avancées** (bande passante / vRack) et les boutons d'action directe.
+- Triez par **Prix croissant** ou **Prix décroissant**, ou filtrez par gamme (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `TOR`, `SGP`, `SYD`, etc.) et statut (`Tous`, `🔥 Promo`, `En vente`, `Annoncé`, `Prévente`, `Nouveau`).
 
 ## États de Publication (`listed`, `announced`, `presale`) & Surveillance Multi-Cibles
 

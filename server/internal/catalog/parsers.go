@@ -28,17 +28,28 @@ type CPUInfo struct {
 
 // PlanMeta summarizes commercial name, range, CPU, and regional metadata for a planCode.
 type PlanMeta struct {
-	PlanCode      string             `json:"planCode"`
-	BaseCode      string             `json:"baseCode"`
-	Name          string             `json:"name"`
-	Range         string             `json:"range"`
-	Generation    int                `json:"generation,omitempty"`
-	CPU           *CPUInfo           `json:"cpu,omitempty"`
-	Region        *RegionTag         `json:"region,omitempty"`
-	Price         *float64           `json:"price,omitempty"`
-	Currency      string             `json:"currency,omitempty"`
-	AddonPrices   map[string]float64 `json:"addonPrices,omitempty"`
-	CatalogSource string             `json:"catalogSource,omitempty"`
+	PlanCode             string                           `json:"planCode"`
+	BaseCode             string                           `json:"baseCode"`
+	Name                 string                           `json:"name"`
+	Range                string                           `json:"range"`
+	Generation           int                              `json:"generation,omitempty"`
+	CPU                  *CPUInfo                         `json:"cpu,omitempty"`
+	Region               *RegionTag                       `json:"region,omitempty"`
+	Price                *float64                         `json:"price,omitempty"`
+	OriginalPrice        float64                          `json:"originalPrice,omitempty"`
+	OriginalMonthlyPrice float64                          `json:"originalMonthlyPrice,omitempty"`
+	SetupFee             float64                          `json:"setupFee"`
+	OriginalSetupFee     float64                          `json:"originalSetupFee,omitempty"`
+	FreeSetup            bool                             `json:"freeSetup"`
+	HasPromo             bool                             `json:"hasPromo"`
+	PromoCode            string                           `json:"promoCode,omitempty"`
+	PromoBadge           string                           `json:"promoBadge,omitempty"`
+	PromoDescription     string                           `json:"promoDescription,omitempty"`
+	PricingModes         []PlanPricingMode                `json:"pricingModes,omitempty"`
+	Currency             string                           `json:"currency,omitempty"`
+	AddonPrices          map[string]float64               `json:"addonPrices,omitempty"`
+	AddonModePrices      map[string]map[string]PlanPricingMode `json:"addonModePrices,omitempty"`
+	CatalogSource        string                           `json:"catalogSource,omitempty"`
 }
 
 // ParsedMemory holds structured fields extracted from an OVH ram-* code.
