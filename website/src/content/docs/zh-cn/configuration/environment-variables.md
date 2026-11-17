@@ -11,6 +11,7 @@ OVH Nexus 在容器启动时通过 `.env` 文件或 `docker-compose.yml` 中的 
 | :--- | :---: | :--- | :--- |
 | `API_SECRET_KEY` | **是** | *(无)* | Web 控制台登录密码及本机回环 API 密钥。**长度必须不少于 12 位**，且不得使用文档中的示例占位符或常见弱口令。 |
 | `DATA_ENCRYPTION_KEY` | **是** | *(无)* | 独立的静态数据加密主密钥（`HKDF-SHA256` + `AES-256-GCM`），用于加密 `/data/nexus.db` 中的所有 OVH API 密钥、Telegram Token、SMTP 密码与 TOTP 种子。**长度必须不少于 16 位**，且**严禁与 `API_SECRET_KEY` 相同**。 |
+| `ADMIN_USERNAME` | 否 | `Nexus` | Web 控制台登录用户名，配合标准 `username` + `current-password` 表单实现浏览器与密码管理器（1Password、Bitwarden、Apple 密码）自动保存与填充。与 `API_SECRET_KEY` 一同执行恒定时间比对，**严格区分大小写**（兼容别名 `NEXUS_USERNAME`）。 |
 | `PORT` | 否 | `8080` | 容器内 Go HTTP 服务监听的 TCP 端口（`docker-compose.yml` 默认映射为宿主机 `20000:8080`）。 |
 | `DATA_DIR` | 否 | `/data` | SQLite WAL 数据库（`nexus.db`）的存储目录（目录权限 `0700`，数据库文件权限 `0600`）。 |
 | `TZ` | 否 | `UTC` | 容器时区（IANA 名称，通过 `time.LoadLocation` 作用于后台调度任务与出站通知时间戳，如 `UTC`、`Europe/Paris`、`Asia/Shanghai`）。 |

@@ -46,6 +46,18 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.LogFormat != "text" {
 		t.Fatalf("expected LOG_FORMAT text, got %q", cfg.LogFormat)
 	}
+	if cfg.AdminUsername != "Nexus" {
+		t.Fatalf("expected default AdminUsername Nexus, got %q", cfg.AdminUsername)
+	}
+	if !cfg.VerifyAdminUsername("Nexus") {
+		t.Fatal("expected VerifyAdminUsername(\"Nexus\") to succeed")
+	}
+	if cfg.VerifyAdminUsername("nexus") {
+		t.Fatal("expected VerifyAdminUsername(\"nexus\") to fail (case-sensitive)")
+	}
+	if cfg.VerifyAdminUsername("") {
+		t.Fatal("expected VerifyAdminUsername(\"\") to fail")
+	}
 	if !cfg.VerifyAPISecretKey("strong-api-secret-key-1234") {
 		t.Fatal("expected VerifyAPISecretKey to succeed")
 	}
@@ -191,5 +203,28 @@ func TestTrustedProxiesAndCustomOptions(t *testing.T) {
 	}
 	if cfg.IsTrustedProxy(netip.MustParseAddr("192.168.1.50")) {
 		t.Fatal("did not expect 192.168.1.50 to be trusted")
+	}
+
+	// Custom ADMIN_USERNAME takes precedence over NEXUS_USERNAME
+	envCustom := baseEnv()
+	envCustom["ADMIN_USERNAME"] = "OpsLead"
+	envCustom["NEXUS_USERNAME"] = "FallbackUser"
+	cfgCustom, err := LoadFromEnv(mapLookup(envCustom))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfgCustom.AdminUsername != "OpsLead" || !cfgCustom.VerifyAdminUsername("OpsLead") || cfgCustom.VerifyAdminUsername("opslead") || cfgCustom.VerifyAdminUsername("Nexus") {
+		t.Fatalf("unexpected custom ADMIN_USERNAME behavior: %q", cfgCustom.AdminUsername)
+	}
+
+	// NEXUS_USERNAME fallback when ADMIN_USERNAME is unset
+	envFallback := baseEnv()
+	envFallback["NEXUS_USERNAME"] = "FallbackUser"
+	cfgFallback, err := LoadFromEnv(mapLookup(envFallback))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfgFallback.AdminUsername != "FallbackUser" || !cfgFallback.VerifyAdminUsername("FallbackUser") || cfgFallback.VerifyAdminUsername("Nexus") {
+		t.Fatalf("unexpected NEXUS_USERNAME fallback behavior: %q", cfgFallback.AdminUsername)
 	}
 }

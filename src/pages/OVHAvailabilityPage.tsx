@@ -47,6 +47,7 @@ import type {
   ListingState,
   OVHAvailabilityRow,
   PlanConfigOption,
+  PlanPricingMode,
   SkuChangeRecord,
 } from '@/types';
 
@@ -66,6 +67,15 @@ interface MergedConfigEntry {
   isDefault: boolean;
   label: string;
   estimatedMonthlyPrice: number | null;
+  originalMonthlyPrice: number | null;
+  setupFee: number | null;
+  originalSetupFee: number | null;
+  freeSetup: boolean;
+  hasPromo: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency: string;
   datacenters: DatacenterInfo[];
   dcMap: Record<string, string>;
@@ -87,6 +97,15 @@ interface MergedPlanRow {
   generation?: number;
   isRecentlyAdded: boolean;
   startingPrice: number | null;
+  originalMonthlyPrice: number | null;
+  setupFee: number | null;
+  originalSetupFee: number | null;
+  freeSetup: boolean;
+  hasPromo: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency: string;
   configs: MergedConfigEntry[];
   allDatacenters: MergedDatacenterCell[];
@@ -94,7 +113,13 @@ interface MergedPlanRow {
   has1HStock: boolean;
 }
 
-type ListingFilterTab = 'all' | 'listed' | 'announced' | 'presale' | 'new';
+type ListingFilterTab =
+  | 'all'
+  | 'listed'
+  | 'promo'
+  | 'announced'
+  | 'presale'
+  | 'new';
 
 const isStatusInStock = (status?: string): boolean =>
   Boolean(status && status !== 'unavailable' && status !== 'unknown');
@@ -141,6 +166,15 @@ const OVHAvailabilityPage = () => {
         storage?: string;
         monthlyPrice?: number | null;
         startingPrice?: number | null;
+        originalMonthlyPrice?: number | null;
+        setupFee?: number | null;
+        originalSetupFee?: number | null;
+        freeSetup?: boolean;
+        hasPromo?: boolean;
+        promoCode?: string;
+        promoBadge?: string;
+        promoDescription?: string;
+        pricingModes?: PlanPricingMode[];
         currency?: string;
       }
     >
@@ -318,6 +352,15 @@ const OVHAvailabilityPage = () => {
             storage?: string;
             monthlyPrice?: number | null;
             startingPrice?: number | null;
+            originalMonthlyPrice?: number | null;
+            setupFee?: number | null;
+            originalSetupFee?: number | null;
+            freeSetup?: boolean;
+            hasPromo?: boolean;
+            promoCode?: string;
+            promoBadge?: string;
+            promoDescription?: string;
+            pricingModes?: PlanPricingMode[];
             currency?: string;
           }
         > = {};
@@ -332,6 +375,22 @@ const OVHAvailabilityPage = () => {
               storage: srv.storage,
               monthlyPrice: srv.monthlyPrice,
               startingPrice: srv.startingPrice,
+              originalMonthlyPrice:
+                srv.originalMonthlyPrice ?? srv.originalPrice ?? null,
+              setupFee:
+                typeof srv.setupFee === 'number' ? srv.setupFee : null,
+              originalSetupFee:
+                typeof srv.originalSetupFee === 'number'
+                  ? srv.originalSetupFee
+                  : null,
+              freeSetup: Boolean(srv.freeSetup),
+              hasPromo: Boolean(srv.hasPromo),
+              promoCode: srv.promoCode,
+              promoBadge: srv.promoBadge,
+              promoDescription: srv.promoDescription,
+              pricingModes: Array.isArray(srv.pricingModes)
+                ? srv.pricingModes
+                : undefined,
               currency: srv.currency,
             };
           }
@@ -500,6 +559,7 @@ const OVHAvailabilityPage = () => {
 
     groups.forEach((items, planCode) => {
       const first = items[0];
+      const srvMeta = serverListingMap[planCode];
       const planMeta = resolvePlanDisplay(
         planCode,
         first.server,
@@ -509,7 +569,7 @@ const OVHAvailabilityPage = () => {
       const listingState = resolveItemListingState(first);
       const generation = inferPlanGeneration(planCode, first.generation);
       const listedAtStr =
-        first.listedAt || serverListingMap[planCode]?.listedAt || '';
+        first.listedAt || srvMeta?.listedAt || '';
       const isListedWithin7d = Boolean(
         listedAtStr &&
           Date.now() - Date.parse(listedAtStr) <= 7 * 24 * 3600 * 1000
@@ -532,10 +592,68 @@ const OVHAvailabilityPage = () => {
       >();
 
       let minPrice: number | null =
-        typeof planMeta.basePrice === 'number' && planMeta.basePrice > 0
+        typeof srvMeta?.startingPrice === 'number' && srvMeta.startingPrice > 0
+          ? srvMeta.startingPrice
+          : typeof planMeta.basePrice === 'number' && planMeta.basePrice > 0
           ? planMeta.basePrice
           : null;
-      const currency = first.currency || planMeta.currency || 'EUR';
+      const baseOrigMonthly =
+        typeof first.originalMonthlyPrice === 'number' &&
+        first.originalMonthlyPrice > 0
+          ? first.originalMonthlyPrice
+          : typeof srvMeta?.originalMonthlyPrice === 'number' &&
+            srvMeta.originalMonthlyPrice > 0
+          ? srvMeta.originalMonthlyPrice
+          : planMeta.originalMonthlyPrice ?? null;
+      const baseSetupFee =
+        typeof first.setupFee === 'number'
+          ? first.setupFee
+          : typeof srvMeta?.setupFee === 'number'
+          ? srvMeta.setupFee
+          : planMeta.setupFee ?? null;
+      const baseOrigSetupFee =
+        typeof first.originalSetupFee === 'number'
+          ? first.originalSetupFee
+          : typeof srvMeta?.originalSetupFee === 'number'
+          ? srvMeta.originalSetupFee
+          : planMeta.originalSetupFee ?? null;
+      const baseFreeSetup = Boolean(
+        first.freeSetup ||
+          srvMeta?.freeSetup ||
+          planMeta.freeSetup ||
+          (baseSetupFee === 0 && (baseOrigSetupFee ?? 0) > 0)
+      );
+      const basePricingModes =
+        (Array.isArray(first.pricingModes) && first.pricingModes.length > 0
+          ? first.pricingModes
+          : Array.isArray(srvMeta?.pricingModes) &&
+            srvMeta.pricingModes.length > 0
+          ? srvMeta.pricingModes
+          : planMeta.pricingModes) || undefined;
+      const baseHasPromo = Boolean(
+        first.hasPromo ||
+          srvMeta?.hasPromo ||
+          planMeta.hasPromo ||
+          (basePricingModes || []).some((m) => m.hasPromo) ||
+          baseFreeSetup ||
+          (baseOrigMonthly && minPrice && baseOrigMonthly > minPrice + 0.01)
+      );
+      const basePromoCode =
+        first.promoCode || srvMeta?.promoCode || planMeta.promoCode;
+      const basePromoBadge =
+        first.promoBadge ||
+        srvMeta?.promoBadge ||
+        planMeta.promoBadge ||
+        (basePricingModes || []).find((m) => m.promoBadge)?.promoBadge;
+      const basePromoDescription =
+        first.promoDescription ||
+        srvMeta?.promoDescription ||
+        planMeta.promoDescription ||
+        (basePricingModes || []).find((m) => m.promoDescription)
+          ?.promoDescription;
+
+      const currency =
+        first.currency || srvMeta?.currency || planMeta.currency || 'EUR';
 
       items.forEach((it, idx) => {
         const cfgKey =
@@ -554,6 +672,36 @@ const OVHAvailabilityPage = () => {
             minPrice = estPrice;
           }
         }
+
+        const itOrigMonthly =
+          typeof it.originalMonthlyPrice === 'number' &&
+          it.originalMonthlyPrice > 0
+            ? it.originalMonthlyPrice
+            : typeof it.originalPrice === 'number' && it.originalPrice > 0
+            ? it.originalPrice
+            : baseOrigMonthly;
+        const itSetupFee =
+          typeof it.setupFee === 'number' ? it.setupFee : baseSetupFee;
+        const itOrigSetupFee =
+          typeof it.originalSetupFee === 'number'
+            ? it.originalSetupFee
+            : baseOrigSetupFee;
+        const itFreeSetup = Boolean(
+          it.freeSetup ||
+            baseFreeSetup ||
+            (itSetupFee === 0 && (itOrigSetupFee ?? 0) > 0)
+        );
+        const itPricingModes =
+          Array.isArray(it.pricingModes) && it.pricingModes.length > 0
+            ? it.pricingModes
+            : basePricingModes;
+        const itHasPromo = Boolean(
+          it.hasPromo ||
+            baseHasPromo ||
+            (itPricingModes || []).some((m) => m.hasPromo) ||
+            itFreeSetup ||
+            (itOrigMonthly && estPrice && itOrigMonthly > estPrice + 0.01)
+        );
 
         const label = formatConfigLabel(it.memory, it.storage, locale);
         const dcMap: Record<string, string> = {};
@@ -587,6 +735,15 @@ const OVHAvailabilityPage = () => {
             isDefault: Boolean(it.isDefault || idx === 0),
             label,
             estimatedMonthlyPrice: estPrice ?? null,
+            originalMonthlyPrice: itOrigMonthly,
+            setupFee: itSetupFee,
+            originalSetupFee: itOrigSetupFee,
+            freeSetup: itFreeSetup,
+            hasPromo: itHasPromo,
+            promoCode: it.promoCode || basePromoCode,
+            promoBadge: it.promoBadge || basePromoBadge,
+            promoDescription: it.promoDescription || basePromoDescription,
+            pricingModes: itPricingModes,
             currency: it.currency || currency,
             datacenters: dcs,
             dcMap,
@@ -669,6 +826,13 @@ const OVHAvailabilityPage = () => {
           d.bestAvailability === '1H-low' || d.bestAvailability === '1H-high'
       );
 
+      const rowHasPromo = Boolean(
+        baseHasPromo ||
+          configsList.some(
+            (c) => c.hasPromo || (c.pricingModes || []).some((m) => m.hasPromo)
+          )
+      );
+
       result.push({
         planCode,
         server: first.server || planCode,
@@ -677,6 +841,15 @@ const OVHAvailabilityPage = () => {
         generation,
         isRecentlyAdded,
         startingPrice: minPrice,
+        originalMonthlyPrice: baseOrigMonthly,
+        setupFee: baseSetupFee,
+        originalSetupFee: baseOrigSetupFee,
+        freeSetup: baseFreeSetup,
+        hasPromo: rowHasPromo,
+        promoCode: basePromoCode,
+        promoBadge: basePromoBadge,
+        promoDescription: basePromoDescription,
+        pricingModes: basePricingModes,
         currency,
         configs: configsList,
         allDatacenters,
@@ -693,6 +866,7 @@ const OVHAvailabilityPage = () => {
     const counts = {
       all: mergedRows.length,
       listed: 0,
+      promo: 0,
       announced: 0,
       presale: 0,
       new: 0,
@@ -701,6 +875,14 @@ const OVHAvailabilityPage = () => {
       if (r.listingState === 'listed') counts.listed += 1;
       else if (r.listingState === 'announced') counts.announced += 1;
       else if (r.listingState === 'presale') counts.presale += 1;
+      if (
+        r.hasPromo ||
+        r.configs.some(
+          (c) => c.hasPromo || (c.pricingModes || []).some((m) => m.hasPromo)
+        )
+      ) {
+        counts.promo += 1;
+      }
       if (r.isRecentlyAdded) counts.new += 1;
     });
     return counts;
@@ -711,6 +893,14 @@ const OVHAvailabilityPage = () => {
 
     if (listingFilterTab === 'listed') {
       filtered = filtered.filter((r) => r.listingState === 'listed');
+    } else if (listingFilterTab === 'promo') {
+      filtered = filtered.filter(
+        (r) =>
+          r.hasPromo ||
+          r.configs.some(
+            (c) => c.hasPromo || (c.pricingModes || []).some((m) => m.hasPromo)
+          )
+      );
     } else if (listingFilterTab === 'announced') {
       filtered = filtered.filter((r) => r.listingState === 'announced');
     } else if (listingFilterTab === 'presale') {
@@ -1278,6 +1468,13 @@ const OVHAvailabilityPage = () => {
                       'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
                   },
                   {
+                    id: 'promo',
+                    label: t('listing.filter.promo'),
+                    count: tabCounts.promo,
+                    activeCls:
+                      'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
+                  },
+                  {
                     id: 'announced',
                     label: t('listing.filter.announced'),
                     count: tabCounts.announced,
@@ -1309,6 +1506,8 @@ const OVHAvailabilityPage = () => {
                     className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
                       isActive
                         ? tab.activeCls
+                        : tab.id === 'promo'
+                        ? 'bg-rose-500/10 text-rose-300/90 border-rose-500/30 hover:bg-rose-500/20'
                         : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-cyber-text'
                     }`}
                   >
@@ -1354,6 +1553,28 @@ const OVHAvailabilityPage = () => {
               const displayPrice = activeConfig
                 ? activeConfig.estimatedMonthlyPrice
                 : row.startingPrice;
+              const displayOrigPrice = activeConfig
+                ? activeConfig.originalMonthlyPrice
+                : row.originalMonthlyPrice;
+              const displaySetupFee = activeConfig
+                ? activeConfig.setupFee
+                : row.setupFee;
+              const displayOrigSetupFee = activeConfig
+                ? activeConfig.originalSetupFee
+                : row.originalSetupFee;
+              const displayFreeSetup = Boolean(
+                activeConfig ? activeConfig.freeSetup : row.freeSetup
+              );
+              const displayHasPromo = Boolean(
+                activeConfig ? activeConfig.hasPromo : row.hasPromo
+              );
+              const displayPromoBadge =
+                (activeConfig ? activeConfig.promoBadge : row.promoBadge) ||
+                row.promoBadge;
+              const displayPromoDesc =
+                (activeConfig
+                  ? activeConfig.promoDescription
+                  : row.promoDescription) || row.promoDescription;
 
               const activeGpuText = activeConfig?.gpu
                 ? formatGpuCode(activeConfig.gpu, locale)
@@ -1404,6 +1625,14 @@ const OVHAvailabilityPage = () => {
                         <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-cyber-grid/40 text-cyber-muted">
                           {row.planCode}
                         </span>
+                        {displayHasPromo && (
+                          <span
+                            title={displayPromoDesc}
+                            className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40"
+                          >
+                            🔥 {displayPromoBadge || t('promo.badge')}
+                          </span>
+                        )}
                         {row.listingState === 'announced' && (
                           <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
                             <Sparkles className="w-2.5 h-2.5" />
@@ -1467,12 +1696,26 @@ const OVHAvailabilityPage = () => {
                             </option>
                             {row.configs.map((cfg) => {
                               const cfgSym = getCurrencySymbol(cfg.currency);
+                              const promoTag = cfg.hasPromo
+                                ? `🔥${cfg.promoBadge || t('promo.badge')} `
+                                : '';
                               const pricePart =
                                 cfg.estimatedMonthlyPrice &&
                                 cfg.estimatedMonthlyPrice > 0
                                   ? ` — ${cfgSym}${cfg.estimatedMonthlyPrice.toFixed(
                                       2
                                     )}${t('availability.perMonth')}`
+                                  : '';
+                              const setupPart =
+                                cfg.setupFee === 0 || cfg.freeSetup
+                                  ? ` · ${t('promo.freeSetup')}`
+                                  : typeof cfg.setupFee === 'number' &&
+                                    cfg.setupFee > 0
+                                  ? ` · ${t('promo.setupFee', {
+                                      price: `${cfgSym}${cfg.setupFee.toFixed(
+                                        2
+                                      )}`,
+                                    })}`
                                   : '';
                               const dcPart = ` (${t(
                                 'availability.inStockDcCount',
@@ -1483,7 +1726,7 @@ const OVHAvailabilityPage = () => {
                                   key={cfg.configKey}
                                   value={cfg.configKey}
                                 >
-                                  {`${cfg.label}${pricePart}${dcPart}`}
+                                  {`${promoTag}${cfg.label}${pricePart}${setupPart}${dcPart}`}
                                 </option>
                               );
                             })}
@@ -1491,18 +1734,48 @@ const OVHAvailabilityPage = () => {
                         </div>
                       )}
 
+                      {/* Setup Fee Pill */}
+                      {row.listingState !== 'presale' &&
+                        (displaySetupFee === 0 || displayFreeSetup ? (
+                          <div className="px-2 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 font-semibold text-xs leading-none whitespace-nowrap inline-flex items-center">
+                            <span>{t('promo.freeSetup')}</span>
+                            {displayOrigSetupFee !== null &&
+                              displayOrigSetupFee > 0 && (
+                                <span className="line-through text-[10px] opacity-70 ml-1 font-mono">
+                                  {symbol}
+                                  {displayOrigSetupFee.toFixed(2)}
+                                </span>
+                              )}
+                          </div>
+                        ) : displaySetupFee !== null && displaySetupFee > 0 ? (
+                          <div className="px-2 py-1 rounded-md bg-cyber-grid/40 border border-cyber-grid text-cyber-muted font-mono text-xs leading-none whitespace-nowrap">
+                            {t('promo.setupFee', {
+                              price: `${symbol}${displaySetupFee.toFixed(2)}`,
+                            })}
+                          </div>
+                        ) : null)}
+
                       {/* Price Pill */}
                       {displayPrice !== null &&
                       displayPrice > 0 &&
                       row.listingState !== 'presale' ? (
-                        <div className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-xs sm:text-sm leading-none whitespace-nowrap">
-                          {activeConfig
-                            ? `${symbol}${displayPrice.toFixed(2)}${t(
-                                'availability.perMonth'
-                              )}`
-                            : t('availability.fromPrice', {
-                                price: `${symbol}${displayPrice.toFixed(2)}`,
-                              })}
+                        <div className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-xs sm:text-sm leading-none whitespace-nowrap inline-flex items-center">
+                          <span>
+                            {activeConfig
+                              ? `${symbol}${displayPrice.toFixed(2)}${t(
+                                  'availability.perMonth'
+                                )}`
+                              : t('availability.fromPrice', {
+                                  price: `${symbol}${displayPrice.toFixed(2)}`,
+                                })}
+                          </span>
+                          {displayOrigPrice !== null &&
+                            displayOrigPrice > displayPrice + 0.01 && (
+                              <span className="line-through text-[10px] opacity-70 ml-1 font-mono">
+                                {symbol}
+                                {displayOrigPrice.toFixed(2)}
+                              </span>
+                            )}
                         </div>
                       ) : row.listingState === 'presale' ? (
                         <div
@@ -1536,6 +1809,19 @@ const OVHAvailabilityPage = () => {
                                   estimatedMonthlyPrice:
                                     activeConfig.estimatedMonthlyPrice ??
                                     undefined,
+                                  originalMonthlyPrice:
+                                    activeConfig.originalMonthlyPrice ??
+                                    undefined,
+                                  setupFee: activeConfig.setupFee ?? undefined,
+                                  originalSetupFee:
+                                    activeConfig.originalSetupFee ?? undefined,
+                                  freeSetup: activeConfig.freeSetup,
+                                  hasPromo: activeConfig.hasPromo,
+                                  promoCode: activeConfig.promoCode,
+                                  promoBadge: activeConfig.promoBadge,
+                                  promoDescription:
+                                    activeConfig.promoDescription,
+                                  pricingModes: activeConfig.pricingModes,
                                   currency: activeConfig.currency,
                                   memory: activeConfig.memory,
                                   storage: activeConfig.storage,
@@ -1550,6 +1836,17 @@ const OVHAvailabilityPage = () => {
                               isDefault: c.isDefault,
                               estimatedMonthlyPrice:
                                 c.estimatedMonthlyPrice ?? undefined,
+                              originalMonthlyPrice:
+                                c.originalMonthlyPrice ?? undefined,
+                              setupFee: c.setupFee ?? undefined,
+                              originalSetupFee:
+                                c.originalSetupFee ?? undefined,
+                              freeSetup: c.freeSetup,
+                              hasPromo: c.hasPromo,
+                              promoCode: c.promoCode,
+                              promoBadge: c.promoBadge,
+                              promoDescription: c.promoDescription,
+                              pricingModes: c.pricingModes,
                               currency: c.currency,
                               datacenters: c.dcMap,
                               inStockCount: c.inStockCount,

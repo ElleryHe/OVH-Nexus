@@ -205,25 +205,38 @@ func TestStoreTOTPQueueHistoryStats(t *testing.T) {
 	qItem.Status = "paused"
 	qItem.Source = "stock-monitor"
 	qItem.SourceRef = "24ska01"
+	qItem.PricingMode = "upfront12"
+	qItem.Duration = "P12M"
+	qItem.Coupon = "BF26"
 	if _, err := st.UpdateQueueItem(ctx, *qItem); err != nil {
 		t.Fatalf("UpdateQueueItem: %v", err)
 	}
 	gotQ, err := st.GetQueueItem(ctx, qItem.ID)
-	if err != nil || gotQ.Status != "paused" || gotQ.Source != "stock-monitor" || gotQ.SourceRef != "24ska01" {
+	if err != nil || gotQ.Status != "paused" || gotQ.Source != "stock-monitor" || gotQ.SourceRef != "24ska01" ||
+		gotQ.PricingMode != "upfront12" || gotQ.Duration != "P12M" || gotQ.Coupon != "BF26" {
 		t.Fatalf("GetQueueItem: %+v err=%v", gotQ, err)
 	}
 
 	// History & Stats
 	h1, err := st.AddHistory(ctx, PurchaseHistory{
-		AccountID:  "acct-eu",
-		PlanCode:   "24ska01",
-		Datacenter: "gra",
-		Status:     "success",
-		OrderID:    "123456",
-		PriceText:  "9.99 EUR",
+		AccountID:    "acct-eu",
+		PlanCode:     "24ska01",
+		Datacenter:   "gra",
+		PricingMode:  "upfront12",
+		Duration:     "P12M",
+		Coupon:       "BF26",
+		PeriodPrice:  346.47,
+		MonthlyPrice: 28.87,
+		Status:       "success",
+		OrderID:      "123456",
+		PriceText:    "346.47 EUR",
 	})
 	if err != nil {
 		t.Fatalf("AddHistory success: %v", err)
+	}
+	listedHist, err := st.ListHistory(ctx, "acct-eu")
+	if err != nil || len(listedHist) != 1 || listedHist[0].PricingMode != "upfront12" || listedHist[0].Duration != "P12M" || listedHist[0].Coupon != "BF26" || listedHist[0].PeriodPrice != 346.47 || listedHist[0].MonthlyPrice != 28.87 {
+		t.Fatalf("ListHistory promo fields mismatch: %+v err=%v", listedHist, err)
 	}
 	if _, err := st.AddHistory(ctx, PurchaseHistory{
 		AccountID:    "acct-eu",

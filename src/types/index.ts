@@ -1,5 +1,27 @@
 export type ListingState = 'listed' | 'announced' | 'presale';
 
+export interface PlanPricingMode {
+  mode: string; // 'default' | 'upfront12' | 'upfront24' | 'degressivity12' | 'degressivity24'
+  duration: string; // 'P1M' | 'P12M' | 'P24M'
+  intervalMonths: number;
+  commitmentMonths: number;
+  periodPrice: number;
+  originalPeriodPrice: number;
+  monthlyEquivalentPrice: number;
+  originalMonthlyPrice: number;
+  setupFee: number;
+  originalSetupFee: number;
+  freeSetup: boolean;
+  hasPromo: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  promoValue?: number;
+  promoType?: string;
+  promoDuration?: number;
+  promoEndDate?: string;
+}
+
 export interface DatacenterAvailabilityItem {
   datacenter: string;
   availability: string;
@@ -27,6 +49,16 @@ export interface OVHAvailabilityRow {
   isDefault?: boolean;
   estimatedMonthlyPrice?: number;
   price?: number;
+  originalPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency?: string;
   datacenters: DatacenterAvailabilityItem[];
 }
@@ -46,10 +78,22 @@ export interface PlanConfigOption {
   isDefault?: boolean;
   estimatedMonthlyPrice?: number;
   price?: number;
+  originalPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency?: string;
   datacenters?: Record<string, string> | DatacenterAvailabilityItem[];
   inStockCount?: number;
 }
+
+export type PlanConfigItem = PlanConfigOption;
 
 export interface PlanConfigsResponse {
   planCode: string;
@@ -57,9 +101,82 @@ export interface PlanConfigsResponse {
   listingState?: ListingState | string;
   basePrice?: number | null;
   startingPrice?: number | null;
+  originalPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency?: string;
   defaultConfigKey?: string;
   configs: PlanConfigOption[];
+}
+
+export interface ServerOption {
+  label: string;
+  value: string;
+  family?: string;
+  configKey?: string;
+  options?: string[];
+  isDefault?: boolean;
+  estimatedMonthlyPrice?: number;
+  price?: number;
+  originalPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
+  currency?: string;
+}
+
+export interface ServerPlan {
+  planCode: string;
+  name: string;
+  description?: string;
+  range?: string;
+  cpu: string;
+  memory: string;
+  storage: string;
+  bandwidth: string;
+  vrackBandwidth: string;
+  monthlyPrice?: number | null;
+  startingPrice?: number | null;
+  originalPrice?: number;
+  originalMonthlyPrice?: number;
+  setupFee?: number;
+  originalSetupFee?: number;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
+  defaultConfigKey?: string;
+  currency?: string;
+  catalogSource?: string;
+  listingState?: ListingState | 'delisted' | string;
+  listedAt?: string;
+  orderable?: boolean;
+  generation?: number;
+  defaultOptions: ServerOption[];
+  availableOptions: ServerOption[];
+  datacenters: {
+    datacenter: string;
+    dcName: string;
+    region: string;
+    availability: string;
+    countryCode: string;
+    flag?: string;
+  }[];
 }
 
 export interface StockTarget {
@@ -73,6 +190,9 @@ export interface StockTarget {
   autoOrder: boolean;
   quantity: number;
   maxMonthlyPrice?: number;
+  pricingMode?: string;
+  duration?: string;
+  coupon?: string;
   currency?: string;
   lastStatus?: Record<string, string>;
 }
@@ -90,6 +210,50 @@ export interface StockSubscription {
   needsConfigSelection?: boolean;
   lastStatus: Record<string, string>;
   createdAt: string;
+}
+
+export interface QueueItem {
+  id: string;
+  planCode: string;
+  datacenter?: string;
+  datacenters?: string[];
+  options: string[];
+  configKey?: string;
+  configLabel?: string;
+  currency?: string;
+  maxMonthlyPrice?: number;
+  pricingMode?: string;
+  duration?: string;
+  coupon?: string;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+  retryInterval: number;
+  retryCount: number;
+  accountId?: string;
+  quantity?: number;
+  purchased?: number;
+  failureCount?: number;
+  nextAttemptAt?: number;
+  auto_pay?: boolean;
+  waive_retractation_period?: boolean;
+  source?: 'manual' | 'stock-monitor' | 'mcp' | string;
+  sourceRef?: string;
+}
+
+export interface QuickOrderRequest {
+  planCode: string;
+  datacenter: string;
+  options?: string[];
+  configKey?: string;
+  configLabel?: string;
+  currency?: string;
+  maxMonthlyPrice?: number;
+  pricingMode?: string;
+  duration?: string;
+  coupon?: string;
+  auto_pay?: boolean;
+  waive_retractation_period?: boolean;
 }
 
 export interface SkuChangeRecord {

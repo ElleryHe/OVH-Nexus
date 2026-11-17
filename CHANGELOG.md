@@ -9,6 +9,31 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.3.3] - 2026-11-17
+
+### Added
+- **Password Manager-Compatible Console Login (`ADMIN_USERNAME`)**:
+  - Added the `ADMIN_USERNAME` environment variable (compatible alias `NEXUS_USERNAME`, default `Nexus`, strictly case-sensitive and verified in constant time alongside `API_SECRET_KEY`) and upgraded the WebUI login gate to a standard `<form autoComplete="on">` with `username` (`autoComplete="username"`) and `password` (`autoComplete="current-password"`) fields for seamless browser and password manager (1Password, Bitwarden, Apple Passwords) auto-fill.
+- **Dedicated Server Configuration & Ordering Modal (`/servers`)**:
+  - Added a dedicated **Server Configuration & Ordering Modal** in the Server Catalog for inspecting merged default and optional hardware configurations (`标配` / `Default` badge), ex-VAT monthly pricing, datacenter stock filters (**Show all inventory (including out-of-stock)** toggle), collapsible **Advanced Options** (Bandwidth / vRack), and one-click actions for **Quick Monitor**, **Add to Queue**, and **Direct Order**.
+- **Pre-Order Setup / Installation Fee (`installation`) Display**:
+  - Parses one-time installation fees (`capacities: ["installation"]`) and promotional setup fee waivers across all catalog plans and configurations, displaying `setupFee` and crossed-out `originalSetupFee` across the Server Catalog (`/servers`), Live Availability Matrix (`/availability`), Configuration & Ordering Modal, and Quick Monitor Dialog (`QuickMonitorDialog`).
+- **Automatic Catalog Promotion (`promotions`) Detection & Filtering**:
+  - Automatically parses active OVHcloud catalog `promotions` (such as Black Friday `20% OFF` recurring discounts and waived `FREE SETUP` fees), rendering promo badges (`🔥 -20%`, `🔥 FREE SETUP`), discounted prices with crossed-out `originalMonthlyPrice`, and a dedicated **🔥 Promo** filter tab with live count badges in `/servers` and `/availability`.
+- **Multi-Period Commitment Billing Modes (`pricingMode` & `duration`)**:
+  - Supports monthly no-commitment (`default` / `P1M`), 12-month upfront annual (`upfront12` / `P12M`), 24-month upfront (`upfront24` / `P24M`), and degressive monthly commitments (`degressivity12` / `degressivity24`) across manual ordering, stock monitor auto-order targets (`targets[]`), and the procurement queue (`/queue`).
+  - Automatically updates period total, monthly-equivalent ex-VAT price (`monthlyEquivalentPrice`), and waived setup fees (`€0.00` on `upfront12`/`upfront24`) when switching billing periods, and evaluates `maxMonthlyPrice` against the live cart's discounted monthly-equivalent ex-VAT price (`periodPrice / intervalMonths`).
+- **Custom Coupon / Voucher Code (`coupon`) Support with Fail-Fast Validation**:
+  - Added optional `coupon` input across the Configuration & Ordering Modal, Quick Monitor Dialog, and Procurement Queue, applying the voucher via `POST /order/cart/{cartId}/coupons` before checkout and aborting immediately with `400 INVALID_COUPON` (plus cart cleanup, `WARNING` log, and `order.failed` notification) if OVHcloud rejects the code so orders never proceed at full price.
+
+### Changed
+- **3-Column Fixed-Height Modular Server Catalog Grid (`/servers`)**:
+  - Redesigned the Server Catalog into a 3-column fixed-height card grid (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`) featuring a 4-tier uniform layout: 2-line model/pricing & badge header, a 2×2 modular hardware specification grid (**CPU**, **Memory**, **Storage**, **Bandwidth** with full hover tooltips), a dedicated fixed-height datacenter availability row, and a fixed bottom action bar.
+- **Unified Liquid Glass "N" Brand Identity & Social Assets**:
+  - Unified the brand logo, site icons (`favicon.svg`, `favicon.ico`, `apple-touch-icon.png`), and OpenGraph social preview banner (`og-image.jpg`) across the WebUI and documentation portal to the new translucent blue Liquid Glass "N" design.
+
+---
+
 ## [1.3.2] - 2026-11-17
 
 ### Added

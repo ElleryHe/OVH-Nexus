@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"ovh-nexus/server/internal/auth"
+	"ovh-nexus/server/internal/catalog"
 	"ovh-nexus/server/internal/config"
 	"ovh-nexus/server/internal/logger"
 	"ovh-nexus/server/internal/ovhclient"
@@ -159,7 +160,11 @@ func (m *mockCatalog) QueryAvailabilityFiltered(_ context.Context, planFilter, d
 		if state == "" {
 			state = "listed"
 		}
-		if stateFilter != "all" && state != stateFilter {
+		if stateFilter == "promo" {
+			if !entryHasPromo(e) {
+				continue
+			}
+		} else if stateFilter != "all" && state != stateFilter {
 			continue
 		}
 		if planLow != "" && !strings.Contains(strings.ToLower(e.PlanCode), planLow) && !strings.Contains(strings.ToLower(e.ModelName), planLow) {
@@ -737,7 +742,7 @@ func TestMCPStreamableHTTPProtocolAndAudit(t *testing.T) {
 		t.Fatalf("expected negotiated protocolVersion 2024-11-05, got %v", initRes["protocolVersion"])
 	}
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.2" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.3" {
 		t.Fatalf("unexpected serverInfo: %+v", srvInfo)
 	}
 
@@ -1700,3 +1705,123 @@ func TestMCPCatalogV132AnnouncedPricingAndSKUChanges(t *testing.T) {
 		t.Fatalf("expected 1 announced trackedSku for 27skle02-v1, got %+v", annTracked)
 	}
 }
+
+func TestMCPCatalogV133PromosSetupFeesAndPricingModes(t *testing.T) {
+	env := setupMCPTest(t)
+
+	rec := doHTTP(t, env.router, http.MethodPut, "/api/mcp/settings", map[string]any{
+		"enabled": true,
+		"scopes":  map[string]any{"read": true},
+	}, nil)
+	token := decodeJSONMap(t, rec)["data"].(map[string]any)["revealedToken"].(string)
+
+	env.catalog.mu.Lock()
+	env.catalog.entries = []CatalogEntry{
+		{
+			PlanCode:              "24sys02-v3",
+			ModelName:             "SYS-2",
+			Range:                 "SYS",
+			CPU:                   "Intel Xeon-D 2141I",
+			ConfigKey:             "ram-32g-ecc-2133+softraid-2x512nvme",
+			IsDefault:             true,
+			EstimatedMonthlyPrice: 30.39,
+			OriginalMonthlyPrice:  37.99,
+			SetupFee:              34.99,
+			OriginalSetupFee:      34.99,
+			FreeSetup:             false,
+			HasPromo:              true,
+			PromoCode:             "BF26_ECO_20OFF",
+			PromoBadge:            "-20%",
+			PromoDescription:      "Black Friday 20% off",
+			PricingModes: []catalog.PlanPricingMode{
+				{
+					Mode:                   "default",
+					Duration:               "P1M",
+					IntervalMonths:         1,
+					CommitmentMonths:       0,
+					PeriodPrice:            30.39,
+					OriginalPeriodPrice:    37.99,
+					MonthlyEquivalentPrice: 30.39,
+					OriginalMonthlyPrice:   37.99,
+					SetupFee:               34.99,
+					OriginalSetupFee:       34.99,
+					FreeSetup:              false,
+					HasPromo:               true,
+					PromoCode:              "BF26_ECO_20OFF",
+					PromoBadge:             "-20%",
+				},
+				{
+					Mode:                   "upfront12",
+					Duration:               "P12M",
+					IntervalMonths:         12,
+					CommitmentMonths:       12,
+					PeriodPrice:            346.47,
+					OriginalPeriodPrice:    433.09,
+					MonthlyEquivalentPrice: 28.87,
+					OriginalMonthlyPrice:   36.09,
+					SetupFee:               0,
+					OriginalSetupFee:       0,
+					FreeSetup:              true,
+					HasPromo:               true,
+					PromoCode:              "BF26_ECO_20OFF",
+					PromoBadge:             "-20%",
+				},
+			},
+			Currency:               "EUR",
+			ListingState:           "listed",
+			Orderable:              true,
+			Generation:             2024,
+			AvailableDatacenters:   []string{"GRA (1H-high)"},
+			MatchingConfigurations: 1,
+		},
+		{
+			PlanCode:               "24ska01",
+			ModelName:              "KS-A",
+			Range:                  "KS",
+			CPU:                    "Intel i7-6700k",
+			ConfigKey:              "default",
+			IsDefault:              true,
+			EstimatedMonthlyPrice:  19.99,
+			OriginalMonthlyPrice:   19.99,
+			SetupFee:               19.99,
+			OriginalSetupFee:       19.99,
+			FreeSetup:              false,
+			HasPromo:               false,
+			Currency:               "EUR",
+			ListingState:           "listed",
+			Orderable:              true,
+			Generation:             2024,
+			AvailableDatacenters:   []string{"RBX (72H)"},
+			MatchingConfigurations: 1,
+		},
+	}
+	env.catalog.mu.Unlock()
+
+	for _, args := range []map[string]any{
+		{"only_promo": true},
+		{"listing_state": "promo"},
+	} {
+		res, isErr, raw := mcpCallTool(t, env, token, "catalog_availability", args)
+		if isErr {
+			t.Fatalf("catalog_availability %v failed: %s", args, raw)
+		}
+		if int(res["totalMatched"].(float64)) != 1 || int(res["returned"].(float64)) != 1 {
+			t.Fatalf("expected 1 promo model for %v, got %+v", args, res)
+		}
+		item := res["items"].([]any)[0].(map[string]any)
+		if item["planCode"] != "24sys02-v3" ||
+			item["hasPromo"] != true ||
+			item["promoBadge"] != "-20%" ||
+			item["promoCode"] != "BF26_ECO_20OFF" ||
+			item["estimatedMonthlyPrice"].(float64) != 30.39 ||
+			item["originalMonthlyPrice"].(float64) != 37.99 ||
+			item["setupFee"].(float64) != 34.99 {
+			t.Fatalf("unexpected promo item fields: %+v", item)
+		}
+		modes := item["pricingModes"].([]any)
+		if len(modes) != 2 {
+			t.Fatalf("expected 2 pricingModes on promo item, got %+v", modes)
+		}
+	}
+}
+

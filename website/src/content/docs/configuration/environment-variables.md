@@ -11,6 +11,7 @@ OVH Nexus is configured at startup via environment variables defined in `.env` o
 | :--- | :---: | :--- | :--- |
 | `API_SECRET_KEY` | **Yes** | *(none)* | WebUI login password and local loopback API key. Must be **at least 12 characters** and not match any known weak/placeholder value. |
 | `DATA_ENCRYPTION_KEY` | **Yes** | *(none)* | Independent master key for `HKDF-SHA256` + `AES-256-GCM` at-rest encryption of secrets stored in `/data/nexus.db` (`appKey`, `appSecret`, `consumerKey`, Telegram tokens, SMTP passwords, and TOTP secrets). Must be **at least 16 characters** and **must not** equal `API_SECRET_KEY`. |
+| `ADMIN_USERNAME` | No | `Nexus` | Console login username for standard `username` + `current-password` form auto-fill compatibility with browsers and password managers (1Password, Bitwarden, Apple Passwords). Checked in constant time alongside `API_SECRET_KEY`; strictly **case-sensitive** (also accepts alias `NEXUS_USERNAME`). |
 | `PORT` | No | `8080` | TCP listening port of the Go HTTP server inside the container (mapped to host `20000:8080` by default in `docker-compose.yml`). |
 | `DATA_DIR` | No | `/data` | Directory where the SQLite WAL database (`nexus.db`) is stored (directory `0700`, file `0600`). |
 | `TZ` | No | `UTC` | IANA timezone applied via `time.LoadLocation` for background schedules and outbound notification timestamps (e.g., `UTC`, `Europe/Paris`, `Asia/Shanghai`). |

@@ -110,7 +110,20 @@ func (a *catalogAdapter) QueryAvailabilityFiltered(
 			}
 		}
 		orderable := listingState == "listed"
-		if stateFilter != "all" && listingState != stateFilter {
+		hasPromo := item.HasPromo || meta.HasPromo
+		if !hasPromo {
+			for _, pm := range item.PricingModes {
+				if pm.HasPromo {
+					hasPromo = true
+					break
+				}
+			}
+		}
+		if stateFilter == "promo" {
+			if !hasPromo {
+				continue
+			}
+		} else if stateFilter != "all" && listingState != stateFilter {
 			continue
 		}
 
@@ -188,6 +201,10 @@ func (a *catalogAdapter) QueryAvailabilityFiltered(
 			if gen == 0 {
 				gen = catalog.InferPlanGeneration(pcode)
 			}
+			origMonthly := item.OriginalMonthlyPrice
+			if origMonthly == 0 && item.EstimatedMonthlyPrice > 0 {
+				origMonthly = item.EstimatedMonthlyPrice
+			}
 			rec = &mcp.CatalogEntry{
 				PlanCode:              pcode,
 				ModelName:             modelName,
@@ -197,6 +214,15 @@ func (a *catalogAdapter) QueryAvailabilityFiltered(
 				Options:               item.Options,
 				IsDefault:             item.IsDefault,
 				EstimatedMonthlyPrice: item.EstimatedMonthlyPrice,
+				OriginalMonthlyPrice:  origMonthly,
+				SetupFee:              item.SetupFee,
+				OriginalSetupFee:      item.OriginalSetupFee,
+				FreeSetup:             item.FreeSetup,
+				HasPromo:              hasPromo,
+				PromoCode:             item.PromoCode,
+				PromoBadge:            item.PromoBadge,
+				PromoDescription:      item.PromoDescription,
+				PricingModes:          item.PricingModes,
 				Currency:              currency,
 				ListingState:          listingState,
 				ListedAt:              listedAt,
@@ -214,11 +240,33 @@ func (a *catalogAdapter) QueryAvailabilityFiltered(
 				if item.EstimatedMonthlyPrice > 0 {
 					rec.EstimatedMonthlyPrice = item.EstimatedMonthlyPrice
 				}
+				if item.OriginalMonthlyPrice > 0 {
+					rec.OriginalMonthlyPrice = item.OriginalMonthlyPrice
+				}
+				rec.SetupFee = item.SetupFee
+				rec.OriginalSetupFee = item.OriginalSetupFee
+				rec.FreeSetup = item.FreeSetup
+				rec.HasPromo = hasPromo || rec.HasPromo
+				if item.PromoCode != "" {
+					rec.PromoCode = item.PromoCode
+				}
+				if item.PromoBadge != "" {
+					rec.PromoBadge = item.PromoBadge
+				}
+				if item.PromoDescription != "" {
+					rec.PromoDescription = item.PromoDescription
+				}
+				if len(item.PricingModes) > 0 {
+					rec.PricingModes = item.PricingModes
+				}
 				if currency != "" {
 					rec.Currency = currency
 				}
 			} else if rec.EstimatedMonthlyPrice == 0 && item.EstimatedMonthlyPrice > 0 {
 				rec.EstimatedMonthlyPrice = item.EstimatedMonthlyPrice
+				if rec.OriginalMonthlyPrice == 0 {
+					rec.OriginalMonthlyPrice = item.OriginalMonthlyPrice
+				}
 			}
 			if rec.ListedAt == "" && listedAt != "" {
 				rec.ListedAt = listedAt

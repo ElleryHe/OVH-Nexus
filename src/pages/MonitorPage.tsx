@@ -848,6 +848,24 @@ const MonitorPage = () => {
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-1.5">
+                                  {target.pricingMode && (
+                                    <span className="px-2 py-0.5 bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 rounded text-[11px] font-semibold">
+                                      {(() => {
+                                        const k = `billing.modeShort.${target.pricingMode}`;
+                                        const lbl = t(k);
+                                        return lbl !== k
+                                          ? lbl
+                                          : target.pricingMode;
+                                      })()}
+                                    </span>
+                                  )}
+                                  {target.coupon && (
+                                    <span className="px-2 py-0.5 bg-amber-500/15 text-amber-300 border border-amber-500/30 rounded text-[11px] font-mono">
+                                      {t('coupon.badge', {
+                                        coupon: target.coupon,
+                                      })}
+                                    </span>
+                                  )}
                                   {target.notifyAvailable && (
                                     <span className="px-2 py-0.5 bg-green-500/15 text-green-400 border border-green-500/30 rounded text-[11px]">
                                       有货提醒

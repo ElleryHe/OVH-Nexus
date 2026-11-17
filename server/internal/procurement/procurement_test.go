@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -820,5 +822,312 @@ func TestQuickOrderMaxMonthlyPriceSetupFeeAndQuantity(t *testing.T) {
 	}
 	if successCount != 3 {
 		t.Fatalf("expected 3 successful PurchaseHistory entries for Quantity=3, got %d", successCount)
+	}
+}
+
+func TestUpfront12MonthlyEquivalentGuardAndFailFastCouponValidation(t *testing.T) {
+	var (
+		mu              sync.Mutex
+		serverPayloads  []map[string]any
+		optionPayloads  []map[string]any
+		couponsPosted   []string
+		rejectCoupon    atomic.Bool
+		summaryCalls    atomic.Int32
+		checkoutCalls   atomic.Int32
+		deletedCarts    atomic.Int32
+		cartCounter     atomic.Int32
+	)
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/auth/time":
+			_ = json.NewEncoder(w).Encode(time.Now().Unix())
+		case r.URL.Path == "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24sys02-v3",
+						"invoiceName": "SYS-2 | Intel Xeon-E 2136",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "SYS-2"}},
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "interval": 1, "price": 3799000000},
+							{"mode": "upfront12", "capacities": []string{"renew"}, "interval": 12, "commitment": 12, "price": 34647000000},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-2133-24sys02-v3", "addons": []string{"ram-32g-ecc-2133-24sys02-v3"}},
+							{"name": "storage", "default": "softraid-2x450nvme-24sys02-v3", "addons": []string{"softraid-2x450nvme-24sys02-v3"}},
+						},
+					},
+				},
+			})
+		case r.URL.Path == "/order/catalog/public/baremetalServers" || r.URL.Path == "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case r.URL.Path == "/dedicated/server/datacenter/availabilities":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":      "24sys02-v3.ram-32g-ecc-2133.softraid-2x450nvme",
+					"planCode": "24sys02-v3",
+					"memory":   "ram-32g-ecc-2133",
+					"storage":  "softraid-2x450nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart":
+			id := cartCounter.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"cartId": fmt.Sprintf("cart-promo-%d", id)})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/assign"):
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/eco"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			serverPayloads = append(serverPayloads, body)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"itemId": 101})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/item/101/configuration"):
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/eco/options"):
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"planCode": "ram-32g-ecc-2133-24sys02-v3", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "ram-32g-ecc-2133-24sys02-v3", "duration": "P12M", "pricingMode": "upfront12"},
+				{"planCode": "softraid-2x450nvme-24sys02-v3", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "softraid-2x450nvme-24sys02-v3", "duration": "P12M", "pricingMode": "upfront12"},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/eco/options"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			optionPayloads = append(optionPayloads, body)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/coupons"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			c, _ := body["coupon"].(string)
+			mu.Lock()
+			couponsPosted = append(couponsPosted, c)
+			mu.Unlock()
+			if rejectCoupon.Load() {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "Invalid or expired coupon code"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/summary"):
+			summaryCalls.Add(1)
+			// 12-month upfront discounted quote: €346.47 ex-VAT (€28.87/mo equivalent), free setup (€0.00).
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withTax":      map[string]any{"value": 415.76, "currencyCode": "EUR"},
+					"withoutTax":   map[string]any{"value": 346.47, "currencyCode": "EUR"},
+					"tax":          map[string]any{"value": 69.29, "currencyCode": "EUR"},
+					"currencyCode": "EUR",
+				},
+				"details": []map[string]any{
+					{
+						"detailType":  "DURATION",
+						"planCode":    "24sys02-v3",
+						"description": "SYS-2 12 months upfront",
+						"totalPrice":  map[string]any{"value": 433.09, "currencyCode": "EUR"},
+					},
+					{
+						"detailType":  "PROMOTION",
+						"planCode":    "BF26_ECO_20OFF",
+						"description": "Black Friday -20%",
+						"totalPrice":  map[string]any{"value": -86.62, "currencyCode": "EUR"},
+					},
+				},
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/order/cart/") && !strings.HasSuffix(r.URL.Path, "/checkout"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/order/cart/"):
+			deletedCarts.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/checkout"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"contracts": []any{}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/checkout"):
+			seq := checkoutCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"orderId": 5000 + seq,
+				"url":     "https://www.ovh.com/order/bill/5000",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+
+	env := newTestProcurementEnv(t, mockOVH)
+	opts := []string{"ram-32g-ecc-2133-24sys02-v3", "softraid-2x450nvme-24sys02-v3"}
+
+	// 1. Upfront12 with MaxMonthlyPrice=25.00 MUST block with 400 PRICE_ABOVE_LIMIT (€346.47 / 12 = €28.87 > €25.00).
+	lowCapRes, lowCapStatus, lowCapErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:          "acc-1",
+		PlanCode:           "24sys02-v3",
+		Datacenter:         "gra",
+		Options:            opts,
+		PricingMode:        "upfront12",
+		MaxMonthlyPrice:    25.00,
+		SkipDuplicateCheck: true,
+	})
+	if lowCapErr == nil || !errors.Is(lowCapErr, ErrPriceAboveLimit) || lowCapStatus != http.StatusBadRequest {
+		t.Fatalf("expected upfront12 with MaxMonthlyPrice=25.00 to fail with 400 ErrPriceAboveLimit, got status=%d err=%v res=%+v", lowCapStatus, lowCapErr, lowCapRes)
+	}
+	if lowCapRes.Code != "PRICE_ABOVE_LIMIT" || lowCapRes.ErrorCode != "PRICE_ABOVE_LIMIT" || lowCapRes.PeriodPrice != 346.47 || lowCapRes.MonthlyPrice != 28.87 || lowCapRes.PricingMode != "upfront12" || lowCapRes.Duration != "P12M" {
+		t.Fatalf("unexpected PRICE_ABOVE_LIMIT result fields: %+v", lowCapRes)
+	}
+
+	// 2. Seed an active "default" queue item with identical options, then verify QuickOrder with pricingMode="upfront12"
+	//    is NOT treated as a duplicate AND succeeds when MaxMonthlyPrice=30.00 (€28.87 <= €30.00) + valid coupon "BF26"!
+	defaultQueue, err := env.svc.CreateQueueTask(context.Background(), CreateQueueRequest{
+		AccountID:   "acc-1",
+		PlanCode:    "24sys02-v3",
+		Datacenters: []string{"gra"},
+		Options:     opts,
+		PricingMode: "default",
+	})
+	if err != nil {
+		t.Fatalf("seed default queue item: %v", err)
+	}
+	defaultQueue.Status = "paused"
+	_, _ = env.st.UpdateQueueItem(context.Background(), *defaultQueue)
+
+	okRes, okStatus, okErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:       "acc-1",
+		PlanCode:        "24sys02-v3",
+		Datacenter:      "gra",
+		Options:         opts,
+		PricingMode:     "upfront12",
+		Coupon:          "BF26",
+		MaxMonthlyPrice: 30.00,
+	})
+	if okErr != nil || okStatus != http.StatusOK || okRes == nil || !okRes.Success {
+		t.Fatalf("expected upfront12 QuickOrder (28.87 <= 30.00) to succeed, got status=%d err=%v res=%+v", okStatus, okErr, okRes)
+	}
+	if okRes.PeriodPrice != 346.47 || okRes.MonthlyPrice != 28.87 || okRes.SetupFee != 0 || okRes.PricingMode != "upfront12" || okRes.Duration != "P12M" || okRes.Coupon != "BF26" {
+		t.Fatalf("unexpected upfront12 QuickOrderResult fields: %+v", okRes)
+	}
+	if okRes.Item == nil || okRes.Item.PricingMode != "upfront12" || okRes.Item.Duration != "P12M" || okRes.Item.Coupon != "BF26" {
+		t.Fatalf("expected QueueItem to persist upfront12/P12M/BF26, got %+v", okRes.Item)
+	}
+
+	// Verify cart creation & option payloads used pricingMode="upfront12" and duration="P12M", and posted coupon "BF26".
+	mu.Lock()
+	if len(serverPayloads) == 0 || serverPayloads[len(serverPayloads)-1]["pricingMode"] != "upfront12" || serverPayloads[len(serverPayloads)-1]["duration"] != "P12M" {
+		t.Fatalf("expected server cart payload with pricingMode=upfront12 & duration=P12M, got %+v", serverPayloads)
+	}
+	if len(optionPayloads) == 0 || optionPayloads[len(optionPayloads)-1]["pricingMode"] != "upfront12" || optionPayloads[len(optionPayloads)-1]["duration"] != "P12M" {
+		t.Fatalf("expected option cart payload with pricingMode=upfront12 & duration=P12M, got %+v", optionPayloads)
+	}
+	if len(couponsPosted) == 0 || couponsPosted[len(couponsPosted)-1] != "BF26" {
+		t.Fatalf("expected POST /coupons with BF26, got %+v", couponsPosted)
+	}
+	mu.Unlock()
+
+	// Duplicate upfront12 QuickOrder while active MUST return 429 DUPLICATE_QUEUE_TASK.
+	dupRes, dupStatus, _ := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:   "acc-1",
+		PlanCode:    "24sys02-v3",
+		Datacenter:  "gra",
+		Options:     opts,
+		PricingMode: "upfront12",
+		SkipPriceCheck: true,
+	})
+	if dupStatus != http.StatusTooManyRequests || dupRes == nil || dupRes.Code != "DUPLICATE_QUEUE_TASK" {
+		t.Fatalf("expected duplicate upfront12 QuickOrder to return 429 DUPLICATE_QUEUE_TASK, got status=%d res=%+v", dupStatus, dupRes)
+	}
+
+	// Execute queued upfront12 task -> checkout succeeds and records upfront12 history!
+	env.svc.ProcessDueTasksOnce(context.Background())
+	if checkoutCalls.Load() != 1 {
+		t.Fatalf("expected 1 checkout for upfront12 task, got %d", checkoutCalls.Load())
+	}
+	doneTask, _ := env.st.GetQueueItem(context.Background(), okRes.ID)
+	if doneTask == nil || doneTask.Status != "completed" || doneTask.Purchased != 1 {
+		t.Fatalf("expected upfront12 queue task completed, got %+v", doneTask)
+	}
+
+	// 3. Strict Fail-Fast Coupon Validation: when OVH returns 400 on POST /order/cart/{cartId}/coupons,
+	//    BOTH POST /api/orders/quick-order (QuickOrder) AND purchaseServer MUST immediately delete the cart
+	//    and abort with 400 INVALID_COUPON without calling /summary or /checkout!
+	rejectCoupon.Store(true)
+	beforeSummaries := summaryCalls.Load()
+	beforeCheckouts := checkoutCalls.Load()
+	beforeDeletes := deletedCarts.Load()
+	beforeAlerts := env.tgPosts.Load()
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/api/orders/quick-order", strings.NewReader(`{
+		"planCode": "24sys02-v3",
+		"datacenter": "gra",
+		"options": ["ram-32g-ecc-2133-24sys02-v3", "softraid-2x450nvme-24sys02-v3"],
+		"pricingMode": "upfront12",
+		"coupon": "BAD_COUPON",
+		"skipDuplicateCheck": true
+	}`))
+	httpRec := httptest.NewRecorder()
+	env.router.ServeHTTP(httpRec, httpReq)
+	if httpRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 INVALID_COUPON on POST /api/orders/quick-order, got %d %s", httpRec.Code, httpRec.Body.String())
+	}
+	var badBody map[string]any
+	_ = json.Unmarshal(httpRec.Body.Bytes(), &badBody)
+	if badBody["code"] != "INVALID_COUPON" || badBody["errorCode"] != "INVALID_COUPON" {
+		t.Fatalf("expected code=INVALID_COUPON & errorCode=INVALID_COUPON, got %+v", badBody)
+	}
+	if summaryCalls.Load() != beforeSummaries {
+		t.Fatalf("expected QuickOrder NOT to call /summary after rejected coupon (before=%d after=%d)", beforeSummaries, summaryCalls.Load())
+	}
+	if checkoutCalls.Load() != beforeCheckouts {
+		t.Fatalf("expected QuickOrder NOT to call /checkout after rejected coupon (before=%d after=%d)", beforeCheckouts, checkoutCalls.Load())
+	}
+	if deletedCarts.Load() <= beforeDeletes {
+		t.Fatalf("expected cart to be deleted immediately on rejected coupon")
+	}
+	if env.tgPosts.Load() <= beforeAlerts {
+		t.Fatalf("expected order.failed notification on rejected coupon")
+	}
+
+	// Also verify purchaseServer / ProcessDueTasksOnce fail-fast on rejected coupon without calling /checkout!
+	badQueueReq := httptest.NewRequest(http.MethodPost, "/api/queue", strings.NewReader(`{
+		"planCode": "24sys02-v3",
+		"datacenters": ["gra"],
+		"options": ["ram-32g-ecc-2133-24sys02-v3", "softraid-2x450nvme-24sys02-v3"],
+		"pricingMode": "upfront12",
+		"coupon": "EXPIRED_BF",
+		"maxRetryCount": 10
+	}`))
+	badQueueRec := httptest.NewRecorder()
+	env.router.ServeHTTP(badQueueRec, badQueueReq)
+	if badQueueRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/queue failed: %d %s", badQueueRec.Code, badQueueRec.Body.String())
+	}
+	var createdBadQ struct {
+		ID   string          `json:"id"`
+		Item store.QueueItem `json:"item"`
+	}
+	_ = json.Unmarshal(badQueueRec.Body.Bytes(), &createdBadQ)
+	if createdBadQ.Item.PricingMode != "upfront12" || createdBadQ.Item.Duration != "P12M" || createdBadQ.Item.Coupon != "EXPIRED_BF" {
+		t.Fatalf("expected POST /api/queue to persist upfront12/P12M/EXPIRED_BF, got %+v", createdBadQ.Item)
+	}
+
+	beforeSummaries = summaryCalls.Load()
+	beforeCheckouts = checkoutCalls.Load()
+	env.svc.ProcessDueTasksOnce(context.Background())
+	if summaryCalls.Load() != beforeSummaries || checkoutCalls.Load() != beforeCheckouts {
+		t.Fatalf("expected purchaseServer NOT to call /summary or /checkout on rejected coupon (summaries %d->%d, checkouts %d->%d)",
+			beforeSummaries, summaryCalls.Load(), beforeCheckouts, checkoutCalls.Load())
+	}
+	failedBadQ, _ := env.st.GetQueueItem(context.Background(), createdBadQ.ID)
+	if failedBadQ == nil || failedBadQ.Status != "failed" || !strings.Contains(failedBadQ.LastError, "INVALID_COUPON") {
+		t.Fatalf("expected queue task with rejected coupon to fail-fast with INVALID_COUPON, got %+v", failedBadQ)
+	}
+
+	couponWarns, _ := env.st.QueryLogs(context.Background(), "WARNING", "queue", "rejected cart coupon", 10)
+	if len(couponWarns) < 2 {
+		t.Fatalf("expected WARNING logs for rejected coupons in both QuickOrder and purchaseServer, got %d", len(couponWarns))
 	}
 }

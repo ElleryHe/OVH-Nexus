@@ -25,6 +25,7 @@ const THEME_OPTIONS: { mode: ThemeMode; icon: any; key: string }[] = [
 
 const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
   const [state, setState] = useState<GateState>('checking');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [requireTotp, setRequireTotp] = useState(false);
   const [totpCode, setTotpCode] = useState('');
@@ -64,7 +65,7 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!password) {
+    if (!username.trim() || !password) {
       setError(t('auth.error.empty'));
       return;
     }
@@ -75,10 +76,13 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
     setBusy(true);
     setError('');
     try {
-      const payload: Record<string, string> = { password };
-      if (requireTotp && totpCode.trim()) {
-        payload.totpCode = totpCode.trim();
-      }
+      const payload: Record<string, string> = {
+        username: username.trim(),
+        password,
+        ...(requireTotp && totpCode.trim()
+          ? { totpCode: totpCode.trim() }
+          : {}),
+      };
       const res = await authApi.post('/auth/login', payload);
       if (res.data?.requireTotp && !res.data?.authenticated) {
         setRequireTotp(true);
@@ -160,11 +164,11 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
         <form
           onSubmit={submit}
           className="w-full max-w-md cyber-panel p-8 space-y-6 shadow-lg"
-          autoComplete="off"
+          autoComplete="on"
         >
           <div className="flex flex-col items-center text-center space-y-2">
             <div className="mb-1">
-              <NexusLogo size={52} className="shadow-md" />
+              <NexusLogo size={56} />
             </div>
             <h1 className="text-2xl font-bold tracking-tight text-cyber-text">
               {t('brand.name')}
@@ -178,20 +182,68 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
           </div>
 
           {!requireTotp ? (
-            <div className="space-y-2">
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="cyber-input w-full py-2.5"
-                placeholder={t('auth.placeholder')}
-                autoFocus
-                autoComplete="current-password"
-              />
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label
+                  htmlFor="username"
+                  className="block text-xs font-medium text-cyber-muted"
+                >
+                  {t('auth.usernameLabel')}
+                </label>
+                <input
+                  type="text"
+                  id="username"
+                  name="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="cyber-input w-full py-2.5"
+                  placeholder={t('auth.usernamePlaceholder')}
+                  autoFocus
+                  autoComplete="username"
+                  spellCheck={false}
+                  autoCapitalize="none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label
+                  htmlFor="password"
+                  className="block text-xs font-medium text-cyber-muted"
+                >
+                  {t('auth.passwordLabel')}
+                </label>
+                <input
+                  type="password"
+                  id="password"
+                  name="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="cyber-input w-full py-2.5"
+                  placeholder={t('auth.placeholder')}
+                  autoComplete="current-password"
+                />
+              </div>
               {error && <p className="text-xs text-rose-500">{error}</p>}
             </div>
           ) : (
             <div className="space-y-3">
+              <input
+                type="text"
+                name="username"
+                value={username}
+                autoComplete="username"
+                readOnly
+                className="sr-only"
+                tabIndex={-1}
+              />
+              <input
+                type="password"
+                name="password"
+                value={password}
+                autoComplete="current-password"
+                readOnly
+                className="sr-only"
+                tabIndex={-1}
+              />
               <div className="flex items-center justify-between text-xs text-cyber-accent bg-cyber-accent/10 border border-cyber-accent/25 rounded-md px-3 py-2">
                 <span className="inline-flex items-center gap-1.5 font-semibold">
                   <ShieldCheck size={14} />

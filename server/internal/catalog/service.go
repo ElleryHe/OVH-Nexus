@@ -31,19 +31,53 @@ const (
 
 var safeFileRegex = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
+// PlanPricingMode describes a single billing/commitment mode (e.g. "default", "upfront12", "upfront24", "degressivity12", "degressivity24")
+// including recurring period price, monthly equivalent price, installation/setup fee, and any active catalog promotion.
+type PlanPricingMode struct {
+	Mode                   string  `json:"mode"`                   // "default", "upfront12", "upfront24", "degressivity12", "degressivity24"
+	Duration               string  `json:"duration"`               // "P1M", "P12M", "P24M"
+	IntervalMonths         int     `json:"intervalMonths"`         // 1, 12, 24
+	CommitmentMonths       int     `json:"commitmentMonths"`       // 0, 12, 24
+	PeriodPrice            float64 `json:"periodPrice"`            // recurring price for the interval AFTER promo
+	OriginalPeriodPrice    float64 `json:"originalPeriodPrice"`    // recurring price for the interval BEFORE promo
+	MonthlyEquivalentPrice float64 `json:"monthlyEquivalentPrice"` // roundCents(periodPrice / intervalMonths)
+	OriginalMonthlyPrice   float64 `json:"originalMonthlyPrice"`   // roundCents(originalPeriodPrice / intervalMonths)
+	SetupFee               float64 `json:"setupFee"`               // installation fee AFTER promo
+	OriginalSetupFee       float64 `json:"originalSetupFee"`       // installation fee BEFORE promo
+	FreeSetup              bool    `json:"freeSetup"`              // setupFee == 0
+	HasPromo               bool    `json:"hasPromo"`               // true if recurring promo or setup promo is active
+	PromoCode              string  `json:"promoCode,omitempty"`    // e.g. "BF26_ECO_20OFF" or "BF26_OVH_FREESETUP"
+	PromoBadge             string  `json:"promoBadge,omitempty"`   // e.g. "-20%", "FREE SETUP", "-20% + FREE SETUP"
+	PromoDescription       string  `json:"promoDescription,omitempty"`
+	PromoValue             float64 `json:"promoValue,omitempty"`
+	PromoType              string  `json:"promoType,omitempty"`
+	PromoDuration          int     `json:"promoDuration,omitempty"`
+	PromoEndDate           string  `json:"promoEndDate,omitempty"`
+}
+
 // ServerOption represents a default or selectable hardware addon option for a server plan.
 type ServerOption struct {
-	Label                 string   `json:"label"`
-	Value                 string   `json:"value"`
-	Family                string   `json:"family,omitempty"`
-	IsDefault             bool     `json:"isDefault"`
-	ConfigKey             string   `json:"configKey,omitempty"`
-	Options               []string `json:"options,omitempty"`
-	EstimatedMonthlyPrice float64  `json:"estimatedMonthlyPrice,omitempty"`
-	Price                 float64  `json:"price,omitempty"`
-	Currency              string   `json:"currency,omitempty"`
-	Memory                string   `json:"memory,omitempty"`
-	Storage               string   `json:"storage,omitempty"`
+	Label                 string            `json:"label"`
+	Value                 string            `json:"value"`
+	Family                string            `json:"family,omitempty"`
+	IsDefault             bool              `json:"isDefault"`
+	ConfigKey             string            `json:"configKey,omitempty"`
+	Options               []string          `json:"options,omitempty"`
+	EstimatedMonthlyPrice float64           `json:"estimatedMonthlyPrice,omitempty"`
+	Price                 float64           `json:"price,omitempty"`
+	OriginalPrice         float64           `json:"originalPrice,omitempty"`
+	OriginalMonthlyPrice  float64           `json:"originalMonthlyPrice,omitempty"`
+	SetupFee              float64           `json:"setupFee"`
+	OriginalSetupFee      float64           `json:"originalSetupFee,omitempty"`
+	FreeSetup             bool              `json:"freeSetup"`
+	HasPromo              bool              `json:"hasPromo"`
+	PromoCode             string            `json:"promoCode,omitempty"`
+	PromoBadge            string            `json:"promoBadge,omitempty"`
+	PromoDescription      string            `json:"promoDescription,omitempty"`
+	PricingModes          []PlanPricingMode `json:"pricingModes,omitempty"`
+	Currency              string            `json:"currency,omitempty"`
+	Memory                string            `json:"memory,omitempty"`
+	Storage               string            `json:"storage,omitempty"`
 }
 
 // PlanConfigOption aliases ServerOption for configuration-level option metadata.
@@ -63,6 +97,16 @@ type PlanConfigItem struct {
 	IsDefault             bool              `json:"isDefault"`
 	EstimatedMonthlyPrice float64           `json:"estimatedMonthlyPrice"`
 	Price                 float64           `json:"price"`
+	OriginalPrice         float64           `json:"originalPrice"`
+	OriginalMonthlyPrice  float64           `json:"originalMonthlyPrice"`
+	SetupFee              float64           `json:"setupFee"`
+	OriginalSetupFee      float64           `json:"originalSetupFee"`
+	FreeSetup             bool              `json:"freeSetup"`
+	HasPromo              bool              `json:"hasPromo"`
+	PromoCode             string            `json:"promoCode,omitempty"`
+	PromoBadge            string            `json:"promoBadge,omitempty"`
+	PromoDescription      string            `json:"promoDescription,omitempty"`
+	PricingModes          []PlanPricingMode `json:"pricingModes,omitempty"`
 	Currency              string            `json:"currency"`
 	Datacenters           map[string]string `json:"datacenters"`
 	InStockCount          int               `json:"inStockCount"`
@@ -70,17 +114,27 @@ type PlanConfigItem struct {
 
 // PlanConfigsResponse is returned by GET /api/catalog/plans/{planCode}/configs.
 type PlanConfigsResponse struct {
-	PlanCode         string           `json:"planCode"`
-	Name             string           `json:"name"`
-	Range            string           `json:"range,omitempty"`
-	CPU              string           `json:"cpu,omitempty"`
-	ListingState     string           `json:"listingState"`
-	Orderable        bool             `json:"orderable"`
-	BasePrice        float64          `json:"basePrice"`
-	StartingPrice    float64          `json:"startingPrice"`
-	Currency         string           `json:"currency"`
-	DefaultConfigKey string           `json:"defaultConfigKey"`
-	Configs          []PlanConfigItem `json:"configs"`
+	PlanCode             string            `json:"planCode"`
+	Name                 string            `json:"name"`
+	Range                string            `json:"range,omitempty"`
+	CPU                  string            `json:"cpu,omitempty"`
+	ListingState         string            `json:"listingState"`
+	Orderable            bool              `json:"orderable"`
+	BasePrice            float64           `json:"basePrice"`
+	StartingPrice        float64           `json:"startingPrice"`
+	OriginalPrice        float64           `json:"originalPrice"`
+	OriginalMonthlyPrice float64           `json:"originalMonthlyPrice"`
+	SetupFee             float64           `json:"setupFee"`
+	OriginalSetupFee     float64           `json:"originalSetupFee"`
+	FreeSetup            bool              `json:"freeSetup"`
+	HasPromo             bool              `json:"hasPromo"`
+	PromoCode            string            `json:"promoCode,omitempty"`
+	PromoBadge           string            `json:"promoBadge,omitempty"`
+	PromoDescription     string            `json:"promoDescription,omitempty"`
+	PricingModes         []PlanPricingMode `json:"pricingModes,omitempty"`
+	Currency             string            `json:"currency"`
+	DefaultConfigKey     string            `json:"defaultConfigKey"`
+	Configs              []PlanConfigItem  `json:"configs"`
 }
 
 // DatacenterAvailability represents one datacenter's stock status for a server plan.
@@ -95,29 +149,39 @@ type DatacenterAvailability struct {
 
 // ServerPlan represents an enriched bare-metal server plan returned by GET /api/servers and GET /api/catalog/plans.
 type ServerPlan struct {
-	PlanCode         string                   `json:"planCode"`
-	Name             string                   `json:"name"`
-	Description      string                   `json:"description"`
-	Range            string                   `json:"range,omitempty"`
-	CPU              string                   `json:"cpu"`
-	Memory           string                   `json:"memory"`
-	Storage          string                   `json:"storage"`
-	Bandwidth        string                   `json:"bandwidth"`
-	VRackBandwidth   string                   `json:"vrackBandwidth"`
-	MonthlyPrice     *float64                 `json:"monthlyPrice,omitempty"`
-	StartingPrice    float64                  `json:"startingPrice"`
-	Price            float64                  `json:"price,omitempty"`
-	Currency         string                   `json:"currency,omitempty"`
-	DefaultConfigKey string                   `json:"defaultConfigKey"`
-	CatalogSource    string                   `json:"catalogSource,omitempty"`
-	ListingState     string                   `json:"listingState"`
-	ListedAt         string                   `json:"listedAt,omitempty"`
-	Orderable        bool                     `json:"orderable"`
-	Generation       int                      `json:"generation,omitempty"`
-	Datacenters      []DatacenterAvailability `json:"datacenters"`
-	DefaultOptions   []ServerOption           `json:"defaultOptions"`
-	AvailableOptions []ServerOption           `json:"availableOptions"`
-	Configs          []PlanConfigItem         `json:"configs,omitempty"`
+	PlanCode             string                   `json:"planCode"`
+	Name                 string                   `json:"name"`
+	Description          string                   `json:"description"`
+	Range                string                   `json:"range,omitempty"`
+	CPU                  string                   `json:"cpu"`
+	Memory               string                   `json:"memory"`
+	Storage              string                   `json:"storage"`
+	Bandwidth            string                   `json:"bandwidth"`
+	VRackBandwidth       string                   `json:"vrackBandwidth"`
+	MonthlyPrice         *float64                 `json:"monthlyPrice,omitempty"`
+	StartingPrice        float64                  `json:"startingPrice"`
+	Price                float64                  `json:"price,omitempty"`
+	OriginalPrice        float64                  `json:"originalPrice"`
+	OriginalMonthlyPrice float64                  `json:"originalMonthlyPrice"`
+	SetupFee             float64                  `json:"setupFee"`
+	OriginalSetupFee     float64                  `json:"originalSetupFee"`
+	FreeSetup            bool                     `json:"freeSetup"`
+	HasPromo             bool                     `json:"hasPromo"`
+	PromoCode            string                   `json:"promoCode,omitempty"`
+	PromoBadge           string                   `json:"promoBadge,omitempty"`
+	PromoDescription     string                   `json:"promoDescription,omitempty"`
+	PricingModes         []PlanPricingMode        `json:"pricingModes,omitempty"`
+	Currency             string                   `json:"currency,omitempty"`
+	DefaultConfigKey     string                   `json:"defaultConfigKey"`
+	CatalogSource        string                   `json:"catalogSource,omitempty"`
+	ListingState         string                   `json:"listingState"`
+	ListedAt             string                   `json:"listedAt,omitempty"`
+	Orderable            bool                     `json:"orderable"`
+	Generation           int                      `json:"generation,omitempty"`
+	Datacenters          []DatacenterAvailability `json:"datacenters"`
+	DefaultOptions       []ServerOption           `json:"defaultOptions"`
+	AvailableOptions     []ServerOption           `json:"availableOptions"`
+	Configs              []PlanConfigItem         `json:"configs,omitempty"`
 }
 
 // CacheInfo describes backend server list cache freshness for ServersPage and CacheManager.
@@ -158,33 +222,45 @@ type CatalogPlanSpecs struct {
 
 // CatalogPlanEntry holds merged dictionary data for a single server planCode.
 type CatalogPlanEntry struct {
-	PlanCode            string             `json:"planCode,omitempty"`
-	Name                string             `json:"name"`
-	Description         string             `json:"description,omitempty"`
-	Product             string             `json:"product,omitempty"`
-	Range               string             `json:"range,omitempty"`
-	CPU                 *CPUInfo           `json:"cpu,omitempty"`
-	Price               *float64           `json:"price,omitempty"`
-	Currency            string             `json:"currency,omitempty"`
-	AddonPrices         map[string]float64 `json:"addonPrices,omitempty"`
-	CatalogSource       string             `json:"catalogSource,omitempty"`
-	DefaultSpecs        CatalogPlanSpecs   `json:"defaultSpecs,omitempty"`
-	DefaultMemory       string             `json:"defaultMemory,omitempty"`
-	DefaultStorage      string             `json:"defaultStorage,omitempty"`
-	DefaultConfigKey    string             `json:"defaultConfigKey,omitempty"`
-	DefaultAddonOptions []string           `json:"defaultAddonOptions,omitempty"`
-	DefaultOptions      []ServerOption     `json:"defaultOptions,omitempty"`
-	AvailableOptions    []ServerOption     `json:"availableOptions,omitempty"`
+	PlanCode             string                                `json:"planCode,omitempty"`
+	Name                 string                                `json:"name"`
+	Description          string                                `json:"description,omitempty"`
+	Product              string                                `json:"product,omitempty"`
+	Range                string                                `json:"range,omitempty"`
+	CPU                  *CPUInfo                              `json:"cpu,omitempty"`
+	Price                *float64                              `json:"price,omitempty"`
+	OriginalPrice        float64                               `json:"originalPrice"`
+	OriginalMonthlyPrice float64                               `json:"originalMonthlyPrice"`
+	SetupFee             float64                               `json:"setupFee"`
+	OriginalSetupFee     float64                               `json:"originalSetupFee"`
+	FreeSetup            bool                                  `json:"freeSetup"`
+	HasPromo             bool                                  `json:"hasPromo"`
+	PromoCode            string                                `json:"promoCode,omitempty"`
+	PromoBadge           string                                `json:"promoBadge,omitempty"`
+	PromoDescription     string                                `json:"promoDescription,omitempty"`
+	PricingModes         []PlanPricingMode                     `json:"pricingModes,omitempty"`
+	Currency             string                                `json:"currency,omitempty"`
+	AddonPrices          map[string]float64                    `json:"addonPrices,omitempty"`
+	AddonModePrices      map[string]map[string]PlanPricingMode `json:"addonModePrices,omitempty"`
+	CatalogSource        string                                `json:"catalogSource,omitempty"`
+	DefaultSpecs         CatalogPlanSpecs                      `json:"defaultSpecs,omitempty"`
+	DefaultMemory        string                                `json:"defaultMemory,omitempty"`
+	DefaultStorage       string                                `json:"defaultStorage,omitempty"`
+	DefaultConfigKey     string                                `json:"defaultConfigKey,omitempty"`
+	DefaultAddonOptions  []string                              `json:"defaultAddonOptions,omitempty"`
+	DefaultOptions       []ServerOption                        `json:"defaultOptions,omitempty"`
+	AvailableOptions     []ServerOption                        `json:"availableOptions,omitempty"`
 }
 
 // CatalogDictionary matches GET /api/catalog/dictionary consumed by src/utils/hardwareFormat.ts.
 type CatalogDictionary struct {
-	UpdatedAt   int64                       `json:"updatedAt"`
-	Currency    string                      `json:"currency,omitempty"`
-	Plans       map[string]CatalogPlanEntry `json:"plans"`
-	RealPlans   map[string]CatalogPlanEntry `json:"realPlans,omitempty"`
-	AddonPrices map[string]float64          `json:"addonPrices,omitempty"`
-	Options     map[string]any              `json:"options"`
+	UpdatedAt       int64                                 `json:"updatedAt"`
+	Currency        string                                `json:"currency,omitempty"`
+	Plans           map[string]CatalogPlanEntry           `json:"plans"`
+	RealPlans       map[string]CatalogPlanEntry           `json:"realPlans,omitempty"`
+	AddonPrices     map[string]float64                    `json:"addonPrices,omitempty"`
+	AddonModePrices map[string]map[string]PlanPricingMode `json:"addonModePrices,omitempty"`
+	Options         map[string]any                        `json:"options"`
 }
 
 // RawAvailabilityDC represents one datacenter entry in OVH /dedicated/server/datacenter/availabilities.
@@ -208,6 +284,16 @@ type RawAvailabilityItem struct {
 	IsDefault             bool                `json:"isDefault,omitempty"`
 	EstimatedMonthlyPrice float64             `json:"estimatedMonthlyPrice,omitempty"`
 	Price                 float64             `json:"price,omitempty"`
+	OriginalPrice         float64             `json:"originalPrice,omitempty"`
+	OriginalMonthlyPrice  float64             `json:"originalMonthlyPrice,omitempty"`
+	SetupFee              float64             `json:"setupFee"`
+	OriginalSetupFee      float64             `json:"originalSetupFee,omitempty"`
+	FreeSetup             bool                `json:"freeSetup"`
+	HasPromo              bool                `json:"hasPromo"`
+	PromoCode             string              `json:"promoCode,omitempty"`
+	PromoBadge            string              `json:"promoBadge,omitempty"`
+	PromoDescription      string              `json:"promoDescription,omitempty"`
+	PricingModes          []PlanPricingMode   `json:"pricingModes,omitempty"`
 	Currency              string              `json:"currency,omitempty"`
 	ListingState          string              `json:"listingState,omitempty"`
 	CatalogSource         string              `json:"catalogSource,omitempty"`
@@ -231,6 +317,16 @@ type AvailabilityItem struct {
 	IsDefault             bool                `json:"isDefault"`
 	EstimatedMonthlyPrice float64             `json:"estimatedMonthlyPrice"`
 	Price                 float64             `json:"price"`
+	OriginalPrice         float64             `json:"originalPrice"`
+	OriginalMonthlyPrice  float64             `json:"originalMonthlyPrice"`
+	SetupFee              float64             `json:"setupFee"`
+	OriginalSetupFee      float64             `json:"originalSetupFee"`
+	FreeSetup             bool                `json:"freeSetup"`
+	HasPromo              bool                `json:"hasPromo"`
+	PromoCode             string              `json:"promoCode,omitempty"`
+	PromoBadge            string              `json:"promoBadge,omitempty"`
+	PromoDescription      string              `json:"promoDescription,omitempty"`
+	PricingModes          []PlanPricingMode   `json:"pricingModes,omitempty"`
 	Currency              string              `json:"currency"`
 	ListingState          string              `json:"listingState,omitempty"`
 	CatalogSource         string              `json:"catalogSource,omitempty"`
@@ -254,6 +350,16 @@ type ConfigAvailability struct {
 	IsDefault             bool              `json:"isDefault"`
 	EstimatedMonthlyPrice float64           `json:"estimatedMonthlyPrice"`
 	Price                 float64           `json:"price,omitempty"`
+	OriginalPrice         float64           `json:"originalPrice"`
+	OriginalMonthlyPrice  float64           `json:"originalMonthlyPrice"`
+	SetupFee              float64           `json:"setupFee"`
+	OriginalSetupFee      float64           `json:"originalSetupFee"`
+	FreeSetup             bool              `json:"freeSetup"`
+	HasPromo              bool              `json:"hasPromo"`
+	PromoCode             string            `json:"promoCode,omitempty"`
+	PromoBadge            string            `json:"promoBadge,omitempty"`
+	PromoDescription      string            `json:"promoDescription,omitempty"`
+	PricingModes          []PlanPricingMode `json:"pricingModes,omitempty"`
 	Currency              string            `json:"currency,omitempty"`
 	ListingState          string            `json:"listingState,omitempty"`
 	Orderable             bool              `json:"orderable"`
@@ -278,20 +384,26 @@ type ServerPriceItem struct {
 
 // ServerPricePayload holds cart summary and item breakdown pricing.
 type ServerPricePayload struct {
-	PricingMode string            `json:"pricingMode"`
-	Prices      ServerPriceValues `json:"prices"`
-	Items       []ServerPriceItem `json:"items"`
+	PricingMode                 string            `json:"pricingMode"`
+	Duration                    string            `json:"duration,omitempty"`
+	IntervalMonths              int               `json:"intervalMonths,omitempty"`
+	MonthlyEquivalentWithoutTax *float64          `json:"monthlyEquivalentWithoutTax,omitempty"`
+	Prices                      ServerPriceValues `json:"prices"`
+	Items                       []ServerPriceItem `json:"items"`
 }
 
 // ServerPriceResult matches POST /api/servers/{planCode}/price.
 type ServerPriceResult struct {
-	Success    bool                `json:"success"`
-	Code       string              `json:"code,omitempty"`
-	PlanCode   string              `json:"planCode,omitempty"`
-	Datacenter string              `json:"datacenter,omitempty"`
-	Options    []string            `json:"options,omitempty"`
-	Price      *ServerPricePayload `json:"price"`
-	Error      string              `json:"error,omitempty"`
+	Success     bool                `json:"success"`
+	Code        string              `json:"code,omitempty"`
+	PlanCode    string              `json:"planCode,omitempty"`
+	Datacenter  string              `json:"datacenter,omitempty"`
+	Options     []string            `json:"options,omitempty"`
+	PricingMode string              `json:"pricingMode,omitempty"`
+	Duration    string              `json:"duration,omitempty"`
+	Coupon      string              `json:"coupon,omitempty"`
+	Price       *ServerPricePayload `json:"price"`
+	Error       string              `json:"error,omitempty"`
 }
 
 // VPSDatacenterStatus represents one datacenter inside /vps/order/rule/datacenter.
@@ -611,12 +723,13 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			return &stale, nil
 		}
 		empty := &CatalogDictionary{
-			UpdatedAt:   now,
-			Currency:    "EUR",
-			Plans:       make(map[string]CatalogPlanEntry),
-			RealPlans:   make(map[string]CatalogPlanEntry),
-			AddonPrices: make(map[string]float64),
-			Options:     make(map[string]any),
+			UpdatedAt:       now,
+			Currency:        "EUR",
+			Plans:           make(map[string]CatalogPlanEntry),
+			RealPlans:       make(map[string]CatalogPlanEntry),
+			AddonPrices:     make(map[string]float64),
+			AddonModePrices: make(map[string]map[string]PlanPricingMode),
+			Options:         make(map[string]any),
 		}
 		return empty, nil
 	})
@@ -685,12 +798,13 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 			return &stale, nil
 		}
 		empty := &CatalogDictionary{
-			UpdatedAt:   now,
-			Currency:    "EUR",
-			Plans:       make(map[string]CatalogPlanEntry),
-			RealPlans:   make(map[string]CatalogPlanEntry),
-			AddonPrices: make(map[string]float64),
-			Options:     make(map[string]any),
+			UpdatedAt:       now,
+			Currency:        "EUR",
+			Plans:           make(map[string]CatalogPlanEntry),
+			RealPlans:       make(map[string]CatalogPlanEntry),
+			AddonPrices:     make(map[string]float64),
+			AddonModePrices: make(map[string]map[string]PlanPricingMode),
+			Options:         make(map[string]any),
 		}
 		return empty, nil
 	})
@@ -787,10 +901,12 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 	addonsPriceByCode := make(map[string]struct {
 		product string
 		price   *float64
+		modes   map[string]PlanPricingMode
 	})
 	plansMap := make(map[string]CatalogPlanEntry)
 	realPlansMap := make(map[string]CatalogPlanEntry)
 	globalAddonPrices := make(map[string]float64)
+	globalAddonModePrices := make(map[string]map[string]PlanPricingMode)
 	optionsMap := make(map[string]any)
 	defaultCurrency := "EUR"
 
@@ -820,16 +936,29 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 				continue
 			}
 			prodCode := strings.TrimSpace(strFromMap(rawAddon, "product"))
-			pr := extractMonthlyPrice(rawAddon)
+			parsedModes := ParsePlanPricingModes(rawAddon)
+			modesMap := make(map[string]PlanPricingMode, len(parsedModes))
+			for _, m := range parsedModes {
+				modesMap[m.Mode] = m
+			}
+			pr := extractMonthlyPriceFromModes(rawAddon, parsedModes)
 			addonsPriceByCode[ac] = struct {
 				product string
 				price   *float64
-			}{product: prodCode, price: pr}
+				modes   map[string]PlanPricingMode
+			}{product: prodCode, price: pr, modes: modesMap}
 			if pr != nil && src.source != "vps" {
 				globalAddonPrices[ac] = *pr
+				if len(modesMap) > 0 {
+					globalAddonModePrices[ac] = copyPricingModesMap(modesMap)
+				}
 				if prodCode != "" {
-					if cur, exists := globalAddonPrices[prodCode]; !exists || (cur == 0 && *pr > 0) {
+					cur, exists := globalAddonPrices[prodCode]
+					if !exists || (cur == 0 && *pr > 0) {
 						globalAddonPrices[prodCode] = *pr
+						if len(modesMap) > 0 {
+							globalAddonModePrices[prodCode] = copyPricingModesMap(modesMap)
+						}
 					}
 				}
 			}
@@ -935,7 +1064,9 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 			normRange := ClassifyProductRange(displayName, rawRange, planCode)
 			baseCode, regionInfo := ParsePlanRegion(planCode)
 			noVerCode := StripPlanVersion(planCode)
-			basePrice := extractMonthlyPrice(plan)
+			pricingModes := ParsePlanPricingModes(plan)
+			planSum := summarizePricingModes(pricingModes)
+			basePrice := extractMonthlyPriceFromModes(plan, pricingModes)
 			basePriceVal := 0.0
 			if basePrice != nil {
 				basePriceVal = *basePrice
@@ -943,8 +1074,16 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 			if basePrice != nil && src.source != "vps" {
 				globalAddonPrices[planCode] = *basePrice
 			}
+			if len(pricingModes) > 0 && src.source != "vps" {
+				pmMap := make(map[string]PlanPricingMode, len(pricingModes))
+				for _, m := range pricingModes {
+					pmMap[m.Mode] = m
+				}
+				globalAddonModePrices[planCode] = pmMap
+			}
 
 			addonPrices := make(map[string]float64)
+			addonModePrices := make(map[string]map[string]PlanPricingMode)
 			var defMemCode, defStoCode, defSysStoCode, defGPUCode, defBWStr, defVRackStr string
 			var defaultAddonOpts []string
 			defaultOpts := make([]ServerOption, 0)
@@ -988,8 +1127,22 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 					if prodKey == "" {
 						prodKey = stripPlanAddonSuffix(rawAC, planCode, baseCode, noVerCode, productKey)
 					}
+					if hasAP && len(ap.modes) > 0 {
+						addonModePrices[rawAC] = copyPricingModesMap(ap.modes)
+						if prodKey != "" {
+							addonModePrices[prodKey] = copyPricingModesMap(ap.modes)
+						}
+					}
 					isDef := rawAC == defAddon
 					estOptPrice := roundCents(basePriceVal + addonDelta)
+					var optModes []PlanPricingMode
+					if hasAP && len(ap.modes) > 0 {
+						for _, m := range ap.modes {
+							optModes = append(optModes, m)
+						}
+						sortPricingModes(optModes)
+					}
+					optSum := summarizePricingModes(optModes)
 					opt := ServerOption{
 						Label:                 rawAC,
 						Value:                 rawAC,
@@ -999,6 +1152,16 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 						Options:               []string{rawAC},
 						EstimatedMonthlyPrice: estOptPrice,
 						Price:                 addonDelta,
+						OriginalPrice:         optSum.OriginalMonthlyPrice,
+						OriginalMonthlyPrice:  optSum.OriginalMonthlyPrice,
+						SetupFee:              optSum.SetupFee,
+						OriginalSetupFee:      optSum.OriginalSetupFee,
+						FreeSetup:             optSum.FreeSetup,
+						HasPromo:              optSum.HasPromo,
+						PromoCode:             optSum.PromoCode,
+						PromoBadge:            optSum.PromoBadge,
+						PromoDescription:      optSum.PromoDescription,
+						PricingModes:          optModes,
 						Currency:              catCurrency,
 					}
 					if isMemFam {
@@ -1052,16 +1215,27 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 			defConfigKey := BuildConfigKey(defMemCode, defStoCode)
 
 			entry := CatalogPlanEntry{
-				PlanCode:      planCode,
-				Name:          displayName,
-				Description:   desc,
-				Product:       prodName,
-				Range:         normRange,
-				CPU:           cpuInfo,
-				Price:         basePrice,
-				Currency:      catCurrency,
-				AddonPrices:   addonPrices,
-				CatalogSource: src.source,
+				PlanCode:             planCode,
+				Name:                 displayName,
+				Description:          desc,
+				Product:              prodName,
+				Range:                normRange,
+				CPU:                  cpuInfo,
+				Price:                basePrice,
+				OriginalPrice:        planSum.OriginalMonthlyPrice,
+				OriginalMonthlyPrice: planSum.OriginalMonthlyPrice,
+				SetupFee:             planSum.SetupFee,
+				OriginalSetupFee:     planSum.OriginalSetupFee,
+				FreeSetup:            planSum.FreeSetup,
+				HasPromo:             planSum.HasPromo,
+				PromoCode:            planSum.PromoCode,
+				PromoBadge:           planSum.PromoBadge,
+				PromoDescription:     planSum.PromoDescription,
+				PricingModes:         pricingModes,
+				Currency:             catCurrency,
+				AddonPrices:          addonPrices,
+				AddonModePrices:      addonModePrices,
+				CatalogSource:        src.source,
 				DefaultSpecs: CatalogPlanSpecs{
 					Memory:         defMemCode,
 					Storage:        defStoCode,
@@ -1105,13 +1279,376 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 	}
 
 	return &CatalogDictionary{
-		UpdatedAt:   time.Now().Unix(),
-		Currency:    defaultCurrency,
-		Plans:       plansMap,
-		RealPlans:   realPlansMap,
-		AddonPrices: globalAddonPrices,
-		Options:     optionsMap,
+		UpdatedAt:       time.Now().Unix(),
+		Currency:        defaultCurrency,
+		Plans:           plansMap,
+		RealPlans:       realPlansMap,
+		AddonPrices:     globalAddonPrices,
+		AddonModePrices: globalAddonModePrices,
+		Options:         optionsMap,
 	}
+}
+
+type pricingModesSummary struct {
+	MonthlyPrice         float64
+	OriginalMonthlyPrice float64
+	SetupFee             float64
+	OriginalSetupFee     float64
+	FreeSetup            bool
+	HasPromo             bool
+	PromoCode            string
+	PromoBadge           string
+	PromoDescription     string
+}
+
+func summarizePricingModes(modes []PlanPricingMode) pricingModesSummary {
+	if len(modes) == 0 {
+		return pricingModesSummary{FreeSetup: true}
+	}
+	defMode := modes[0]
+	for _, m := range modes {
+		if strings.EqualFold(m.Mode, "default") {
+			defMode = m
+			break
+		}
+	}
+	out := pricingModesSummary{
+		MonthlyPrice:         defMode.MonthlyEquivalentPrice,
+		OriginalMonthlyPrice: defMode.OriginalMonthlyPrice,
+		SetupFee:             defMode.SetupFee,
+		OriginalSetupFee:     defMode.OriginalSetupFee,
+		FreeSetup:            defMode.FreeSetup,
+		HasPromo:             defMode.HasPromo,
+		PromoCode:            defMode.PromoCode,
+		PromoBadge:           defMode.PromoBadge,
+		PromoDescription:     defMode.PromoDescription,
+	}
+	if !out.HasPromo {
+		for _, m := range modes {
+			if m.HasPromo {
+				out.HasPromo = true
+				out.PromoCode = m.PromoCode
+				out.PromoBadge = m.PromoBadge
+				out.PromoDescription = m.PromoDescription
+				break
+			}
+		}
+	}
+	return out
+}
+
+func copyPricingModesMap(src map[string]PlanPricingMode) map[string]PlanPricingMode {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]PlanPricingMode, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyPricingModesSlice(src []PlanPricingMode) []PlanPricingMode {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]PlanPricingMode, len(src))
+	copy(dst, src)
+	return dst
+}
+
+// DurationForModeAndInterval returns the ISO-8601 duration string ("P1M", "P12M", "P24M") for a pricing mode and interval.
+func DurationForModeAndInterval(mode string, intervalMonths int) string {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "upfront12" || intervalMonths == 12 {
+		return "P12M"
+	}
+	if m == "upfront24" || intervalMonths == 24 {
+		return "P24M"
+	}
+	if intervalMonths > 1 {
+		return fmt.Sprintf("P%dM", intervalMonths)
+	}
+	return "P1M"
+}
+
+func pricingModeOrderRank(mode string) int {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "default":
+		return 0
+	case "upfront12":
+		return 1
+	case "upfront24":
+		return 2
+	case "degressivity12":
+		return 3
+	case "degressivity24":
+		return 4
+	default:
+		return 10
+	}
+}
+
+func sortPricingModes(modes []PlanPricingMode) {
+	slices.SortStableFunc(modes, func(a, b PlanPricingMode) int {
+		ra := pricingModeOrderRank(a.Mode)
+		rb := pricingModeOrderRank(b.Mode)
+		if ra != rb {
+			if ra < rb {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.Mode, b.Mode)
+	})
+}
+
+// ParsePlanPricingModes parses OVH catalog pricings[] (including installation fees and active promotions)
+// grouped by billing mode ("default", "upfront12", "upfront24", "degressivity12", "degressivity24").
+func ParsePlanPricingModes(item map[string]any) []PlanPricingMode {
+	pricings := sliceOfMaps(item["pricings"])
+	if len(pricings) == 0 {
+		return nil
+	}
+
+	type rawModeBucket struct {
+		mode       string
+		hasRenew   bool
+		renewEntry map[string]any
+		hasInst    bool
+		instEntry  map[string]any
+	}
+
+	buckets := make(map[string]*rawModeBucket)
+	var modeOrder []string
+
+	for _, pr := range pricings {
+		mode := strings.TrimSpace(strFromMap(pr, "mode"))
+		if mode == "" {
+			mode = "default"
+		}
+		caps := sliceOfStrings(pr["capacities"])
+		isRenew := slices.Contains(caps, "renew")
+		isInst := slices.Contains(caps, "installation") && !isRenew
+		if !isRenew && !isInst {
+			continue
+		}
+		b, exists := buckets[mode]
+		if !exists {
+			b = &rawModeBucket{mode: mode}
+			buckets[mode] = b
+			modeOrder = append(modeOrder, mode)
+		}
+		if isRenew && !b.hasRenew {
+			b.hasRenew = true
+			b.renewEntry = pr
+		}
+		if isInst && !b.hasInst {
+			b.hasInst = true
+			b.instEntry = pr
+		}
+	}
+
+	out := make([]PlanPricingMode, 0, len(modeOrder))
+	for _, mode := range modeOrder {
+		b := buckets[mode]
+		if !b.hasRenew && !b.hasInst {
+			continue
+		}
+
+		// 1. Parse installation / setup fee
+		originalSetupFee := 0.0
+		setupFee := 0.0
+		hasInstPromo := false
+		var instPromoCode, instPromoDesc, instPromoType, instPromoEnd string
+		var instPromoVal float64
+		var instPromoDur int
+
+		if b.hasInst {
+			originalSetupFee = roundCents(floatFromAny(b.instEntry["price"]) / 1e8)
+			setupFee = originalSetupFee
+			instPromos := sliceOfMaps(b.instEntry["promotions"])
+			if len(instPromos) > 0 {
+				p0 := instPromos[0]
+				instPromoCode = nonEmpty(strFromMap(p0, "name"), strFromMap(p0, "code"))
+				instPromoDesc = strFromMap(p0, "description")
+				instPromoVal = floatFromAny(p0["value"])
+				instPromoType = strFromMap(p0, "type")
+				instPromoDur = intFromAny(p0["duration"])
+				instPromoEnd = strFromMap(p0, "endDate")
+
+				if totMap := nestedMap(p0, "total"); totMap != nil {
+					if rawVal, ok := totMap["value"]; ok && rawVal != nil {
+						setupFee = math.Max(0, roundCents(floatFromAny(rawVal)/1e8))
+					}
+				} else if discMap := nestedMap(p0, "discount"); discMap != nil {
+					if rawVal, ok := discMap["value"]; ok && rawVal != nil {
+						setupFee = math.Max(0, roundCents(originalSetupFee-floatFromAny(rawVal)/1e8))
+					}
+				} else if (strings.EqualFold(instPromoType, "percentage") || instPromoType == "") && instPromoVal > 0 && instPromoVal <= 100 {
+					setupFee = math.Max(0, roundCents(originalSetupFee*(1.0-instPromoVal/100.0)))
+				} else if instPromoVal > 1e5 {
+					setupFee = math.Max(0, roundCents(originalSetupFee-instPromoVal/1e8))
+				} else if instPromoVal > 0 {
+					setupFee = math.Max(0, roundCents(originalSetupFee-instPromoVal))
+				} else if strings.Contains(strings.ToUpper(instPromoCode), "FREESETUP") || strings.Contains(strings.ToUpper(instPromoDesc), "FREE SETUP") {
+					setupFee = 0
+				}
+				hasInstPromo = setupFee < originalSetupFee
+			}
+		}
+
+		// 2. Parse recurring renew price
+		intervalMonths := 1
+		commitmentMonths := 0
+		if b.hasRenew {
+			intervalMonths = max(1, intFromAny(b.renewEntry["interval"]))
+			commitmentMonths = max(0, intFromAny(b.renewEntry["commitment"]))
+		}
+		switch strings.ToLower(mode) {
+		case "upfront12":
+			intervalMonths = 12
+			if commitmentMonths == 0 {
+				commitmentMonths = 12
+			}
+		case "upfront24":
+			intervalMonths = 24
+			if commitmentMonths == 0 {
+				commitmentMonths = 24
+			}
+		case "degressivity12":
+			if commitmentMonths == 0 {
+				commitmentMonths = 12
+			}
+		case "degressivity24":
+			if commitmentMonths == 0 {
+				commitmentMonths = 24
+			}
+		}
+		duration := DurationForModeAndInterval(mode, intervalMonths)
+
+		originalPeriodPrice := 0.0
+		periodPrice := 0.0
+		hasRenewPromo := false
+		var renewPromoCode, renewPromoDesc, renewPromoType, renewPromoEnd string
+		var renewPromoVal float64
+		var renewPromoDur int
+
+		if b.hasRenew {
+			originalPeriodPrice = roundCents(floatFromAny(b.renewEntry["price"]) / 1e8)
+			periodPrice = originalPeriodPrice
+			renewPromos := sliceOfMaps(b.renewEntry["promotions"])
+			if len(renewPromos) > 0 {
+				p0 := renewPromos[0]
+				renewPromoCode = nonEmpty(strFromMap(p0, "name"), strFromMap(p0, "code"))
+				renewPromoDesc = strFromMap(p0, "description")
+				renewPromoVal = floatFromAny(p0["value"])
+				renewPromoType = strFromMap(p0, "type")
+				renewPromoDur = intFromAny(p0["duration"])
+				renewPromoEnd = strFromMap(p0, "endDate")
+
+				if totMap := nestedMap(p0, "total"); totMap != nil {
+					if rawVal, ok := totMap["value"]; ok && rawVal != nil {
+						periodPrice = math.Max(0, roundCents(floatFromAny(rawVal)/1e8))
+					}
+				} else if discMap := nestedMap(p0, "discount"); discMap != nil {
+					if rawVal, ok := discMap["value"]; ok && rawVal != nil {
+						periodPrice = math.Max(0, roundCents(originalPeriodPrice-floatFromAny(rawVal)/1e8))
+					}
+				} else if (strings.EqualFold(renewPromoType, "percentage") || renewPromoType == "") && renewPromoVal > 0 && renewPromoVal <= 100 {
+					periodPrice = math.Max(0, roundCents(originalPeriodPrice*(1.0-renewPromoVal/100.0)))
+				} else if renewPromoVal > 1e5 {
+					periodPrice = math.Max(0, roundCents(originalPeriodPrice-renewPromoVal/1e8))
+				} else if renewPromoVal > 0 {
+					periodPrice = math.Max(0, roundCents(originalPeriodPrice-renewPromoVal))
+				}
+				hasRenewPromo = periodPrice < originalPeriodPrice
+			}
+		}
+
+		originalMonthlyPrice := roundCents(originalPeriodPrice / float64(intervalMonths))
+		monthlyEquivalentPrice := roundCents(periodPrice / float64(intervalMonths))
+		hasPromo := hasRenewPromo || hasInstPromo
+
+		var renewBadge, instBadge string
+		if hasRenewPromo {
+			if (strings.EqualFold(renewPromoType, "percentage") || renewPromoType == "") && renewPromoVal > 0 && renewPromoVal <= 100 {
+				renewBadge = fmt.Sprintf("-%g%%", math.Round(renewPromoVal*10)/10)
+			} else if originalPeriodPrice > 0 {
+				pct := math.Round(((originalPeriodPrice - periodPrice) / originalPeriodPrice) * 100)
+				if pct > 0 {
+					renewBadge = fmt.Sprintf("-%g%%", pct)
+				} else {
+					renewBadge = "PROMO"
+				}
+			}
+		}
+		if hasInstPromo {
+			if setupFee <= 0 {
+				instBadge = "FREE SETUP"
+			} else if (strings.EqualFold(instPromoType, "percentage") || instPromoType == "") && instPromoVal > 0 && instPromoVal <= 100 {
+				instBadge = fmt.Sprintf("-%g%% SETUP", math.Round(instPromoVal*10)/10)
+			} else {
+				instBadge = "SETUP PROMO"
+			}
+		}
+
+		promoBadge := ""
+		if renewBadge != "" && instBadge != "" {
+			promoBadge = renewBadge + " + " + instBadge
+		} else if renewBadge != "" {
+			promoBadge = renewBadge
+		} else if instBadge != "" {
+			promoBadge = instBadge
+		}
+
+		var promoCode, promoDesc, promoType, promoEnd string
+		var promoVal float64
+		var promoDur int
+		if hasRenewPromo {
+			promoCode = renewPromoCode
+			promoDesc = renewPromoDesc
+			if hasInstPromo && instPromoDesc != "" && instPromoDesc != renewPromoDesc {
+				promoDesc = joinNonEmpty(" · ", renewPromoDesc, instPromoDesc)
+			}
+			promoVal = renewPromoVal
+			promoType = renewPromoType
+			promoDur = renewPromoDur
+			promoEnd = nonEmpty(renewPromoEnd, instPromoEnd)
+		} else if hasInstPromo {
+			promoCode = instPromoCode
+			promoDesc = instPromoDesc
+			promoVal = instPromoVal
+			promoType = instPromoType
+			promoDur = instPromoDur
+			promoEnd = instPromoEnd
+		}
+
+		out = append(out, PlanPricingMode{
+			Mode:                   mode,
+			Duration:               duration,
+			IntervalMonths:         intervalMonths,
+			CommitmentMonths:       commitmentMonths,
+			PeriodPrice:            periodPrice,
+			OriginalPeriodPrice:    originalPeriodPrice,
+			MonthlyEquivalentPrice: monthlyEquivalentPrice,
+			OriginalMonthlyPrice:   originalMonthlyPrice,
+			SetupFee:               setupFee,
+			OriginalSetupFee:       originalSetupFee,
+			FreeSetup:              setupFee <= 0,
+			HasPromo:               hasPromo,
+			PromoCode:              promoCode,
+			PromoBadge:             promoBadge,
+			PromoDescription:       promoDesc,
+			PromoValue:             promoVal,
+			PromoType:              promoType,
+			PromoDuration:          promoDur,
+			PromoEndDate:           promoEnd,
+		})
+	}
+
+	sortPricingModes(out)
+	return out
 }
 
 func stripPlanAddonSuffix(addonCode string, suffixes ...string) string {
@@ -1149,6 +1686,181 @@ func lookupPlanCaseInsensitive(m map[string]CatalogPlanEntry, key string) (Catal
 	return CatalogPlanEntry{}, false
 }
 
+func lookupAddonScalar(code, defaultCode string, planEntry *CatalogPlanEntry, dict *CatalogDictionary) float64 {
+	c := strings.TrimSpace(code)
+	if c == "" || strings.EqualFold(c, "N/A") || strings.EqualFold(c, "none") {
+		return 0
+	}
+	if defaultCode != "" && (strings.EqualFold(c, defaultCode) || StandardizeConfig(c) == StandardizeConfig(defaultCode)) {
+		if planEntry != nil && len(planEntry.AddonPrices) > 0 {
+			if v, ok := planEntry.AddonPrices[c]; ok {
+				return v
+			}
+		}
+		return 0
+	}
+	if planEntry != nil && len(planEntry.AddonPrices) > 0 {
+		if v, ok := planEntry.AddonPrices[c]; ok {
+			return v
+		}
+		low := strings.ToLower(c)
+		for k, v := range planEntry.AddonPrices {
+			if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
+				return v
+			}
+		}
+	}
+	if dict != nil && len(dict.AddonPrices) > 0 {
+		if v, ok := dict.AddonPrices[c]; ok {
+			return v
+		}
+		low := strings.ToLower(c)
+		for k, v := range dict.AddonPrices {
+			if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
+				return v
+			}
+		}
+	}
+	return 0
+}
+
+func lookupAddonModes(code, defaultCode string, planEntry *CatalogPlanEntry, dict *CatalogDictionary) map[string]PlanPricingMode {
+	c := strings.TrimSpace(code)
+	if c == "" || strings.EqualFold(c, "N/A") || strings.EqualFold(c, "none") {
+		return nil
+	}
+	isDef := defaultCode != "" && (strings.EqualFold(c, defaultCode) || StandardizeConfig(c) == StandardizeConfig(defaultCode))
+	if planEntry != nil && len(planEntry.AddonModePrices) > 0 {
+		if m, ok := planEntry.AddonModePrices[c]; ok {
+			return m
+		}
+		low := strings.ToLower(c)
+		for k, m := range planEntry.AddonModePrices {
+			if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
+				return m
+			}
+		}
+	}
+	if isDef {
+		return nil
+	}
+	if dict != nil && len(dict.AddonModePrices) > 0 {
+		if m, ok := dict.AddonModePrices[c]; ok {
+			return m
+		}
+		low := strings.ToLower(c)
+		for k, m := range dict.AddonModePrices {
+			if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
+				return m
+			}
+		}
+	}
+	return nil
+}
+
+// BuildConfigPricingModes computes the full multi-mode pricing breakdown for a (memory, storage) hardware configuration.
+func BuildConfigPricingModes(
+	planEntry *CatalogPlanEntry,
+	dict *CatalogDictionary,
+	basePrice float64,
+	memory, storage string,
+) []PlanPricingMode {
+	var baseModes []PlanPricingMode
+	if planEntry != nil && len(planEntry.PricingModes) > 0 {
+		baseModes = copyPricingModesSlice(planEntry.PricingModes)
+	} else if basePrice > 0 {
+		origPrice := roundCents(basePrice)
+		setupFee := 0.0
+		origSetupFee := 0.0
+		hasPromo := false
+		var promoCode, promoBadge, promoDesc string
+		if planEntry != nil {
+			if planEntry.OriginalMonthlyPrice > 0 {
+				origPrice = planEntry.OriginalMonthlyPrice
+			}
+			setupFee = planEntry.SetupFee
+			origSetupFee = planEntry.OriginalSetupFee
+			hasPromo = planEntry.HasPromo
+			promoCode = planEntry.PromoCode
+			promoBadge = planEntry.PromoBadge
+			promoDesc = planEntry.PromoDescription
+		}
+		baseModes = []PlanPricingMode{
+			{
+				Mode:                   "default",
+				Duration:               "P1M",
+				IntervalMonths:         1,
+				CommitmentMonths:       0,
+				PeriodPrice:            roundCents(basePrice),
+				OriginalPeriodPrice:    origPrice,
+				MonthlyEquivalentPrice: roundCents(basePrice),
+				OriginalMonthlyPrice:   origPrice,
+				SetupFee:               setupFee,
+				OriginalSetupFee:       origSetupFee,
+				FreeSetup:              setupFee <= 0,
+				HasPromo:               hasPromo,
+				PromoCode:              promoCode,
+				PromoBadge:             promoBadge,
+				PromoDescription:       promoDesc,
+			},
+		}
+	}
+	if len(baseModes) == 0 {
+		return nil
+	}
+
+	var defMem, defSto string
+	if planEntry != nil {
+		defMem = nonEmpty(planEntry.DefaultMemory, planEntry.DefaultSpecs.Memory)
+		defSto = nonEmpty(planEntry.DefaultStorage, planEntry.DefaultSpecs.Storage)
+	}
+
+	memModes := lookupAddonModes(memory, defMem, planEntry, dict)
+	stoModes := lookupAddonModes(storage, defSto, planEntry, dict)
+	memScalar := lookupAddonScalar(memory, defMem, planEntry, dict)
+	stoScalar := lookupAddonScalar(storage, defSto, planEntry, dict)
+
+	resolveDeltaForMode := func(addonModes map[string]PlanPricingMode, scalar float64, mode string, intervalMonths int) (periodDelta, origPeriodDelta, setupDelta, origSetupDelta float64, hasPromo bool) {
+		iv := max(1, intervalMonths)
+		if len(addonModes) > 0 {
+			if am, ok := addonModes[mode]; ok {
+				return am.PeriodPrice, am.OriginalPeriodPrice, am.SetupFee, am.OriginalSetupFee, am.HasPromo
+			}
+			if defAm, ok := addonModes["default"]; ok {
+				return roundCents(defAm.MonthlyEquivalentPrice * float64(iv)),
+					roundCents(defAm.OriginalMonthlyPrice * float64(iv)),
+					defAm.SetupFee,
+					defAm.OriginalSetupFee,
+					defAm.HasPromo
+			}
+		}
+		if scalar > 0 {
+			p := roundCents(scalar * float64(iv))
+			return p, p, 0, 0, false
+		}
+		return 0, 0, 0, 0, false
+	}
+
+	out := make([]PlanPricingMode, 0, len(baseModes))
+	for _, bm := range baseModes {
+		iv := max(1, bm.IntervalMonths)
+		mp, mop, ms, mos, mhp := resolveDeltaForMode(memModes, memScalar, bm.Mode, iv)
+		sp, sop, ss, sos, shp := resolveDeltaForMode(stoModes, stoScalar, bm.Mode, iv)
+
+		cfgMode := bm
+		cfgMode.PeriodPrice = roundCents(bm.PeriodPrice + mp + sp)
+		cfgMode.OriginalPeriodPrice = roundCents(bm.OriginalPeriodPrice + mop + sop)
+		cfgMode.MonthlyEquivalentPrice = roundCents(cfgMode.PeriodPrice / float64(iv))
+		cfgMode.OriginalMonthlyPrice = roundCents(cfgMode.OriginalPeriodPrice / float64(iv))
+		cfgMode.SetupFee = roundCents(bm.SetupFee + ms + ss)
+		cfgMode.OriginalSetupFee = roundCents(bm.OriginalSetupFee + mos + sos)
+		cfgMode.FreeSetup = cfgMode.SetupFee <= 0
+		cfgMode.HasPromo = bm.HasPromo || mhp || shp || cfgMode.PeriodPrice < cfgMode.OriginalPeriodPrice
+		out = append(out, cfgMode)
+	}
+	return out
+}
+
 // EstimateConfigMonthlyPrice computes the estimated monthly ex-VAT price for a (memory, storage) configuration.
 func EstimateConfigMonthlyPrice(
 	basePrice float64,
@@ -1159,51 +1871,13 @@ func EstimateConfigMonthlyPrice(
 	if basePrice <= 0 {
 		return 0
 	}
-	lookupAddon := func(code, defaultCode string) float64 {
-		c := strings.TrimSpace(code)
-		if c == "" || strings.EqualFold(c, "N/A") || strings.EqualFold(c, "none") {
-			return 0
-		}
-		if defaultCode != "" && (strings.EqualFold(c, defaultCode) || StandardizeConfig(c) == StandardizeConfig(defaultCode)) {
-			if planEntry != nil && len(planEntry.AddonPrices) > 0 {
-				if v, ok := planEntry.AddonPrices[c]; ok {
-					return v
-				}
-			}
-			return 0
-		}
-		if planEntry != nil && len(planEntry.AddonPrices) > 0 {
-			if v, ok := planEntry.AddonPrices[c]; ok {
-				return v
-			}
-			low := strings.ToLower(c)
-			for k, v := range planEntry.AddonPrices {
-				if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
-					return v
-				}
-			}
-		}
-		if dict != nil && len(dict.AddonPrices) > 0 {
-			if v, ok := dict.AddonPrices[c]; ok {
-				return v
-			}
-			low := strings.ToLower(c)
-			for k, v := range dict.AddonPrices {
-				if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
-					return v
-				}
-			}
-		}
-		return 0
-	}
-
 	var defMem, defSto string
 	if planEntry != nil {
 		defMem = planEntry.DefaultMemory
 		defSto = planEntry.DefaultStorage
 	}
-	memDelta := lookupAddon(memory, defMem)
-	stoDelta := lookupAddon(storage, defSto)
+	memDelta := lookupAddonScalar(memory, defMem, planEntry, dict)
+	stoDelta := lookupAddonScalar(storage, defSto, planEntry, dict)
 	return roundCents(basePrice + memDelta + stoDelta)
 }
 
@@ -1258,21 +1932,43 @@ func ResolvePlanWithDict(planCode, serverCode string, dict *CatalogDictionary) P
 				curr = "EUR"
 			}
 			return PlanMeta{
-				PlanCode:      planCode,
-				BaseCode:      nonEmpty(baseCode, planCode),
-				Name:          name,
-				Range:         rng,
-				Generation:    InferPlanGeneration(planCode),
-				CPU:           match.CPU,
-				Region:        regionInfo,
-				Price:         match.Price,
-				Currency:      curr,
-				AddonPrices:   match.AddonPrices,
-				CatalogSource: match.CatalogSource,
+				PlanCode:             planCode,
+				BaseCode:             nonEmpty(baseCode, planCode),
+				Name:                 name,
+				Range:                rng,
+				Generation:           InferPlanGeneration(planCode),
+				CPU:                  match.CPU,
+				Region:               regionInfo,
+				Price:                match.Price,
+				OriginalPrice:        match.OriginalPrice,
+				OriginalMonthlyPrice: match.OriginalMonthlyPrice,
+				SetupFee:             match.SetupFee,
+				OriginalSetupFee:     match.OriginalSetupFee,
+				FreeSetup:            match.FreeSetup,
+				HasPromo:             match.HasPromo,
+				PromoCode:            match.PromoCode,
+				PromoBadge:           match.PromoBadge,
+				PromoDescription:     match.PromoDescription,
+				PricingModes:         copyPricingModesSlice(match.PricingModes),
+				Currency:             curr,
+				AddonPrices:          match.AddonPrices,
+				AddonModePrices:      copyAddonModePricesMap(match.AddonModePrices),
+				CatalogSource:        match.CatalogSource,
 			}
 		}
 	}
 	return InferPlanFromCode(planCode)
+}
+
+func copyAddonModePricesMap(src map[string]map[string]PlanPricingMode) map[string]map[string]PlanPricingMode {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]map[string]PlanPricingMode, len(src))
+	for k, v := range src {
+		dst[k] = copyPricingModesMap(v)
+	}
+	return dst
 }
 
 // IsPlanListedInDict reports whether planCode is present as a real bare-metal plan in dict.RealPlans
@@ -1564,6 +2260,7 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 			VRackBandwidth:   "N/A",
 			MonthlyPrice:     nil,
 			StartingPrice:    0,
+			FreeSetup:        true,
 			Currency:         nonEmpty(meta.Currency, dict.Currency),
 			DefaultConfigKey: defCfgKey,
 			CatalogSource:    "presale",
@@ -1696,30 +2393,54 @@ func buildSingleServerPlan(
 		defConfigKey = cfgs[0].ConfigKey
 	}
 
+	var pricingModes []PlanPricingMode
+	if planEntry != nil && len(planEntry.PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(planEntry.PricingModes)
+	} else if len(meta.PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(meta.PricingModes)
+	} else if len(cfgs) > 0 && len(cfgs[0].PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(cfgs[0].PricingModes)
+	}
+	planSum := summarizePricingModes(pricingModes)
+	origMonthly := planSum.OriginalMonthlyPrice
+	if origMonthly == 0 && startingPrice > 0 {
+		origMonthly = startingPrice
+	}
+
 	return ServerPlan{
-		PlanCode:         planCode,
-		Name:             displayName,
-		Description:      desc,
-		Range:            meta.Range,
-		CPU:              cpuStr,
-		Memory:           memStr,
-		Storage:          stoStr,
-		Bandwidth:        bwStr,
-		VRackBandwidth:   vrackStr,
-		MonthlyPrice:     meta.Price,
-		StartingPrice:    startingPrice,
-		Price:            startingPrice,
-		Currency:         currency,
-		DefaultConfigKey: defConfigKey,
-		CatalogSource:    catalogSource,
-		ListingState:     listingState,
-		ListedAt:         listedAt,
-		Orderable:        orderable,
-		Generation:       InferPlanGeneration(planCode),
-		Datacenters:      dcs,
-		DefaultOptions:   defaultOpts,
-		AvailableOptions: availOpts,
-		Configs:          cfgs,
+		PlanCode:             planCode,
+		Name:                 displayName,
+		Description:          desc,
+		Range:                meta.Range,
+		CPU:                  cpuStr,
+		Memory:               memStr,
+		Storage:              stoStr,
+		Bandwidth:            bwStr,
+		VRackBandwidth:       vrackStr,
+		MonthlyPrice:         meta.Price,
+		StartingPrice:        startingPrice,
+		Price:                startingPrice,
+		OriginalPrice:        origMonthly,
+		OriginalMonthlyPrice: origMonthly,
+		SetupFee:             planSum.SetupFee,
+		OriginalSetupFee:     planSum.OriginalSetupFee,
+		FreeSetup:            planSum.FreeSetup,
+		HasPromo:             planSum.HasPromo,
+		PromoCode:            planSum.PromoCode,
+		PromoBadge:           planSum.PromoBadge,
+		PromoDescription:     planSum.PromoDescription,
+		PricingModes:         pricingModes,
+		Currency:             currency,
+		DefaultConfigKey:     defConfigKey,
+		CatalogSource:        catalogSource,
+		ListingState:         listingState,
+		ListedAt:             listedAt,
+		Orderable:            orderable,
+		Generation:           InferPlanGeneration(planCode),
+		Datacenters:          dcs,
+		DefaultOptions:       defaultOpts,
+		AvailableOptions:     availOpts,
+		Configs:              cfgs,
 	}
 }
 
@@ -1779,30 +2500,52 @@ func buildSynthesizedAnnouncedPlan(
 	}
 	currency := nonEmpty(meta.Currency, "EUR")
 	cfgs := buildPlanConfigsList(planCode, entry, dict, nil, currency)
+	var pricingModes []PlanPricingMode
+	if entry != nil && len(entry.PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(entry.PricingModes)
+	} else if len(meta.PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(meta.PricingModes)
+	}
+	planSum := summarizePricingModes(pricingModes)
+	origMonthly := planSum.OriginalMonthlyPrice
+	if origMonthly == 0 && startingPrice > 0 {
+		origMonthly = startingPrice
+	}
+
 	return ServerPlan{
-		PlanCode:         planCode,
-		Name:             nonEmpty(meta.Name, planCode),
-		Description:      nonEmpty(entry.Description, meta.Name),
-		Range:            meta.Range,
-		CPU:              cpuStr,
-		Memory:           memStr,
-		Storage:          stoStr,
-		Bandwidth:        bwStr,
-		VRackBandwidth:   vrackStr,
-		MonthlyPrice:     meta.Price,
-		StartingPrice:    startingPrice,
-		Price:            startingPrice,
-		Currency:         currency,
-		DefaultConfigKey: defCfgKey,
-		CatalogSource:    nonEmpty(entry.CatalogSource, "eco"),
-		ListingState:     "announced",
-		ListedAt:         listedAt,
-		Orderable:        false,
-		Generation:       InferPlanGeneration(planCode),
-		Datacenters:      []DatacenterAvailability{},
-		DefaultOptions:    nonNilOptions(defaultOpts),
-		AvailableOptions: nonNilOptions(availOpts),
-		Configs:          cfgs,
+		PlanCode:             planCode,
+		Name:                 nonEmpty(meta.Name, planCode),
+		Description:          nonEmpty(entry.Description, meta.Name),
+		Range:                meta.Range,
+		CPU:                  cpuStr,
+		Memory:               memStr,
+		Storage:              stoStr,
+		Bandwidth:            bwStr,
+		VRackBandwidth:       vrackStr,
+		MonthlyPrice:         meta.Price,
+		StartingPrice:        startingPrice,
+		Price:                startingPrice,
+		OriginalPrice:        origMonthly,
+		OriginalMonthlyPrice: origMonthly,
+		SetupFee:             planSum.SetupFee,
+		OriginalSetupFee:     planSum.OriginalSetupFee,
+		FreeSetup:            planSum.FreeSetup,
+		HasPromo:             planSum.HasPromo,
+		PromoCode:            planSum.PromoCode,
+		PromoBadge:           planSum.PromoBadge,
+		PromoDescription:     planSum.PromoDescription,
+		PricingModes:         pricingModes,
+		Currency:             currency,
+		DefaultConfigKey:     defCfgKey,
+		CatalogSource:        nonEmpty(entry.CatalogSource, "eco"),
+		ListingState:         "announced",
+		ListedAt:             listedAt,
+		Orderable:            false,
+		Generation:           InferPlanGeneration(planCode),
+		Datacenters:          []DatacenterAvailability{},
+		DefaultOptions:       nonNilOptions(defaultOpts),
+		AvailableOptions:     nonNilOptions(availOpts),
+		Configs:              cfgs,
 	}
 }
 
@@ -1907,6 +2650,15 @@ func (s *Service) GetCatalogAvailabilities(ctx context.Context, endpoint, zone, 
 			}
 		}
 		estPrice := EstimateConfigMonthlyPrice(basePrice, item.Memory, item.Storage, planEntry, dict)
+		cfgModes := BuildConfigPricingModes(planEntry, dict, basePrice, item.Memory, item.Storage)
+		cfgSum := summarizePricingModes(cfgModes)
+		if cfgSum.MonthlyPrice > 0 && len(cfgModes) > 0 {
+			estPrice = cfgSum.MonthlyPrice
+		}
+		origMonthly := cfgSum.OriginalMonthlyPrice
+		if origMonthly == 0 && estPrice > 0 {
+			origMonthly = estPrice
+		}
 		dcs := item.Datacenters
 		if dcs == nil {
 			dcs = []RawAvailabilityDC{}
@@ -1926,6 +2678,16 @@ func (s *Service) GetCatalogAvailabilities(ctx context.Context, endpoint, zone, 
 			IsDefault:             isDef,
 			EstimatedMonthlyPrice: estPrice,
 			Price:                 estPrice,
+			OriginalPrice:         origMonthly,
+			OriginalMonthlyPrice:  origMonthly,
+			SetupFee:              cfgSum.SetupFee,
+			OriginalSetupFee:      cfgSum.OriginalSetupFee,
+			FreeSetup:             cfgSum.FreeSetup,
+			HasPromo:              cfgSum.HasPromo,
+			PromoCode:             cfgSum.PromoCode,
+			PromoBadge:            cfgSum.PromoBadge,
+			PromoDescription:      cfgSum.PromoDescription,
+			PricingModes:          cfgModes,
 			Currency:              currency,
 			ListingState:          listingState,
 			CatalogSource:         catSource,
@@ -1967,6 +2729,15 @@ func (s *Service) GetCatalogAvailabilities(ctx context.Context, endpoint, zone, 
 				basePrice = *entry.Price
 			}
 			estPrice := EstimateConfigMonthlyPrice(basePrice, defMem, defSto, &entryCopy, dict)
+			cfgModes := BuildConfigPricingModes(&entryCopy, dict, basePrice, defMem, defSto)
+			cfgSum := summarizePricingModes(cfgModes)
+			if cfgSum.MonthlyPrice > 0 && len(cfgModes) > 0 {
+				estPrice = cfgSum.MonthlyPrice
+			}
+			origMonthly := cfgSum.OriginalMonthlyPrice
+			if origMonthly == 0 && estPrice > 0 {
+				origMonthly = estPrice
+			}
 			currency := nonEmpty(entry.Currency, nonEmpty(dict.Currency, "EUR"))
 			opts := append([]string(nil), entry.DefaultAddonOptions...)
 			if opts == nil {
@@ -1990,6 +2761,16 @@ func (s *Service) GetCatalogAvailabilities(ctx context.Context, endpoint, zone, 
 				IsDefault:             true,
 				EstimatedMonthlyPrice: estPrice,
 				Price:                 estPrice,
+				OriginalPrice:         origMonthly,
+				OriginalMonthlyPrice:  origMonthly,
+				SetupFee:              cfgSum.SetupFee,
+				OriginalSetupFee:      cfgSum.OriginalSetupFee,
+				FreeSetup:             cfgSum.FreeSetup,
+				HasPromo:              cfgSum.HasPromo,
+				PromoCode:             cfgSum.PromoCode,
+				PromoBadge:            cfgSum.PromoBadge,
+				PromoDescription:      cfgSum.PromoDescription,
+				PricingModes:          cfgModes,
 				Currency:              currency,
 				ListingState:          "announced",
 				CatalogSource:         entry.CatalogSource,
@@ -2088,18 +2869,42 @@ func (s *Service) GetPlanConfigs(ctx context.Context, endpoint, zone, planCode s
 		startingPrice = configs[0].EstimatedMonthlyPrice
 	}
 
+	var pricingModes []PlanPricingMode
+	if planEntry != nil && len(planEntry.PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(planEntry.PricingModes)
+	} else if len(meta.PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(meta.PricingModes)
+	} else if len(configs) > 0 && len(configs[0].PricingModes) > 0 {
+		pricingModes = copyPricingModesSlice(configs[0].PricingModes)
+	}
+	planSum := summarizePricingModes(pricingModes)
+	origMonthly := planSum.OriginalMonthlyPrice
+	if origMonthly == 0 && startingPrice > 0 {
+		origMonthly = startingPrice
+	}
+
 	return &PlanConfigsResponse{
-		PlanCode:         pc,
-		Name:             nonEmpty(meta.Name, pc),
-		Range:            meta.Range,
-		CPU:              FormatCPU(meta.CPU, "en"),
-		ListingState:     listingState,
-		Orderable:        orderable,
-		BasePrice:        basePrice,
-		StartingPrice:    startingPrice,
-		Currency:         currency,
-		DefaultConfigKey: defCfgKey,
-		Configs:          configs,
+		PlanCode:             pc,
+		Name:                 nonEmpty(meta.Name, pc),
+		Range:                meta.Range,
+		CPU:                  FormatCPU(meta.CPU, "en"),
+		ListingState:         listingState,
+		Orderable:            orderable,
+		BasePrice:            basePrice,
+		StartingPrice:        startingPrice,
+		OriginalPrice:        origMonthly,
+		OriginalMonthlyPrice: origMonthly,
+		SetupFee:             planSum.SetupFee,
+		OriginalSetupFee:     planSum.OriginalSetupFee,
+		FreeSetup:            planSum.FreeSetup,
+		HasPromo:             planSum.HasPromo,
+		PromoCode:            planSum.PromoCode,
+		PromoBadge:           planSum.PromoBadge,
+		PromoDescription:     planSum.PromoDescription,
+		PricingModes:         pricingModes,
+		Currency:             currency,
+		DefaultConfigKey:     defCfgKey,
+		Configs:              configs,
 	}, nil
 }
 
@@ -2150,6 +2955,15 @@ func buildPlanConfigsList(
 				lbl = cfgKey
 			}
 			estPrice := EstimateConfigMonthlyPrice(basePrice, mem, sto, planEntry, dict)
+			cfgModes := BuildConfigPricingModes(planEntry, dict, basePrice, mem, sto)
+			cfgSum := summarizePricingModes(cfgModes)
+			if cfgSum.MonthlyPrice > 0 && len(cfgModes) > 0 {
+				estPrice = cfgSum.MonthlyPrice
+			}
+			origMonthly := cfgSum.OriginalMonthlyPrice
+			if origMonthly == 0 && estPrice > 0 {
+				origMonthly = estPrice
+			}
 			existing = &PlanConfigItem{
 				ConfigKey:             cfgKey,
 				Memory:                mem,
@@ -2163,6 +2977,16 @@ func buildPlanConfigsList(
 				IsDefault:             isDef,
 				EstimatedMonthlyPrice: estPrice,
 				Price:                 estPrice,
+				OriginalPrice:         origMonthly,
+				OriginalMonthlyPrice:  origMonthly,
+				SetupFee:              cfgSum.SetupFee,
+				OriginalSetupFee:      cfgSum.OriginalSetupFee,
+				FreeSetup:             cfgSum.FreeSetup,
+				HasPromo:              cfgSum.HasPromo,
+				PromoCode:             cfgSum.PromoCode,
+				PromoBadge:            cfgSum.PromoBadge,
+				PromoDescription:      cfgSum.PromoDescription,
+				PricingModes:          cfgModes,
 				Currency:              currency,
 				Datacenters:           make(map[string]string),
 			}
@@ -2209,6 +3033,15 @@ func buildPlanConfigsList(
 					opts = []string{}
 				}
 				estPrice := EstimateConfigMonthlyPrice(basePrice, defMem, defSto, planEntry, dict)
+				cfgModes := BuildConfigPricingModes(planEntry, dict, basePrice, defMem, defSto)
+				cfgSum := summarizePricingModes(cfgModes)
+				if cfgSum.MonthlyPrice > 0 && len(cfgModes) > 0 {
+					estPrice = cfgSum.MonthlyPrice
+				}
+				origMonthly := cfgSum.OriginalMonthlyPrice
+				if origMonthly == 0 && estPrice > 0 {
+					origMonthly = estPrice
+				}
 				byKey[defKey] = &PlanConfigItem{
 					ConfigKey:             defKey,
 					Memory:                defMem,
@@ -2222,6 +3055,16 @@ func buildPlanConfigsList(
 					IsDefault:             true,
 					EstimatedMonthlyPrice: estPrice,
 					Price:                 estPrice,
+					OriginalPrice:         origMonthly,
+					OriginalMonthlyPrice:  origMonthly,
+					SetupFee:              cfgSum.SetupFee,
+					OriginalSetupFee:      cfgSum.OriginalSetupFee,
+					FreeSetup:             cfgSum.FreeSetup,
+					HasPromo:              cfgSum.HasPromo,
+					PromoCode:             cfgSum.PromoCode,
+					PromoBadge:            cfgSum.PromoBadge,
+					PromoDescription:      cfgSum.PromoDescription,
+					PricingModes:          cfgModes,
 					Currency:              currency,
 					Datacenters:           make(map[string]string),
 				}
@@ -2532,6 +3375,15 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 			matchedOptions = []string{}
 		}
 		estPrice := EstimateConfigMonthlyPrice(basePrice, item.Memory, item.Storage, planEntry, dict)
+		cfgModes := BuildConfigPricingModes(planEntry, dict, basePrice, item.Memory, item.Storage)
+		cfgSum := summarizePricingModes(cfgModes)
+		if cfgSum.MonthlyPrice > 0 && len(cfgModes) > 0 {
+			estPrice = cfgSum.MonthlyPrice
+		}
+		origMonthly := cfgSum.OriginalMonthlyPrice
+		if origMonthly == 0 && estPrice > 0 {
+			origMonthly = estPrice
+		}
 		memLabel := FormatMemory(ParseMemoryCode(item.Memory, nil), "en")
 		stoLabel := FormatStorage(ParseStorageCode(item.Storage, false), "en")
 
@@ -2553,6 +3405,16 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 			IsDefault:             isDef,
 			EstimatedMonthlyPrice: estPrice,
 			Price:                 estPrice,
+			OriginalPrice:         origMonthly,
+			OriginalMonthlyPrice:  origMonthly,
+			SetupFee:              cfgSum.SetupFee,
+			OriginalSetupFee:      cfgSum.OriginalSetupFee,
+			FreeSetup:             cfgSum.FreeSetup,
+			HasPromo:              cfgSum.HasPromo,
+			PromoCode:             cfgSum.PromoCode,
+			PromoBadge:            cfgSum.PromoBadge,
+			PromoDescription:      cfgSum.PromoDescription,
+			PricingModes:          cfgModes,
 			Currency:              currency,
 			ListingState:          listingState,
 			Orderable:             orderable,
@@ -2600,15 +3462,116 @@ func matchAddonOptionsForConfig(catalogPlan map[string]any, memoryCode, storageC
 	return opts
 }
 
-// GetServerPrice quotes the monthly configuration price via a temporary OVH cart and deletes the cart afterwards.
-func (s *Service) GetServerPrice(ctx context.Context, accountID, planCode, datacenter string, options []string) (*ServerPriceResult, error) {
+// NormalizePricingModeAndDuration normalizes a requested OVH pricingMode and duration into canonical values
+// along with the corresponding billing interval in months.
+func NormalizePricingModeAndDuration(pricingMode, duration string) (mode string, dur string, intervalMonths int) {
+	m := strings.TrimSpace(pricingMode)
+	if m == "" {
+		m = "default"
+	}
+	d := strings.ToUpper(strings.TrimSpace(duration))
+
+	switch strings.ToLower(m) {
+	case "upfront12":
+		mode = "upfront12"
+		intervalMonths = 12
+		if d == "" || d == "P1M" {
+			dur = "P12M"
+		} else {
+			dur = d
+		}
+	case "upfront24":
+		mode = "upfront24"
+		intervalMonths = 24
+		if d == "" || d == "P1M" {
+			dur = "P24M"
+		} else {
+			dur = d
+		}
+	case "degressivity12":
+		mode = "degressivity12"
+		intervalMonths = 1
+		if d == "" {
+			dur = "P1M"
+		} else {
+			dur = d
+		}
+	case "degressivity24":
+		mode = "degressivity24"
+		intervalMonths = 1
+		if d == "" {
+			dur = "P1M"
+		} else {
+			dur = d
+		}
+	case "default":
+		mode = "default"
+		intervalMonths = 1
+		if d == "" {
+			dur = "P1M"
+		} else {
+			dur = d
+		}
+	default:
+		mode = m
+		intervalMonths = 1
+		if d == "" {
+			dur = "P1M"
+		} else {
+			dur = d
+		}
+	}
+
+	if intervalMonths == 1 {
+		switch dur {
+		case "P12M", "P1Y":
+			intervalMonths = 12
+		case "P24M", "P2Y":
+			intervalMonths = 24
+		}
+	}
+	return mode, dur, intervalMonths
+}
+
+// GetServerPrice quotes the configuration price via a temporary OVH cart and deletes the cart afterwards.
+// Optional trailing arguments (modeDurCoupon) allow passing (pricingMode), (pricingMode, duration), or (pricingMode, duration, coupon).
+func (s *Service) GetServerPrice(ctx context.Context, accountID, planCode, datacenter string, options []string, modeDurCoupon ...string) (*ServerPriceResult, error) {
+	var pricingMode, duration, coupon string
+	if len(modeDurCoupon) > 0 {
+		pricingMode = modeDurCoupon[0]
+	}
+	if len(modeDurCoupon) > 1 {
+		duration = modeDurCoupon[1]
+	}
+	if len(modeDurCoupon) > 2 {
+		coupon = modeDurCoupon[2]
+	}
+	return s.GetServerPriceWithMode(ctx, accountID, planCode, datacenter, options, pricingMode, duration, coupon)
+}
+
+// GetServerPriceWithMode quotes the configuration price for a specific pricingMode, duration, and optional coupon via a temporary OVH cart.
+func (s *Service) GetServerPriceWithMode(
+	ctx context.Context,
+	accountID, planCode, datacenter string,
+	options []string,
+	pricingMode, duration, coupon string,
+) (*ServerPriceResult, error) {
+	mode, dur, intervalMonths := NormalizePricingModeAndDuration(pricingMode, duration)
+	trimmedCoupon := strings.TrimSpace(coupon)
+
 	client, acc, err := s.getAccountClient(ctx, accountID)
 	if err != nil {
 		return &ServerPriceResult{
-			Success: false,
-			Code:    "OVH_CREDENTIALS_MISSING",
-			Error:   "OVH API credentials are not configured",
-			Price:   nil,
+			Success:     false,
+			Code:        "OVH_CREDENTIALS_MISSING",
+			PlanCode:    planCode,
+			Datacenter:  datacenter,
+			Options:     options,
+			PricingMode: mode,
+			Duration:    dur,
+			Coupon:      trimmedCoupon,
+			Error:       "OVH API credentials are not configured",
+			Price:       nil,
 		}, err
 	}
 
@@ -2640,7 +3603,7 @@ func (s *Service) GetServerPrice(ctx context.Context, accountID, planCode, datac
 
 	_ = client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/assign", url.PathEscape(cartID)), nil, nil)
 
-	catalogPath, itemID, addErr := AddCartServerItem(ctx, client, cartID, planCode, meta.CatalogSource, 1)
+	catalogPath, itemID, addErr := AddCartServerItemWithMode(ctx, client, cartID, planCode, meta.CatalogSource, 1, mode, dur)
 	if addErr != nil {
 		return &ServerPriceResult{Success: false, Error: addErr.Error()}, addErr
 	}
@@ -2661,7 +3624,26 @@ func (s *Service) GetServerPrice(ctx context.Context, accountID, planCode, datac
 	}
 
 	if len(options) > 0 {
-		AddCartOptions(ctx, client, cartID, itemID, catalogPath, planCode, options, s.log)
+		AddCartOptionsWithMode(ctx, client, cartID, itemID, catalogPath, planCode, options, mode, dur, s.log)
+	}
+
+	if trimmedCoupon != "" {
+		if couponErr := ApplyCartCoupon(ctx, client, cartID, trimmedCoupon); couponErr != nil {
+			if s.log != nil {
+				s.log.Warn(logger.SourceCatalog, "Cart coupon rejected during price quote", "planCode", planCode, "coupon", trimmedCoupon, "error", couponErr.Error())
+			}
+			return &ServerPriceResult{
+				Success:     false,
+				Code:        "INVALID_COUPON",
+				PlanCode:    planCode,
+				Datacenter:  datacenter,
+				Options:     options,
+				PricingMode: mode,
+				Duration:    dur,
+				Coupon:      trimmedCoupon,
+				Error:       fmt.Sprintf("Invalid or rejected coupon code %q: %v", trimmedCoupon, couponErr),
+			}, couponErr
+		}
 	}
 
 	var cartSummary map[string]any
@@ -2673,16 +3655,28 @@ func (s *Service) GetServerPrice(ctx context.Context, accountID, planCode, datac
 	_ = client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s", url.PathEscape(cartID)), &cartInfo)
 
 	pricePayload := ExtractCartPricePayload(cartSummary, cartInfo)
+	if pricePayload != nil {
+		pricePayload.PricingMode = mode
+		pricePayload.Duration = dur
+		pricePayload.IntervalMonths = intervalMonths
+		if pricePayload.Prices.WithoutTax != nil && intervalMonths > 0 {
+			meq := roundCents(*pricePayload.Prices.WithoutTax / float64(intervalMonths))
+			pricePayload.MonthlyEquivalentWithoutTax = &meq
+		}
+	}
 	return &ServerPriceResult{
-		Success:    true,
-		PlanCode:   planCode,
-		Datacenter: datacenter,
-		Options:    options,
-		Price:      pricePayload,
+		Success:     true,
+		PlanCode:    planCode,
+		Datacenter:  datacenter,
+		Options:     options,
+		PricingMode: mode,
+		Duration:    dur,
+		Coupon:      trimmedCoupon,
+		Price:       pricePayload,
 	}, nil
 }
 
-// AddCartServerItem adds a base server item to an OVH cart using either /eco or /baremetalServers with fallback.
+// AddCartServerItem adds a base server item to an OVH cart using default monthly pricing ("default", "P1M").
 func AddCartServerItem(
 	ctx context.Context,
 	client *ovh.Client,
@@ -2691,41 +3685,74 @@ func AddCartServerItem(
 	preferredSource string,
 	quantity int,
 ) (string, int64, error) {
+	return AddCartServerItemWithMode(ctx, client, cartID, planCode, preferredSource, quantity, "default", "P1M")
+}
+
+// AddCartServerItemWithMode adds a base server item to an OVH cart with a specific pricingMode and duration,
+// automatically retrying alternative duration representations (e.g. P12M -> P1Y -> P1M for upfront12) on 400/404.
+func AddCartServerItemWithMode(
+	ctx context.Context,
+	client *ovh.Client,
+	cartID string,
+	planCode string,
+	preferredSource string,
+	quantity int,
+	pricingMode string,
+	duration string,
+) (string, int64, error) {
 	if quantity <= 0 {
 		quantity = 1
 	}
+	mode, dur, _ := NormalizePricingModeAndDuration(pricingMode, duration)
+
+	durations := []string{dur}
+	appendUniqueDur := func(candidates ...string) {
+		for _, c := range candidates {
+			if c != "" && !slices.Contains(durations, c) {
+				durations = append(durations, c)
+			}
+		}
+	}
+	switch mode {
+	case "upfront12":
+		appendUniqueDur("P12M", "P1Y", "P1M")
+	case "upfront24":
+		appendUniqueDur("P24M", "P2Y", "P1M")
+	}
+
 	paths := []string{"baremetalServers", "eco"}
 	if preferredSource == "eco" || strings.Contains(strings.ToLower(planCode), "sk") ||
 		strings.Contains(strings.ToLower(planCode), "sys") || strings.Contains(strings.ToLower(planCode), "rise") {
 		paths = []string{"eco", "baremetalServers"}
 	}
 
-	payload := map[string]any{
-		"planCode":    planCode,
-		"pricingMode": "default",
-		"duration":    "P1M",
-		"quantity":    quantity,
-	}
-
 	var lastErr error
 	for _, catPath := range paths {
-		var res struct {
-			ItemID int64 `json:"itemId"`
-		}
-		err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/%s", url.PathEscape(cartID), catPath), payload, &res)
-		if err == nil {
-			return catPath, res.ItemID, nil
-		}
-		lastErr = err
-		var apiErr *ovh.APIError
-		if errors.As(err, &apiErr) && apiErr.Code != http.StatusNotFound && apiErr.Code != http.StatusBadRequest {
-			break
+		for _, tryDur := range durations {
+			payload := map[string]any{
+				"planCode":    planCode,
+				"pricingMode": mode,
+				"duration":    tryDur,
+				"quantity":    quantity,
+			}
+			var res struct {
+				ItemID int64 `json:"itemId"`
+			}
+			err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/%s", url.PathEscape(cartID), catPath), payload, &res)
+			if err == nil {
+				return catPath, res.ItemID, nil
+			}
+			lastErr = err
+			var apiErr *ovh.APIError
+			if errors.As(err, &apiErr) && apiErr.Code != http.StatusNotFound && apiErr.Code != http.StatusBadRequest {
+				return "", 0, lastErr
+			}
 		}
 	}
 	return "", 0, lastErr
 }
 
-// AddCartOptions attaches requested hardware addons to a cart item, filtering out non-hardware options.
+// AddCartOptions attaches requested hardware addons to a cart item using default monthly pricing ("default", "P1M").
 func AddCartOptions(
 	ctx context.Context,
 	client *ovh.Client,
@@ -2734,6 +3761,22 @@ func AddCartOptions(
 	catalogPath string,
 	planCode string,
 	options []string,
+	log *logger.Hub,
+) int {
+	return AddCartOptionsWithMode(ctx, client, cartID, itemID, catalogPath, planCode, options, "default", "P1M", log)
+}
+
+// AddCartOptionsWithMode attaches requested hardware addons to a cart item, preferring entries matching pricingMode and duration.
+func AddCartOptionsWithMode(
+	ctx context.Context,
+	client *ovh.Client,
+	cartID string,
+	itemID int64,
+	catalogPath string,
+	planCode string,
+	options []string,
+	pricingMode string,
+	duration string,
 	log *logger.Hub,
 ) int {
 	filtered := make([]string, 0, len(options))
@@ -2748,6 +3791,8 @@ func AddCartOptions(
 		return 0
 	}
 
+	reqMode, reqDur, _ := NormalizePricingModeAndDuration(pricingMode, duration)
+
 	var availOpts []map[string]any
 	optsURL := fmt.Sprintf("/order/cart/%s/%s/options?planCode=%s", url.PathEscape(cartID), catalogPath, url.QueryEscape(planCode))
 	if err := client.GetWithContext(ctx, optsURL, &availOpts); err != nil {
@@ -2759,27 +3804,58 @@ func AddCartOptions(
 
 	added := 0
 	for _, wanted := range filtered {
+		var matches []map[string]any
 		for _, avail := range availOpts {
-			pc := strFromMap(avail, "planCode")
-			if pc != wanted {
-				continue
+			if strFromMap(avail, "planCode") == wanted {
+				matches = append(matches, avail)
 			}
-			dur := nonEmpty(strFromMap(avail, "duration"), "P1M")
-			mode := nonEmpty(strFromMap(avail, "pricingMode"), "default")
-			optPayload := map[string]any{
-				"itemId":      itemID,
-				"planCode":    wanted,
-				"duration":    dur,
-				"pricingMode": mode,
-				"quantity":    1,
+		}
+		if len(matches) == 0 {
+			continue
+		}
+
+		chosen := matches[0]
+		for _, cand := range matches {
+			candMode := nonEmpty(strFromMap(cand, "pricingMode"), "default")
+			candDur := nonEmpty(strFromMap(cand, "duration"), "P1M")
+			if strings.EqualFold(candMode, reqMode) && strings.EqualFold(candDur, reqDur) {
+				chosen = cand
+				break
 			}
-			if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/%s/options", url.PathEscape(cartID), catalogPath), optPayload, nil); err == nil {
-				added++
+			if strings.EqualFold(candMode, reqMode) {
+				chosen = cand
 			}
-			break
+		}
+
+		dur := nonEmpty(strFromMap(chosen, "duration"), reqDur)
+		mode := nonEmpty(strFromMap(chosen, "pricingMode"), reqMode)
+		optPayload := map[string]any{
+			"itemId":      itemID,
+			"planCode":    wanted,
+			"duration":    dur,
+			"pricingMode": mode,
+			"quantity":    1,
+		}
+		if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/%s/options", url.PathEscape(cartID), catalogPath), optPayload, nil); err == nil {
+			added++
 		}
 	}
 	return added
+}
+
+// ApplyCartCoupon applies an optional voucher / promo coupon code to an OVH order cart.
+// Returns nil immediately if coupon is empty, or the upstream error if OVH rejects the coupon.
+func ApplyCartCoupon(ctx context.Context, client *ovh.Client, cartID, coupon string) error {
+	trimmed := strings.TrimSpace(coupon)
+	if trimmed == "" {
+		return nil
+	}
+	return client.PostWithContext(
+		ctx,
+		fmt.Sprintf("/order/cart/%s/coupons", url.PathEscape(cartID)),
+		map[string]any{"coupon": trimmed},
+		nil,
+	)
 }
 
 // ExtractCartPricePayload parses OVH /order/cart/{id}/summary and /order/cart/{id} into ServerPricePayload.
@@ -2988,13 +4064,13 @@ func (s *Service) getAccountClient(ctx context.Context, accountID string) (*ovh.
 func (s *Service) dictCachePath(endpoint, zone string) string {
 	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
 	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
-	return filepath.Join(s.cacheDir, fmt.Sprintf("catalog_dict_v2_%s_%s.json", ep, zn))
+	return filepath.Join(s.cacheDir, fmt.Sprintf("catalog_dict_v3_%s_%s.json", ep, zn))
 }
 
 func (s *Service) serversCachePath(endpoint, zone string) string {
 	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
 	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
-	return filepath.Join(s.cacheDir, fmt.Sprintf("servers_%s_%s.json", ep, zn))
+	return filepath.Join(s.cacheDir, fmt.Sprintf("servers_v3_%s_%s.json", ep, zn))
 }
 
 func (s *Service) vpsCachePath(endpoint, zone string) string {
@@ -3049,25 +4125,35 @@ func pickBetterAvailability(a, b string) string {
 	return a
 }
 
-func extractMonthlyPrice(item map[string]any) *float64 {
-	pricings := sliceOfMaps(item["pricings"])
-	for _, pr := range pricings {
-		if strFromMap(pr, "mode") == "default" && slices.Contains(sliceOfStrings(pr["capacities"]), "renew") {
-			if rawVal, ok := pr["price"]; ok && rawVal != nil {
-				v := math.Round(floatFromAny(rawVal)/1e6) / 100.0
-				return &v
-			}
-		}
-	}
-	for _, pr := range pricings {
+func extractMonthlyPriceFromModes(item map[string]any, modes []PlanPricingMode) *float64 {
+	hasRenew := false
+	for _, pr := range sliceOfMaps(item["pricings"]) {
 		if slices.Contains(sliceOfStrings(pr["capacities"]), "renew") {
-			if rawVal, ok := pr["price"]; ok && rawVal != nil {
-				v := math.Round(floatFromAny(rawVal)/1e6) / 100.0
-				return &v
+			if _, ok := pr["price"]; ok {
+				hasRenew = true
+				break
 			}
 		}
 	}
-	return nil
+	if !hasRenew {
+		return nil
+	}
+	if len(modes) > 0 {
+		for _, m := range modes {
+			if strings.EqualFold(m.Mode, "default") {
+				v := m.MonthlyEquivalentPrice
+				return &v
+			}
+		}
+		v := modes[0].MonthlyEquivalentPrice
+		return &v
+	}
+	return extractMonthlyPrice(item)
+}
+
+func extractMonthlyPrice(item map[string]any) *float64 {
+	modes := ParsePlanPricingModes(item)
+	return extractMonthlyPriceFromModes(item, modes)
 }
 
 func memoryPrefixKey(mem string) string {

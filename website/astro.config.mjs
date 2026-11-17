@@ -56,7 +56,7 @@ export default defineConfig({
       description:
         'Unified OVHcloud Control & Automated Bare-Metal / VPS Procurement Console Documentation.',
       logo: {
-        src: './src/assets/logo.svg',
+        src: './src/assets/logo.png',
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],

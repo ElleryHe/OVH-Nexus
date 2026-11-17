@@ -20,6 +20,9 @@ type QueueItem struct {
 	Options                 []string `json:"options"`
 	ConfigKey               string   `json:"configKey,omitempty"`
 	ConfigLabel             string   `json:"configLabel,omitempty"`
+	PricingMode             string   `json:"pricingMode,omitempty"`
+	Duration                string   `json:"duration,omitempty"`
+	Coupon                  string   `json:"coupon,omitempty"`
 	MaxMonthlyPrice         float64  `json:"maxMonthlyPrice,omitempty"`
 	Currency                string   `json:"currency,omitempty"`
 	Quantity                int      `json:"quantity"`
@@ -45,8 +48,11 @@ type PriceInfo struct {
 	WithTax      float64 `json:"withTax,omitempty"`
 	WithoutTax   float64 `json:"withoutTax,omitempty"`
 	Tax          float64 `json:"tax,omitempty"`
+	PeriodPrice  float64 `json:"periodPrice,omitempty"`
 	SetupFee     float64 `json:"setupFee,omitempty"`
 	MonthlyExVAT float64 `json:"monthlyExVat,omitempty"`
+	PricingMode  string  `json:"pricingMode,omitempty"`
+	Duration     string  `json:"duration,omitempty"`
 	CurrencyCode string  `json:"currencyCode,omitempty"`
 	Text         string  `json:"text,omitempty"`
 }
@@ -61,12 +67,17 @@ type PurchaseHistory struct {
 	Options           []string   `json:"options"`
 	ConfigKey         string     `json:"configKey,omitempty"`
 	ConfigLabel       string     `json:"configLabel,omitempty"`
+	PricingMode       string     `json:"pricingMode,omitempty"`
+	Duration          string     `json:"duration,omitempty"`
+	Coupon            string     `json:"coupon,omitempty"`
 	Quantity          int        `json:"quantity,omitempty"`
 	Status            string     `json:"status"`
 	OrderID           string     `json:"orderId,omitempty"`
 	OrderURL          string     `json:"orderUrl,omitempty"`
 	PriceText         string     `json:"priceText,omitempty"`
 	Price             *PriceInfo `json:"price,omitempty"`
+	PeriodPrice       float64    `json:"periodPrice,omitempty"`
+	MonthlyPrice      float64    `json:"monthlyPrice,omitempty"`
 	SetupFee          float64    `json:"setupFee,omitempty"`
 	AutoPaid          bool       `json:"autoPaid"`
 	AttemptCount      int        `json:"attemptCount,omitempty"`
@@ -170,6 +181,9 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 		&optsJSON,
 		&item.ConfigKey,
 		&item.ConfigLabel,
+		&item.PricingMode,
+		&item.Duration,
+		&item.Coupon,
 		&item.MaxMonthlyPrice,
 		&item.Currency,
 		&item.Quantity,
@@ -211,7 +225,7 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, error) {
 	query := `
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
-		       config_key, config_label, max_monthly_price, currency,
+		       config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, currency,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
 		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
@@ -244,7 +258,7 @@ func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, e
 func (s *Store) GetQueueItem(ctx context.Context, id string) (*QueueItem, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
-		       config_key, config_label, max_monthly_price, currency,
+		       config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, currency,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
 		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
@@ -294,6 +308,9 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	item.SourceRef = strings.TrimSpace(item.SourceRef)
 	item.ConfigKey = strings.TrimSpace(item.ConfigKey)
 	item.ConfigLabel = strings.TrimSpace(item.ConfigLabel)
+	item.PricingMode = strings.TrimSpace(item.PricingMode)
+	item.Duration = strings.TrimSpace(item.Duration)
+	item.Coupon = strings.TrimSpace(item.Coupon)
 	item.Currency = strings.TrimSpace(item.Currency)
 	now := nowUTC()
 	if item.CreatedAt == "" {
@@ -307,14 +324,14 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO order_queue (
 			id, account_id, plan_code, datacenters_json, options_json,
-			config_key, config_label, max_monthly_price, currency,
+			config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, currency,
 			quantity, purchased, failure_count, max_retry_count, status,
 			retry_interval, retry_count, last_check_time, next_attempt_at,
 			auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		item.ID, item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
-		item.ConfigKey, item.ConfigLabel, item.MaxMonthlyPrice, item.Currency,
+		item.ConfigKey, item.ConfigLabel, item.PricingMode, item.Duration, item.Coupon, item.MaxMonthlyPrice, item.Currency,
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
 		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError,
@@ -343,6 +360,9 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	item.SourceRef = strings.TrimSpace(item.SourceRef)
 	item.ConfigKey = strings.TrimSpace(item.ConfigKey)
 	item.ConfigLabel = strings.TrimSpace(item.ConfigLabel)
+	item.PricingMode = strings.TrimSpace(item.PricingMode)
+	item.Duration = strings.TrimSpace(item.Duration)
+	item.Coupon = strings.TrimSpace(item.Coupon)
 	item.Currency = strings.TrimSpace(item.Currency)
 	item.UpdatedAt = nowUTC()
 	dcsJSON, _ := json.Marshal(item.Datacenters)
@@ -351,14 +371,14 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE order_queue SET
 			account_id = ?, plan_code = ?, datacenters_json = ?, options_json = ?,
-			config_key = ?, config_label = ?, max_monthly_price = ?, currency = ?,
+			config_key = ?, config_label = ?, pricing_mode = ?, duration = ?, coupon = ?, max_monthly_price = ?, currency = ?,
 			quantity = ?, purchased = ?, failure_count = ?, max_retry_count = ?, status = ?,
 			retry_interval = ?, retry_count = ?, last_check_time = ?, next_attempt_at = ?,
 			auto_pay = ?, waive_retractation_period = ?, source = ?, source_ref = ?, last_error = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
-		item.ConfigKey, item.ConfigLabel, item.MaxMonthlyPrice, item.Currency,
+		item.ConfigKey, item.ConfigLabel, item.PricingMode, item.Duration, item.Coupon, item.MaxMonthlyPrice, item.Currency,
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
 		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError, item.UpdatedAt,
@@ -410,7 +430,7 @@ func (s *Store) ClearQueue(ctx context.Context, accountID string) (int64, error)
 func (s *Store) ListHistory(ctx context.Context, accountID string) ([]PurchaseHistory, error) {
 	query := `
 		SELECT id, task_id, account_id, plan_code, datacenter, options_json,
-		       config_key, config_label, quantity, status,
+		       config_key, config_label, pricing_mode, duration, coupon, quantity, status,
 		       order_id, order_url, price_text, price_json, auto_paid,
 		       attempt_count, sequence, delivered_notified, error_message, timestamp
 		FROM purchase_history`
@@ -434,7 +454,7 @@ func (s *Store) ListHistory(ctx context.Context, accountID string) ([]PurchaseHi
 		var autoPaidInt, deliveredInt int
 		if err := rows.Scan(
 			&h.ID, &h.TaskID, &h.AccountID, &h.PlanCode, &h.Datacenter, &optsJSON,
-			&h.ConfigKey, &h.ConfigLabel, &h.Quantity, &h.Status,
+			&h.ConfigKey, &h.ConfigLabel, &h.PricingMode, &h.Duration, &h.Coupon, &h.Quantity, &h.Status,
 			&h.OrderID, &h.OrderURL, &h.PriceText, &priceJSON, &autoPaidInt,
 			&h.AttemptCount, &h.Sequence, &deliveredInt, &h.ErrorMessage, &h.Timestamp,
 		); err != nil {
@@ -453,6 +473,18 @@ func (s *Store) ListHistory(ctx context.Context, accountID string) ([]PurchaseHi
 				h.Price = &p
 				if h.SetupFee == 0 && p.SetupFee > 0 {
 					h.SetupFee = p.SetupFee
+				}
+				if h.PeriodPrice == 0 && p.PeriodPrice > 0 {
+					h.PeriodPrice = p.PeriodPrice
+				}
+				if h.MonthlyPrice == 0 && p.MonthlyExVAT > 0 {
+					h.MonthlyPrice = p.MonthlyExVAT
+				}
+				if h.PricingMode == "" && p.PricingMode != "" {
+					h.PricingMode = p.PricingMode
+				}
+				if h.Duration == "" && p.Duration != "" {
+					h.Duration = p.Duration
 				}
 			}
 		}
@@ -477,11 +509,36 @@ func (s *Store) AddHistory(ctx context.Context, entry PurchaseHistory) (*Purchas
 	if entry.Timestamp == "" {
 		entry.Timestamp = nowUTC()
 	}
+	entry.PricingMode = strings.TrimSpace(entry.PricingMode)
+	entry.Duration = strings.TrimSpace(entry.Duration)
+	entry.Coupon = strings.TrimSpace(entry.Coupon)
+
 	optsJSON, _ := json.Marshal(entry.Options)
 	priceJSON := "{}"
+	if entry.Price == nil && (entry.PeriodPrice > 0 || entry.MonthlyPrice > 0 || entry.SetupFee > 0) {
+		entry.Price = &PriceInfo{
+			PeriodPrice:  entry.PeriodPrice,
+			MonthlyExVAT: entry.MonthlyPrice,
+			SetupFee:     entry.SetupFee,
+			PricingMode:  entry.PricingMode,
+			Duration:     entry.Duration,
+		}
+	}
 	if entry.Price != nil {
 		if entry.SetupFee > 0 && entry.Price.SetupFee == 0 {
 			entry.Price.SetupFee = entry.SetupFee
+		}
+		if entry.PeriodPrice > 0 && entry.Price.PeriodPrice == 0 {
+			entry.Price.PeriodPrice = entry.PeriodPrice
+		}
+		if entry.MonthlyPrice > 0 && entry.Price.MonthlyExVAT == 0 {
+			entry.Price.MonthlyExVAT = entry.MonthlyPrice
+		}
+		if entry.PricingMode != "" && entry.Price.PricingMode == "" {
+			entry.Price.PricingMode = entry.PricingMode
+		}
+		if entry.Duration != "" && entry.Price.Duration == "" {
+			entry.Price.Duration = entry.Duration
 		}
 		if b, err := json.Marshal(entry.Price); err == nil {
 			priceJSON = string(b)
@@ -491,13 +548,13 @@ func (s *Store) AddHistory(ctx context.Context, entry PurchaseHistory) (*Purchas
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO purchase_history (
 			id, task_id, account_id, plan_code, datacenter, options_json,
-			config_key, config_label, quantity, status,
+			config_key, config_label, pricing_mode, duration, coupon, quantity, status,
 			order_id, order_url, price_text, price_json, auto_paid,
 			attempt_count, sequence, delivered_notified, error_message, timestamp
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		entry.ID, entry.TaskID, entry.AccountID, entry.PlanCode, entry.Datacenter, string(optsJSON),
-		entry.ConfigKey, entry.ConfigLabel, entry.Quantity, entry.Status,
+		entry.ConfigKey, entry.ConfigLabel, entry.PricingMode, entry.Duration, entry.Coupon, entry.Quantity, entry.Status,
 		entry.OrderID, entry.OrderURL, entry.PriceText, priceJSON, boolToInt(entry.AutoPaid),
 		entry.AttemptCount, entry.Sequence, boolToInt(entry.DeliveredNotified), entry.ErrorMessage, entry.Timestamp,
 	)

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/utils/apiClient";
 import type { SupportedLocale } from "@/context/LocaleContext";
+import type { PlanPricingMode } from "@/types";
 
 export interface CpuInfo {
   brand?: string;
@@ -28,6 +29,15 @@ export interface PlanDisplayInfo {
   region: RegionTagInfo | null;
   regionLabel: string;
   basePrice?: number | null;
+  originalMonthlyPrice?: number | null;
+  setupFee?: number | null;
+  originalSetupFee?: number | null;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency?: string;
   addonPrices?: Record<string, number>;
 }
@@ -38,8 +48,19 @@ export interface CatalogPlanDictEntry {
   range?: string;
   cpu?: CpuInfo | null;
   price?: number | null;
+  originalPrice?: number | null;
+  originalMonthlyPrice?: number | null;
+  setupFee?: number | null;
+  originalSetupFee?: number | null;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes?: PlanPricingMode[];
   currency?: string;
   addonPrices?: Record<string, number>;
+  addonModePrices?: Record<string, Record<string, PlanPricingMode>>;
   catalogSource?: string;
   defaultSpecs?: {
     memory?: string;
@@ -55,6 +76,7 @@ export interface CatalogDictionary {
   plans: Record<string, CatalogPlanDictEntry>;
   realPlans?: Record<string, CatalogPlanDictEntry>;
   addonPrices?: Record<string, number>;
+  addonModePrices?: Record<string, Record<string, PlanPricingMode>>;
   options: Record<string, any>;
 }
 
@@ -70,7 +92,13 @@ export interface ConfigPriceBreakdown {
   formattedTotal: string;
 }
 
-const STORAGE_KEY = "ovh_nexus_catalog_dict_v2";
+const LEGACY_STORAGE_KEY = "ovh_nexus_catalog_dict_v2";
+const STORAGE_KEY = "ovh_nexus_catalog_dict_v3";
+try {
+  localStorage.removeItem(LEGACY_STORAGE_KEY);
+} catch {
+  // ignore storage errors
+}
 let memoryDict: CatalogDictionary | null = null;
 let inflightPromise: Promise<CatalogDictionary | null> | null = null;
 
@@ -327,12 +355,122 @@ export function resolvePlanDisplay(
       region,
       regionLabel: region ? region[locale] || region.en : "",
       basePrice: typeof match.price === "number" ? match.price : null,
+      originalMonthlyPrice:
+        typeof match.originalMonthlyPrice === "number"
+          ? match.originalMonthlyPrice
+          : typeof match.originalPrice === "number"
+          ? match.originalPrice
+          : null,
+      setupFee: typeof match.setupFee === "number" ? match.setupFee : null,
+      originalSetupFee:
+        typeof match.originalSetupFee === "number"
+          ? match.originalSetupFee
+          : null,
+      freeSetup: Boolean(match.freeSetup),
+      hasPromo: Boolean(match.hasPromo),
+      promoCode: match.promoCode,
+      promoBadge: match.promoBadge,
+      promoDescription: match.promoDescription,
+      pricingModes: Array.isArray(match.pricingModes) ? match.pricingModes : undefined,
       currency: match.currency || activeDict?.currency || "EUR",
       addonPrices: mergedAddonPrices,
     };
   }
 
   return inferPlanFromCode(planCode, locale);
+}
+
+export function resolvePricingModeDuration(
+  mode?: string,
+  modes?: PlanPricingMode[]
+): string {
+  const m = (mode || "default").trim();
+  if (Array.isArray(modes) && modes.length > 0) {
+    const found = modes.find((it) => it.mode === m);
+    if (found && found.duration) return found.duration;
+  }
+  if (m === "upfront12") return "P12M";
+  if (m === "upfront24") return "P24M";
+  return "P1M";
+}
+
+export function synthesizePricingModes(input: {
+  pricingModes?: PlanPricingMode[];
+  estimatedMonthlyPrice?: number | null;
+  originalMonthlyPrice?: number | null;
+  setupFee?: number | null;
+  originalSetupFee?: number | null;
+  freeSetup?: boolean;
+  hasPromo?: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+}): PlanPricingMode[] {
+  if (Array.isArray(input.pricingModes) && input.pricingModes.length > 0) {
+    return input.pricingModes;
+  }
+  const monthly =
+    typeof input.estimatedMonthlyPrice === "number" &&
+    input.estimatedMonthlyPrice > 0
+      ? input.estimatedMonthlyPrice
+      : 0;
+  const origMonthly =
+    typeof input.originalMonthlyPrice === "number" &&
+    input.originalMonthlyPrice > 0
+      ? input.originalMonthlyPrice
+      : monthly;
+  const setup =
+    typeof input.setupFee === "number" && input.setupFee >= 0
+      ? input.setupFee
+      : 0;
+  const origSetup =
+    typeof input.originalSetupFee === "number" && input.originalSetupFee >= 0
+      ? input.originalSetupFee
+      : setup;
+  const freeSetup = Boolean(
+    input.freeSetup || (setup === 0 && origSetup > 0)
+  );
+  const hasPromo = Boolean(
+    input.hasPromo ||
+      freeSetup ||
+      (origMonthly > 0 && monthly > 0 && origMonthly > monthly + 0.01)
+  );
+  if (monthly <= 0 && setup <= 0 && origSetup <= 0) {
+    return [];
+  }
+  return [
+    {
+      mode: "default",
+      duration: "P1M",
+      intervalMonths: 1,
+      commitmentMonths: 0,
+      periodPrice: monthly,
+      originalPeriodPrice: origMonthly,
+      monthlyEquivalentPrice: monthly,
+      originalMonthlyPrice: origMonthly,
+      setupFee: setup,
+      originalSetupFee: origSetup,
+      freeSetup,
+      hasPromo,
+      promoCode: input.promoCode,
+      promoBadge: input.promoBadge,
+      promoDescription: input.promoDescription,
+    },
+  ];
+}
+
+export function resolvePricingModeEntry(
+  modes?: PlanPricingMode[],
+  targetMode?: string
+): PlanPricingMode | null {
+  if (!Array.isArray(modes) || modes.length === 0) return null;
+  const wanted = (targetMode || "default").trim();
+  return (
+    modes.find((m) => m.mode === wanted) ||
+    modes.find((m) => m.mode === "default") ||
+    modes[0] ||
+    null
+  );
 }
 
 const CURRENCY_SYMBOL_MAP: Record<string, string> = {

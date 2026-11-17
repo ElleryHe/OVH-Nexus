@@ -1,7 +1,7 @@
 # OVH Nexus
 
 <p align="center">
-  <img src="./public/favicon.svg" width="72" height="72" alt="OVH Nexus Logo" />
+  <img src="./public/logo.png" width="76" height="76" alt="OVH Nexus Logo" />
 </p>
 
 <p align="center">
@@ -56,6 +56,9 @@ API_SECRET_KEY=$(openssl rand -hex 24)
 # Required: Independent master key for AES-256-GCM at-rest secret encryption (at least 16 characters)
 DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
+# Optional: Console login username for password manager auto-fill (default Nexus, case-sensitive)
+ADMIN_USERNAME=Nexus
+
 # Optional: Set to true when serving behind an HTTPS reverse proxy
 COOKIE_SECURE=false
 
@@ -91,6 +94,7 @@ services:
     environment:
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
       - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-Nexus}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
       - TZ=${TZ:-UTC}
@@ -109,7 +113,7 @@ services:
 docker compose up -d
 ```
 
-Open `http://localhost:20000` and sign in with the `API_SECRET_KEY` generated in your `.env` file (`grep API_SECRET_KEY .env`).
+Open `http://localhost:20000` and sign in with username `Nexus` (or your configured `ADMIN_USERNAME`, case-sensitive) and the `API_SECRET_KEY` generated in your `.env` file (`grep API_SECRET_KEY .env`).
 
 ---
 

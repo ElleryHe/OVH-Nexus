@@ -15,6 +15,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   Cpu,
+  HardDrive,
+  Database,
   Wifi,
   Settings,
   ArrowRightLeft,
@@ -24,10 +26,11 @@ import {
   List,
   Check,
   Sparkles,
-  ChevronDown,
-  ChevronUp,
   ShoppingCart,
   RefreshCw,
+  SlidersHorizontal,
+  X,
+  Zap,
 } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useLocale } from '@/context/LocaleContext';
@@ -51,55 +54,18 @@ import {
   buildConfigKey,
   formatConfigLabel,
   getCurrencySymbol,
+  resolvePricingModeDuration,
+  synthesizePricingModes,
+  resolvePricingModeEntry,
 } from '@/utils/hardwareFormat';
 import type {
   ListingState,
   OVHAvailabilityRow,
   PlanConfigOption,
+  PlanPricingMode,
+  ServerOption,
+  ServerPlan,
 } from '@/types';
-
-interface ServerOption {
-  label: string;
-  value: string;
-  family?: string;
-  configKey?: string;
-  options?: string[];
-  isDefault?: boolean;
-  estimatedMonthlyPrice?: number;
-  price?: number;
-  currency?: string;
-}
-
-interface ServerPlan {
-  planCode: string;
-  name: string;
-  description?: string;
-  range?: string;
-  cpu: string;
-  memory: string;
-  storage: string;
-  bandwidth: string;
-  vrackBandwidth: string;
-  monthlyPrice?: number | null;
-  startingPrice?: number | null;
-  defaultConfigKey?: string;
-  currency?: string;
-  catalogSource?: string;
-  listingState?: ListingState | 'delisted' | string;
-  listedAt?: string;
-  orderable?: boolean;
-  generation?: number;
-  defaultOptions: ServerOption[];
-  availableOptions: ServerOption[];
-  datacenters: {
-    datacenter: string;
-    dcName: string;
-    region: string;
-    availability: string;
-    countryCode: string;
-    flag?: string;
-  }[];
-}
 
 interface UnifiedCardConfig {
   configKey: string;
@@ -109,12 +75,27 @@ interface UnifiedCardConfig {
   options: string[];
   isDefault: boolean;
   estimatedMonthlyPrice: number | null;
+  originalMonthlyPrice: number | null;
+  setupFee: number | null;
+  originalSetupFee: number | null;
+  freeSetup: boolean;
+  hasPromo: boolean;
+  promoCode?: string;
+  promoBadge?: string;
+  promoDescription?: string;
+  pricingModes: PlanPricingMode[];
   currency: string;
   dcStatuses: Record<string, string>;
   inStockDcs: string[];
 }
 
-type ListingFilterTab = 'all' | 'listed' | 'announced' | 'presale' | 'new';
+type ListingFilterTab =
+  | 'all'
+  | 'listed'
+  | 'promo'
+  | 'announced'
+  | 'presale'
+  | 'new';
 
 const isAvailStatus = (status?: string): boolean =>
   Boolean(status && status !== 'unavailable' && status !== 'unknown');
@@ -223,6 +204,9 @@ const ServersPage = () => {
     datacenters: string[];
     selectedConfig: UnifiedCardConfig | null;
     extraOptions: string[];
+    pricingMode: string;
+    duration: string;
+    coupon: string;
   } | null>(null);
   const [queueAutoPay, setQueueAutoPay] = useState(false);
   const [queueWaiveRetractation, setQueueWaiveRetractation] = useState(false);
@@ -246,16 +230,25 @@ const ServersPage = () => {
     Record<string, Record<string, string>>
   >({});
 
-  // Collapsed by default! expandedCards: planCode -> boolean
-  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>(
-    {}
+  // Focused Configuration & Order Modal server
+  const [configModalServer, setConfigModalServer] = useState<ServerPlan | null>(
+    null
   );
+  const [isQuickOrdering, setIsQuickOrdering] = useState(false);
   // Per-card "Show all inventory (including out-of-stock)" toggle: default false
   const [showAllInventoryMap, setShowAllInventoryMap] = useState<
     Record<string, boolean>
   >({});
   // Per-card selected configuration key: planCode -> configKey
   const [selectedConfigKeyMap, setSelectedConfigKeyMap] = useState<
+    Record<string, string>
+  >({});
+  // Per-card selected billing / commitment pricingMode: planCode -> pricingMode
+  const [selectedPricingModeMap, setSelectedPricingModeMap] = useState<
+    Record<string, string>
+  >({});
+  // Per-card custom coupon code: planCode -> coupon
+  const [selectedCouponMap, setSelectedCouponMap] = useState<
     Record<string, string>
   >({});
   // Per-card selected advanced addon options (bandwidth / vrack): planCode -> optionValue[]
@@ -589,6 +582,94 @@ const ServersPage = () => {
           : typeof server.monthlyPrice === 'number' && server.monthlyPrice > 0
           ? server.monthlyPrice
           : planMeta.basePrice ?? null;
+      const baseOrigMonthly =
+        typeof server.originalMonthlyPrice === 'number' &&
+        server.originalMonthlyPrice > 0
+          ? server.originalMonthlyPrice
+          : typeof server.originalPrice === 'number' && server.originalPrice > 0
+          ? server.originalPrice
+          : planMeta.originalMonthlyPrice ?? null;
+      const baseSetupFee =
+        typeof server.setupFee === 'number'
+          ? server.setupFee
+          : typeof planMeta.setupFee === 'number'
+          ? planMeta.setupFee
+          : null;
+      const baseOrigSetupFee =
+        typeof server.originalSetupFee === 'number'
+          ? server.originalSetupFee
+          : typeof planMeta.originalSetupFee === 'number'
+          ? planMeta.originalSetupFee
+          : null;
+      const baseFreeSetup = Boolean(
+        server.freeSetup ||
+          planMeta.freeSetup ||
+          (baseSetupFee === 0 && (baseOrigSetupFee ?? 0) > 0)
+      );
+      const baseHasPromo = Boolean(
+        server.hasPromo ||
+          planMeta.hasPromo ||
+          baseFreeSetup ||
+          (baseOrigMonthly && basePrice && baseOrigMonthly > basePrice + 0.01)
+      );
+      const basePricingModes =
+        Array.isArray(server.pricingModes) && server.pricingModes.length > 0
+          ? server.pricingModes
+          : Array.isArray(planMeta.pricingModes) &&
+            planMeta.pricingModes.length > 0
+          ? planMeta.pricingModes
+          : undefined;
+
+      const buildAdjustedModes = (
+        rawModes: PlanPricingMode[] | undefined,
+        estMonthly: number | null,
+        origMonthly: number | null,
+        setup: number | null,
+        origSetup: number | null,
+        freeSetupFlag: boolean,
+        hasPromoFlag: boolean,
+        promoCode?: string,
+        promoBadge?: string,
+        promoDescription?: string
+      ): PlanPricingMode[] => {
+        if (Array.isArray(rawModes) && rawModes.length > 0) {
+          return rawModes;
+        }
+        if (Array.isArray(basePricingModes) && basePricingModes.length > 0) {
+          const monthlyDelta =
+            estMonthly !== null && basePrice !== null
+              ? Math.max(0, Number((estMonthly - basePrice).toFixed(2)))
+              : 0;
+          return basePricingModes.map((m) => {
+            const interval = m.intervalMonths > 0 ? m.intervalMonths : 1;
+            const periodDelta = Number((monthlyDelta * interval).toFixed(2));
+            return {
+              ...m,
+              periodPrice: Number((m.periodPrice + periodDelta).toFixed(2)),
+              originalPeriodPrice: Number(
+                (m.originalPeriodPrice + periodDelta).toFixed(2)
+              ),
+              monthlyEquivalentPrice: Number(
+                (m.monthlyEquivalentPrice + monthlyDelta).toFixed(2)
+              ),
+              originalMonthlyPrice: Number(
+                (m.originalMonthlyPrice + monthlyDelta).toFixed(2)
+              ),
+            };
+          });
+        }
+        return synthesizePricingModes({
+          estimatedMonthlyPrice: estMonthly,
+          originalMonthlyPrice: origMonthly,
+          setupFee: setup,
+          originalSetupFee: origSetup,
+          freeSetup: freeSetupFlag,
+          hasPromo: hasPromoFlag,
+          promoCode,
+          promoBadge,
+          promoDescription,
+        });
+      };
 
       const serverDcMap: Record<string, string> = {
         ...(availability[server.planCode] || {}),
@@ -658,6 +739,37 @@ const ServersPage = () => {
               : typeof c.price === 'number' && c.price > 0
               ? c.price
               : priceCalc.totalPrice ?? basePrice;
+          const origMonthly =
+            typeof c.originalMonthlyPrice === 'number' &&
+            c.originalMonthlyPrice > 0
+              ? c.originalMonthlyPrice
+              : typeof c.originalPrice === 'number' && c.originalPrice > 0
+              ? c.originalPrice
+              : baseOrigMonthly;
+          const setupFee =
+            typeof c.setupFee === 'number' ? c.setupFee : baseSetupFee;
+          const origSetupFee =
+            typeof c.originalSetupFee === 'number'
+              ? c.originalSetupFee
+              : baseOrigSetupFee;
+          const freeSetup = Boolean(
+            c.freeSetup ||
+              baseFreeSetup ||
+              (setupFee === 0 && (origSetupFee ?? 0) > 0)
+          );
+          const hasPromo = Boolean(
+            c.hasPromo ||
+              baseHasPromo ||
+              freeSetup ||
+              (origMonthly && estPrice && origMonthly > estPrice + 0.01)
+          );
+          const promoCode = c.promoCode || server.promoCode || planMeta.promoCode;
+          const promoBadge =
+            c.promoBadge || server.promoBadge || planMeta.promoBadge;
+          const promoDescription =
+            c.promoDescription ||
+            server.promoDescription ||
+            planMeta.promoDescription;
 
           configMap.set(key, {
             configKey: key,
@@ -672,6 +784,26 @@ const ServersPage = () => {
                 : [mem, sto].filter((x) => x && x !== 'N/A'),
             isDefault: Boolean(c.isDefault || key === defaultKey),
             estimatedMonthlyPrice: estPrice,
+            originalMonthlyPrice: origMonthly,
+            setupFee,
+            originalSetupFee: origSetupFee,
+            freeSetup,
+            hasPromo,
+            promoCode,
+            promoBadge,
+            promoDescription,
+            pricingModes: buildAdjustedModes(
+              c.pricingModes,
+              estPrice,
+              origMonthly,
+              setupFee,
+              origSetupFee,
+              freeSetup,
+              hasPromo,
+              promoCode,
+              promoBadge,
+              promoDescription
+            ),
             currency: c.currency || baseCurrency,
             dcStatuses,
             inStockDcs,
@@ -712,6 +844,38 @@ const ServersPage = () => {
             : typeof row.price === 'number' && row.price > 0
             ? row.price
             : priceCalc.totalPrice ?? basePrice;
+        const origMonthly =
+          typeof row.originalMonthlyPrice === 'number' &&
+          row.originalMonthlyPrice > 0
+            ? row.originalMonthlyPrice
+            : typeof row.originalPrice === 'number' && row.originalPrice > 0
+            ? row.originalPrice
+            : baseOrigMonthly;
+        const setupFee =
+          typeof row.setupFee === 'number' ? row.setupFee : baseSetupFee;
+        const origSetupFee =
+          typeof row.originalSetupFee === 'number'
+            ? row.originalSetupFee
+            : baseOrigSetupFee;
+        const freeSetup = Boolean(
+          row.freeSetup ||
+            baseFreeSetup ||
+            (setupFee === 0 && (origSetupFee ?? 0) > 0)
+        );
+        const hasPromo = Boolean(
+          row.hasPromo ||
+            baseHasPromo ||
+            freeSetup ||
+            (origMonthly && estPrice && origMonthly > estPrice + 0.01)
+        );
+        const promoCode =
+          row.promoCode || server.promoCode || planMeta.promoCode;
+        const promoBadge =
+          row.promoBadge || server.promoBadge || planMeta.promoBadge;
+        const promoDescription =
+          row.promoDescription ||
+          server.promoDescription ||
+          planMeta.promoDescription;
 
         const existing = configMap.get(key);
         if (!existing) {
@@ -726,6 +890,26 @@ const ServersPage = () => {
                 : [mem, sto].filter((x) => x && x !== 'N/A'),
             isDefault: Boolean(row.isDefault || key === defaultKey),
             estimatedMonthlyPrice: estPrice,
+            originalMonthlyPrice: origMonthly,
+            setupFee,
+            originalSetupFee: origSetupFee,
+            freeSetup,
+            hasPromo,
+            promoCode,
+            promoBadge,
+            promoDescription,
+            pricingModes: buildAdjustedModes(
+              row.pricingModes,
+              estPrice,
+              origMonthly,
+              setupFee,
+              origSetupFee,
+              freeSetup,
+              hasPromo,
+              promoCode,
+              promoBadge,
+              promoDescription
+            ),
             currency: row.currency || baseCurrency,
             dcStatuses,
             inStockDcs,
@@ -739,6 +923,13 @@ const ServersPage = () => {
           existing.inStockDcs = Object.entries(existing.dcStatuses)
             .filter(([_, st]) => isAvailStatus(st))
             .map(([dc]) => dc);
+          if (
+            (!existing.pricingModes || existing.pricingModes.length === 0) &&
+            Array.isArray(row.pricingModes) &&
+            row.pricingModes.length > 0
+          ) {
+            existing.pricingModes = row.pricingModes;
+          }
         }
       });
 
@@ -751,6 +942,11 @@ const ServersPage = () => {
         const inStockDcs = Object.entries(serverDcMap)
           .filter(([_, st]) => isAvailStatus(st))
           .map(([dc]) => dc);
+        const estPrice = priceCalc.totalPrice ?? basePrice;
+        const promoCode = server.promoCode || planMeta.promoCode;
+        const promoBadge = server.promoBadge || planMeta.promoBadge;
+        const promoDescription =
+          server.promoDescription || planMeta.promoDescription;
 
         configMap.set(defaultKey, {
           configKey: defaultKey,
@@ -761,7 +957,27 @@ const ServersPage = () => {
             (x) => x && x !== 'N/A' && x !== '暂无数据'
           ),
           isDefault: true,
-          estimatedMonthlyPrice: priceCalc.totalPrice ?? basePrice,
+          estimatedMonthlyPrice: estPrice,
+          originalMonthlyPrice: baseOrigMonthly,
+          setupFee: baseSetupFee,
+          originalSetupFee: baseOrigSetupFee,
+          freeSetup: baseFreeSetup,
+          hasPromo: baseHasPromo,
+          promoCode,
+          promoBadge,
+          promoDescription,
+          pricingModes: buildAdjustedModes(
+            basePricingModes,
+            estPrice,
+            baseOrigMonthly,
+            baseSetupFee,
+            baseOrigSetupFee,
+            baseFreeSetup,
+            baseHasPromo,
+            promoCode,
+            promoBadge,
+            promoDescription
+          ),
           currency: baseCurrency,
           dcStatuses: serverDcMap,
           inStockDcs,
@@ -813,16 +1029,21 @@ const ServersPage = () => {
     []
   );
 
-  const toggleExpandCard = (server: ServerPlan) => {
-    const nextExpanded = !expandedCards[server.planCode];
-    setExpandedCards((prev) => ({
-      ...prev,
-      [server.planCode]: nextExpanded,
-    }));
-    if (nextExpanded) {
-      fetchPlanConfigsForCard(server.planCode);
-    }
+  const openConfigModal = (server: ServerPlan) => {
+    setConfigModalServer(server);
+    fetchPlanConfigsForCard(server.planCode);
   };
+
+  useEffect(() => {
+    if (!configModalServer) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !quickMonitorTarget && !pendingQueueTarget) {
+        setConfigModalServer(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [configModalServer, quickMonitorTarget, pendingQueueTarget]);
 
   const toggleDcForServer = (planCode: string, dcCode: string) => {
     const norm = normalizeDatacenterCode(dcCode);
@@ -920,12 +1141,25 @@ const ServersPage = () => {
       userSelectedDcs.length > 0 ? userSelectedDcs : inStockDcs;
 
     if (effectiveDcs.length === 0) {
-      setExpandedCards((prev) => ({ ...prev, [server.planCode]: true }));
+      setConfigModalServer(server);
       setShowAllInventoryMap((prev) => ({ ...prev, [server.planCode]: true }));
       fetchPlanConfigsForCard(server.planCode);
-      toast.info('请在展开卡片中选择目标机房后再加入抢购队列');
+      toast.info('请在配置弹窗中选择目标机房后再加入抢购队列');
       return;
     }
+
+    const mode = selectedPricingModeMap[server.planCode] || 'default';
+    const modeEntry = resolvePricingModeEntry(
+      activeConfig?.pricingModes || server.pricingModes,
+      mode
+    );
+    const duration =
+      modeEntry?.duration ||
+      resolvePricingModeDuration(
+        mode,
+        activeConfig?.pricingModes || server.pricingModes
+      );
+    const coupon = (selectedCouponMap[server.planCode] || '').trim();
 
     setQueueAutoPay(false);
     setQueueWaiveRetractation(false);
@@ -934,13 +1168,117 @@ const ServersPage = () => {
       datacenters: effectiveDcs,
       selectedConfig: activeConfig,
       extraOptions: selectedAddonOptionsMap[server.planCode] || [],
+      pricingMode: mode,
+      duration,
+      coupon,
     });
+  };
+
+  const quickOrderFromModal = async (server: ServerPlan) => {
+    if (!isAuthenticated) {
+      toast.error('请先配置 API 设置');
+      return;
+    }
+
+    const unifiedConfigs = buildUnifiedConfigsForServer(server);
+    const defaultCfg =
+      unifiedConfigs.find((c) => c.isDefault) || unifiedConfigs[0] || null;
+    const activeCfgKey =
+      selectedConfigKeyMap[server.planCode] || defaultCfg?.configKey || '';
+    const activeCfg =
+      unifiedConfigs.find((c) => c.configKey === activeCfgKey) || defaultCfg;
+
+    const allInStockDcSet = new Set<string>();
+    unifiedConfigs.forEach((c) => {
+      c.inStockDcs.forEach((dc) => allInStockDcSet.add(dc));
+    });
+    (server.datacenters || []).forEach((d) => {
+      if (isAvailStatus(d.availability)) {
+        const norm = normalizeDatacenterCode(d.datacenter);
+        if (norm) allInStockDcSet.add(norm);
+      }
+    });
+    const allInStockDcs = Array.from(allInStockDcSet);
+
+    const cfgInStockDcs =
+      activeCfg && activeCfg.inStockDcs.length > 0
+        ? activeCfg.inStockDcs
+        : allInStockDcs;
+    const userSelectedDcs = selectedDcsMap[server.planCode] || [];
+    const selectedInStock = userSelectedDcs.filter((d) =>
+      cfgInStockDcs.includes(d)
+    );
+    const targetDc =
+      selectedInStock[0] || cfgInStockDcs[0] || userSelectedDcs[0] || '';
+
+    if (!targetDc) {
+      toast.error('请先选择至少一个可用机房');
+      return;
+    }
+
+    const configOpts =
+      activeCfg && activeCfg.options.length > 0
+        ? activeCfg.options
+        : (server.defaultOptions || [])
+            .filter((o) => !isLicenseOrSoftwareOption(o))
+            .map((o) => o.value);
+    const extraOptions = selectedAddonOptionsMap[server.planCode] || [];
+    const mergedOptions = Array.from(new Set([...configOpts, ...extraOptions]));
+    const apiDc = convertDisplayDcToApiDc(targetDc);
+
+    const mode = selectedPricingModeMap[server.planCode] || 'default';
+    const modeEntry = resolvePricingModeEntry(
+      activeCfg?.pricingModes || server.pricingModes,
+      mode
+    );
+    const duration =
+      modeEntry?.duration ||
+      resolvePricingModeDuration(
+        mode,
+        activeCfg?.pricingModes || server.pricingModes
+      );
+    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+
+    setIsQuickOrdering(true);
+    try {
+      const res = await api.post('/orders/quick-order', {
+        planCode: server.planCode,
+        datacenter: apiDc,
+        options: mergedOptions,
+        configKey: activeCfg?.configKey || undefined,
+        configLabel: activeCfg?.label || undefined,
+        currency: activeCfg?.currency || server.currency || undefined,
+        pricingMode: mode,
+        duration,
+        coupon: coupon || undefined,
+      });
+      const cfgLabel = activeCfg?.label ? ` (${activeCfg.label})` : '';
+      toast.success(
+        res.data?.message ||
+          `已提交 ${server.planCode}${cfgLabel} [${targetDc.toUpperCase()}] 快捷下单任务`
+      );
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          '快捷下单失败'
+      );
+    } finally {
+      setIsQuickOrdering(false);
+    }
   };
 
   const confirmAddToQueue = async () => {
     if (!pendingQueueTarget) return;
-    const { server, datacenters, selectedConfig, extraOptions } =
-      pendingQueueTarget;
+    const {
+      server,
+      datacenters,
+      selectedConfig,
+      extraOptions,
+      pricingMode,
+      duration,
+      coupon,
+    } = pendingQueueTarget;
 
     try {
       const configOpts =
@@ -959,6 +1297,9 @@ const ServersPage = () => {
         configKey: selectedConfig?.configKey || undefined,
         configLabel: selectedConfig?.label || undefined,
         currency: selectedConfig?.currency || server.currency || undefined,
+        pricingMode: pricingMode || 'default',
+        duration: duration || 'P1M',
+        coupon: coupon || undefined,
         auto_pay: queueAutoPay,
         waive_retractation_period: queueWaiveRetractation,
       });
@@ -993,11 +1334,18 @@ const ServersPage = () => {
     }
   };
 
+  const isServerPromo = useCallback((server: ServerPlan): boolean => {
+    return Boolean(
+      server.hasPromo || (server.pricingModes || []).some((m) => m.hasPromo)
+    );
+  }, []);
+
   // Tab counts
   const tabCounts = useMemo(() => {
     const counts = {
       all: servers.length,
       listed: 0,
+      promo: 0,
       announced: 0,
       presale: 0,
       new: 0,
@@ -1007,6 +1355,7 @@ const ServersPage = () => {
       if (st === 'listed') counts.listed += 1;
       else if (st === 'announced') counts.announced += 1;
       else if (st === 'presale') counts.presale += 1;
+      if (isServerPromo(srv)) counts.promo += 1;
       const isNew = Boolean(
         st === 'listed' &&
           (recentSkuMap[srv.planCode] ||
@@ -1016,7 +1365,7 @@ const ServersPage = () => {
       if (isNew) counts.new += 1;
     });
     return counts;
-  }, [servers, recentSkuMap]);
+  }, [servers, recentSkuMap, isServerPromo]);
 
   const filteredServers = useMemo(() => {
     let filtered = [...servers];
@@ -1025,6 +1374,8 @@ const ServersPage = () => {
       filtered = filtered.filter(
         (s) => resolveServerListingState(s) === 'listed'
       );
+    } else if (listingFilterTab === 'promo') {
+      filtered = filtered.filter((s) => isServerPromo(s));
     } else if (listingFilterTab === 'announced') {
       filtered = filtered.filter(
         (s) => resolveServerListingState(s) === 'announced'
@@ -1105,7 +1456,7 @@ const ServersPage = () => {
           服务器目录
         </h1>
         <p className="text-cyber-muted text-xs sm:text-sm">
-          紧凑卡片视图，点击卡片展开可选硬件配置（内存 + 硬盘）与实时机房库存
+          模块化固定规格卡片，点击「选择配置 / 下单」查看完整硬件配置（内存 + 硬盘）、实时库存并一键下单
         </p>
       </div>
 
@@ -1255,6 +1606,13 @@ const ServersPage = () => {
                   'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
               },
               {
+                id: 'promo',
+                label: t('listing.filter.promo'),
+                count: tabCounts.promo,
+                activeCls:
+                  'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
+              },
+              {
                 id: 'announced',
                 label: t('listing.filter.announced'),
                 count: tabCounts.announced,
@@ -1286,6 +1644,8 @@ const ServersPage = () => {
                 className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
                   isActive
                     ? tab.activeCls
+                    : tab.id === 'promo'
+                    ? 'bg-rose-500/10 text-rose-300/90 border-rose-500/30 hover:bg-rose-500/20'
                     : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-cyber-text'
                 }`}
               >
@@ -1301,11 +1661,16 @@ const ServersPage = () => {
 
       {/* Loading State */}
       {isLoading && !hasLoadedFromCache.current ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {[...Array(8)].map((_, i) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-stretch">
+          {[...Array(6)].map((_, i) => (
             <Card key={i} className="animate-pulse border-cyber-accent/30 p-4">
               <div className="h-5 bg-cyber-grid/30 rounded w-1/2 mb-3"></div>
-              <div className="h-4 bg-cyber-grid/20 rounded w-3/4 mb-2"></div>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+              </div>
               <div className="h-4 bg-cyber-grid/20 rounded w-2/3"></div>
             </Card>
           ))}
@@ -1330,7 +1695,7 @@ const ServersPage = () => {
         <div
           className={
             viewMode === 'grid'
-              ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 items-start'
+              ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-stretch'
               : 'space-y-3'
           }
         >
@@ -1349,10 +1714,6 @@ const ServersPage = () => {
                     Date.now() - Date.parse(server.listedAt) <=
                       7 * 24 * 3600 * 1000))
             );
-            const isExpanded = Boolean(expandedCards[server.planCode]);
-            const showAllInventory = Boolean(
-              showAllInventoryMap[server.planCode]
-            );
 
             const unifiedConfigs = buildUnifiedConfigsForServer(server);
             const defaultCfg =
@@ -1365,7 +1726,7 @@ const ServersPage = () => {
               unifiedConfigs.find((c) => c.configKey === activeCfgKey) ||
               defaultCfg;
 
-            // Aggregate all in-stock DCs across configs for the collapsed badge preview
+            // Aggregate all in-stock DCs across configs for the card badge row
             const allInStockDcSet = new Set<string>();
             unifiedConfigs.forEach((c) => {
               c.inStockDcs.forEach((dc) => allInStockDcSet.add(dc));
@@ -1377,13 +1738,6 @@ const ServersPage = () => {
               }
             });
             const allInStockDcs = Array.from(allInStockDcSet);
-            const hasAnyStock = allInStockDcs.length > 0;
-
-            // Configs visible in the expanded list (in-stock only by default unless showAllInventory or 0 stock)
-            const visibleConfigs =
-              showAllInventory || !hasAnyStock
-                ? unifiedConfigs
-                : unifiedConfigs.filter((c) => c.inStockDcs.length > 0);
 
             const startingPrice =
               typeof server.startingPrice === 'number' &&
@@ -1394,138 +1748,269 @@ const ServersPage = () => {
                 ? server.monthlyPrice
                 : defaultCfg?.estimatedMonthlyPrice ?? null;
 
+            const originalMonthlyPrice =
+              typeof server.originalMonthlyPrice === 'number' &&
+              server.originalMonthlyPrice > 0
+                ? server.originalMonthlyPrice
+                : typeof server.originalPrice === 'number' &&
+                  server.originalPrice > 0
+                ? server.originalPrice
+                : defaultCfg?.originalMonthlyPrice ?? null;
+
+            const cardSetupFee =
+              typeof server.setupFee === 'number'
+                ? server.setupFee
+                : typeof defaultCfg?.setupFee === 'number'
+                ? defaultCfg.setupFee
+                : null;
+            const cardOrigSetupFee =
+              typeof server.originalSetupFee === 'number'
+                ? server.originalSetupFee
+                : typeof defaultCfg?.originalSetupFee === 'number'
+                ? defaultCfg.originalSetupFee
+                : null;
+            const cardFreeSetup = Boolean(
+              server.freeSetup ||
+                defaultCfg?.freeSetup ||
+                (cardSetupFee === 0 && (cardOrigSetupFee ?? 0) > 0)
+            );
+            const cardPricingModes =
+              (server.pricingModes && server.pricingModes.length > 0
+                ? server.pricingModes
+                : defaultCfg?.pricingModes) || [];
+            const hasAnnualFreeSetup = cardPricingModes.some(
+              (m) =>
+                (m.mode === 'upfront12' || m.mode === 'upfront24') &&
+                m.setupFee === 0
+            );
+            const cardHasPromo = Boolean(
+              server.hasPromo ||
+                defaultCfg?.hasPromo ||
+                cardPricingModes.some((m) => m.hasPromo) ||
+                cardFreeSetup ||
+                (originalMonthlyPrice !== null &&
+                  startingPrice !== null &&
+                  originalMonthlyPrice > startingPrice + 0.01)
+            );
+            const cardPromoBadge =
+              server.promoBadge ||
+              defaultCfg?.promoBadge ||
+              cardPricingModes.find((m) => m.promoBadge)?.promoBadge;
+            const cardPromoDescription =
+              server.promoDescription ||
+              defaultCfg?.promoDescription ||
+              cardPricingModes.find((m) => m.promoDescription)?.promoDescription;
+
             const symbol = getCurrencySymbol(
               activeCfg?.currency || server.currency
             );
 
-            // 1-line default spec summary: RAM · Storage · Bandwidth
+            const cpuShort = formatServerSpec(server.cpu, 'CPU');
             const ramShort = formatServerSpec(server.memory, '内存');
             const stoShort = formatServerSpec(server.storage, '存储');
             const bwShort = formatServerSpec(server.bandwidth, '带宽');
-            const oneLineSpecSummary = [ramShort, stoShort, bwShort]
-              .filter((s) => s && s !== '暂无数据')
-              .join(' · ');
-
             const selectedDcsForCard = selectedDcsMap[server.planCode] || [];
-            const advOptions = getAdvancedOptionsForServer(server);
-            const hasAdvOptions =
-              advOptions.bandwidth.length > 0 || advOptions.vrack.length > 0;
-            const selectedAdvOpts =
-              selectedAddonOptionsMap[server.planCode] || [];
 
             return (
               <Card
                 key={server.planCode}
-                className={`overflow-hidden transition-all ${
-                  isExpanded && viewMode === 'grid'
-                    ? 'md:col-span-2 xl:col-span-2 ring-1 ring-cyber-accent/50'
-                    : ''
-                } ${
+                className={`h-full flex flex-col justify-between overflow-hidden transition-all ${
                   isPresale
-                    ? 'border-purple-500/40'
+                    ? 'border-purple-500/40 hover:border-purple-500/60'
                     : isAnnounced
-                    ? 'border-amber-500/40'
-                    : 'border-cyber-accent/30 hover:border-cyber-accent/50'
+                    ? 'border-amber-500/40 hover:border-amber-500/60'
+                    : cardHasPromo
+                    ? 'border-rose-500/35 hover:border-rose-500/60'
+                    : 'border-cyber-accent/30 hover:border-cyber-accent/55'
                 }`}
               >
-                <div className="p-3.5 space-y-2.5">
-                  {/* Top Row: Model Name, planCode, Status Badge & Starting Price */}
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
+                <div className="p-4 h-full flex flex-col justify-between gap-3">
+                  {/* Zone 1: Header & Badges (Fixed 2-Row Structure) */}
+                  <div className="space-y-1.5">
+                    {/* Row 1: Model Name + planCode badge on Left, Starting Monthly Price on Right */}
+                    <div className="flex items-center justify-between gap-2 h-6">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
                         <span
                           className="font-bold text-sm text-cyber-accent truncate"
                           title={server.name}
                         >
                           {server.name}
                         </span>
-                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-cyber-grid/40 text-cyber-muted">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-cyber-grid/40 text-cyber-muted flex-shrink-0">
                           {server.planCode}
                         </span>
-                        {isAnnounced && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
-                            {t('announced.badge')}
-                          </span>
-                        )}
-                        {isPresale && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
-                            {t('presale.badge')}
-                          </span>
-                        )}
-                        {!isPresale && !isAnnounced && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                            {t('listed.badge')}
-                          </span>
-                        )}
-                        {generation && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
-                            {t('presale.generation', { year: generation })}
-                          </span>
-                        )}
-                        {isRecentlyAdded && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                            {t('sku.newListed')}
-                          </span>
-                        )}
-                        {subscribedServers.has(server.planCode) && (
+                      </div>
+
+                      <div className="flex-shrink-0 text-right">
+                        {isPresale ? (
                           <span
-                            className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1"
-                            title="已订阅监控"
+                            title={t('presale.notOrderableHint')}
+                            className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30 whitespace-nowrap"
                           >
-                            <Bell size={10} />
+                            {t('presale.pricingTbd')}
+                          </span>
+                        ) : startingPrice !== null && startingPrice > 0 ? (
+                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap inline-flex items-center">
+                            <span>
+                              {t('catalog.fromPrice', {
+                                price: `${symbol}${startingPrice.toFixed(2)}`,
+                              })}
+                            </span>
+                            {originalMonthlyPrice !== null &&
+                              originalMonthlyPrice > startingPrice + 0.01 && (
+                                <span className="line-through text-[10px] opacity-70 ml-1 font-mono">
+                                  {symbol}
+                                  {originalMonthlyPrice.toFixed(2)}
+                                </span>
+                              )}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-cyber-grid/30 text-cyber-muted border border-cyber-grid whitespace-nowrap">
+                            {t('presale.pricingTbd')}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Starting Monthly Price */}
-                    <div className="flex-shrink-0 text-right">
-                      {isPresale ? (
+                    {/* Row 2: Promo + Status + Generation + Newly Listed + Subscribed Badges */}
+                    <div className="flex items-center gap-1.5 h-6 overflow-hidden">
+                      {cardHasPromo && (
                         <span
-                          title={t('presale.notOrderableHint')}
-                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30 whitespace-nowrap"
+                          title={cardPromoDescription}
+                          className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40 flex items-center gap-0.5 flex-shrink-0"
                         >
-                          {t('presale.pricingTbd')}
+                          <span>🔥 {cardPromoBadge || t('promo.badge')}</span>
                         </span>
-                      ) : startingPrice !== null && startingPrice > 0 ? (
-                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
-                          {t('catalog.fromPrice', {
-                            price: `${symbol}${startingPrice.toFixed(2)}`,
-                          })}
+                      )}
+                      {isAnnounced && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 flex-shrink-0">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          {t('announced.badge')}
                         </span>
-                      ) : null}
+                      )}
+                      {isPresale && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1 flex-shrink-0">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          {t('presale.badge')}
+                        </span>
+                      )}
+                      {!isPresale && !isAnnounced && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 flex-shrink-0">
+                          {t('listed.badge')}
+                        </span>
+                      )}
+                      {generation && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex-shrink-0">
+                          {t('presale.generation', { year: generation })}
+                        </span>
+                      )}
+                      {isRecentlyAdded && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex-shrink-0">
+                          {t('sku.newListed')}
+                        </span>
+                      )}
+                      {subscribedServers.has(server.planCode) && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 flex-shrink-0"
+                          title="已订阅监控"
+                        >
+                          <Bell size={10} />
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* CPU & 1-Line Default Spec Summary */}
-                  <div className="space-y-1 text-xs">
-                    <div className="flex items-center gap-1.5 text-cyber-text font-medium truncate">
-                      <Cpu
-                        size={13}
-                        className="text-cyber-accent flex-shrink-0"
-                      />
-                      <span
-                        className="truncate"
-                        title={formatServerSpec(server.cpu, 'CPU')}
-                      >
-                        {formatServerSpec(server.cpu, 'CPU')}
-                      </span>
-                    </div>
+                  {/* Zone 2: 2x2 Modular Hardware Spec Grid */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* 1. CPU */}
                     <div
-                      className="text-[11px] text-cyber-muted truncate pl-5"
-                      title={oneLineSpecSummary}
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={cpuShort}
                     >
-                      {oneLineSpecSummary}
+                      <div className="flex items-center gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <Cpu
+                          size={11}
+                          className="text-cyber-accent flex-shrink-0"
+                        />
+                        <span className="truncate">{t('catalog.specCpu')}</span>
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {cpuShort}
+                      </div>
+                    </div>
+
+                    {/* 2. RAM */}
+                    <div
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={ramShort}
+                    >
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <span className="flex items-center gap-1 min-w-0 truncate">
+                          <Database
+                            size={11}
+                            className="text-cyber-accent flex-shrink-0"
+                          />
+                          <span className="truncate">
+                            {t('catalog.specRam')}
+                          </span>
+                        </span>
+                        {unifiedConfigs.length > 1 && (
+                          <span className="px-1 py-0.2 rounded bg-cyber-accent/15 text-cyber-accent text-[9px] font-semibold flex-shrink-0">
+                            {t('catalog.multiOptionBadge', {
+                              count: unifiedConfigs.length,
+                            })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {ramShort}
+                      </div>
+                    </div>
+
+                    {/* 3. Storage */}
+                    <div
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={stoShort}
+                    >
+                      <div className="flex items-center gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <HardDrive
+                          size={11}
+                          className="text-cyber-accent flex-shrink-0"
+                        />
+                        <span className="truncate">
+                          {t('catalog.specStorage')}
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {stoShort}
+                      </div>
+                    </div>
+
+                    {/* 4. Bandwidth */}
+                    <div
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={bwShort}
+                    >
+                      <div className="flex items-center gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <Wifi
+                          size={11}
+                          className="text-cyber-accent flex-shrink-0"
+                        />
+                        <span className="truncate">
+                          {t('catalog.specBandwidth')}
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {bwShort}
+                      </div>
                     </div>
                   </div>
 
-                  {/* Compact In-Stock DC Badges Row */}
-                  <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-cyber-grid/30">
-                    <div className="flex flex-wrap items-center gap-1 min-w-0">
+                  {/* Zone 3: Dedicated Datacenter Availability & Setup Fee Row */}
+                  <div className="min-h-[30px] flex items-center justify-between gap-2 px-1">
+                    <div className="flex items-center gap-1 min-w-0 overflow-hidden">
                       {isAnnounced ? (
-                        <span className="text-[11px] text-amber-300/90">
+                        <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[10px] font-medium truncate">
                           {t('announced.badge')}
                         </span>
                       ) : allInStockDcs.length > 0 ? (
@@ -1533,415 +2018,1300 @@ const ServersPage = () => {
                           {allInStockDcs.slice(0, 4).map((dc) => (
                             <span
                               key={dc}
-                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold"
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold flex-shrink-0"
                             >
                               <DCLabel code={dc} mode="compact" />
                             </span>
                           ))}
                           {allInStockDcs.length > 4 && (
-                            <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono">
+                            <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
                               +{allInStockDcs.length - 4}
                             </span>
                           )}
                         </>
                       ) : (
-                        <span className="px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400/80 text-[10px]">
-                          {t('catalog.outOfStockBadge')}
+                        <span className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400/80 text-[10px] font-medium flex-shrink-0">
+                          {t('catalog.allOutOfStock')}
                         </span>
                       )}
                     </div>
 
-                    {/* Quick Action Buttons + Expand Toggle */}
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setQuickMonitorTarget({
-                            server,
-                            initialConfig: activeCfg
-                              ? {
-                                  configKey: activeCfg.configKey,
-                                  options: activeCfg.options,
-                                  label: activeCfg.label,
-                                  estimatedMonthlyPrice:
-                                    activeCfg.estimatedMonthlyPrice ??
-                                    undefined,
-                                  currency: activeCfg.currency,
-                                  memory: activeCfg.memory,
-                                  storage: activeCfg.storage,
-                                }
-                              : null,
-                            initialConfigs: unifiedConfigs.map((c) => ({
-                              configKey: c.configKey,
-                              label: c.label,
-                              memory: c.memory,
-                              storage: c.storage,
-                              options: c.options,
-                              isDefault: c.isDefault,
-                              estimatedMonthlyPrice:
-                                c.estimatedMonthlyPrice ?? undefined,
-                              currency: c.currency,
-                              datacenters: c.dcStatuses,
-                              inStockCount: c.inStockDcs.length,
-                            })),
-                            initialSelectedDcs: selectedDcsForCard,
-                          })
-                        }
-                        disabled={!isAuthenticated}
-                        className="px-2 py-1 rounded bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-[11px] font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors"
-                        title={t('quickMonitor.button')}
-                      >
-                        <Bell size={11} />
-                        <span>{t('quickMonitor.button')}</span>
-                      </button>
-
-                      {!isPresale && !isAnnounced && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleOpenAddToQueue(
-                              server,
-                              activeCfg,
-                              activeCfg?.inStockDcs || allInStockDcs
-                            )
-                          }
-                          disabled={!isAuthenticated}
-                          className="px-2 py-1 rounded bg-cyber-accent/20 hover:bg-cyber-accent/30 text-cyber-accent border border-cyber-accent/40 text-[11px] font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors"
-                        >
-                          <ShoppingCart size={11} />
-                          <span>{t('catalog.addToQueue')}</span>
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => toggleExpandCard(server)}
-                        className="px-2 py-1 rounded bg-cyber-grid/30 hover:bg-cyber-grid/50 text-cyber-text border border-cyber-grid text-[11px] font-medium flex items-center gap-1 transition-colors"
-                      >
-                        <span>
-                          {isExpanded
-                            ? t('catalog.collapseCard')
-                            : t('catalog.expandCard')}
-                        </span>
-                        {isExpanded ? (
-                          <ChevronUp size={12} />
-                        ) : (
-                          <ChevronDown size={12} />
-                        )}
-                      </button>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {!isPresale &&
+                        (cardSetupFee === 0 || cardFreeSetup ? (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-400 text-[10px] font-semibold inline-flex items-center">
+                            <span>{t('promo.freeSetup')}</span>
+                            {cardOrigSetupFee !== null &&
+                              cardOrigSetupFee > 0 && (
+                                <span className="line-through opacity-70 ml-1 font-mono text-[9px]">
+                                  {symbol}
+                                  {cardOrigSetupFee.toFixed(2)}
+                                </span>
+                              )}
+                          </span>
+                        ) : cardSetupFee !== null && cardSetupFee > 0 ? (
+                          <span
+                            title={
+                              hasAnnualFreeSetup
+                                ? t('promo.annualWaivesSetupHint')
+                                : undefined
+                            }
+                            className="px-1.5 py-0.5 rounded bg-cyber-grid/40 border border-cyber-grid text-cyber-muted text-[10px] font-mono inline-flex items-center gap-1"
+                          >
+                            <span>
+                              {t('promo.setupFee', {
+                                price: `${symbol}${cardSetupFee.toFixed(2)}`,
+                              })}
+                            </span>
+                            {hasAnnualFreeSetup && (
+                              <span className="text-emerald-400 font-sans">
+                                · {t('promo.annualFreeSetupShort')}
+                              </span>
+                            )}
+                          </span>
+                        ) : null)}
+                      <span className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
+                        {t('catalog.configCount', {
+                          count: unifiedConfigs.length,
+                        })}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Expanded Panel: Unified Selectable Configuration List + In-Stock Filter + Advanced Options */}
-                  {isExpanded && (
-                    <div className="pt-3 mt-2 border-t border-cyber-accent/30 space-y-3">
-                      {/* Header bar of expanded panel: Title, Show All Inventory toggle, Check Availability */}
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-cyber-accent">
-                            {t('catalog.unifiedConfigsTitle')}
-                          </span>
-                          <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyber-accent/15 text-cyber-accent">
-                            {visibleConfigs.length}/{unifiedConfigs.length}
-                          </span>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <label className="flex items-center gap-1.5 text-[11px] text-cyber-muted hover:text-cyber-text cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={showAllInventory}
-                              onChange={(e) =>
-                                setShowAllInventoryMap((prev) => ({
-                                  ...prev,
-                                  [server.planCode]: e.target.checked,
-                                }))
+                  {/* Zone 4: Dedicated Bottom Action Footer */}
+                  <div className="pt-2.5 border-t border-cyber-grid/40 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQuickMonitorTarget({
+                          server,
+                          initialConfig: activeCfg
+                            ? {
+                                configKey: activeCfg.configKey,
+                                options: activeCfg.options,
+                                label: activeCfg.label,
+                                estimatedMonthlyPrice:
+                                  activeCfg.estimatedMonthlyPrice ?? undefined,
+                                originalMonthlyPrice:
+                                  activeCfg.originalMonthlyPrice ?? undefined,
+                                setupFee: activeCfg.setupFee ?? undefined,
+                                originalSetupFee:
+                                  activeCfg.originalSetupFee ?? undefined,
+                                freeSetup: activeCfg.freeSetup,
+                                hasPromo: activeCfg.hasPromo,
+                                promoCode: activeCfg.promoCode,
+                                promoBadge: activeCfg.promoBadge,
+                                promoDescription: activeCfg.promoDescription,
+                                pricingModes: activeCfg.pricingModes,
+                                currency: activeCfg.currency,
+                                memory: activeCfg.memory,
+                                storage: activeCfg.storage,
                               }
-                              className="h-3.5 w-3.5 accent-cyber-accent"
-                            />
-                            <span>{t('catalog.showAllInventory')}</span>
-                          </label>
+                            : null,
+                          initialConfigs: unifiedConfigs.map((c) => ({
+                            configKey: c.configKey,
+                            label: c.label,
+                            memory: c.memory,
+                            storage: c.storage,
+                            options: c.options,
+                            isDefault: c.isDefault,
+                            estimatedMonthlyPrice:
+                              c.estimatedMonthlyPrice ?? undefined,
+                            originalMonthlyPrice:
+                              c.originalMonthlyPrice ?? undefined,
+                            setupFee: c.setupFee ?? undefined,
+                            originalSetupFee: c.originalSetupFee ?? undefined,
+                            freeSetup: c.freeSetup,
+                            hasPromo: c.hasPromo,
+                            promoCode: c.promoCode,
+                            promoBadge: c.promoBadge,
+                            promoDescription: c.promoDescription,
+                            pricingModes: c.pricingModes,
+                            currency: c.currency,
+                            datacenters: c.dcStatuses,
+                            inStockCount: c.inStockDcs.length,
+                          })),
+                          initialSelectedDcs: selectedDcsForCard,
+                        })
+                      }
+                      disabled={!isAuthenticated}
+                      className="px-2.5 py-1.5 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                      title={t('quickMonitor.button')}
+                    >
+                      <Bell size={12} />
+                      <span>{t('quickMonitor.button')}</span>
+                    </button>
 
-                          <button
-                            type="button"
-                            onClick={() =>
-                              checkAvailability(server.planCode, activeCfg)
-                            }
-                            disabled={
-                              isCheckingAvailability || !isAuthenticated
-                            }
-                            className="px-2 py-0.5 rounded bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 text-[11px] font-medium flex items-center gap-1 disabled:opacity-50"
-                          >
-                            <RefreshCw
-                              size={10}
-                              className={
-                                isCheckingAvailability &&
-                                selectedServer === server.planCode
-                                  ? 'animate-spin'
-                                  : ''
-                              }
-                            />
-                            <span>实时检测</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {!hasAnyStock && !isAnnounced && (
-                        <div className="p-2 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
-                          {t('catalog.noInStockConfigsNotice')}
-                        </div>
-                      )}
-
-                      {isAnnounced && (
-                        <div className="p-2 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
-                          {t('announced.noStockFeedHint')}
-                        </div>
-                      )}
-
-                      {/* Unified Selectable Configuration List */}
-                      <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
-                        {visibleConfigs.map((cfg) => {
-                          const isSelectedCfg =
-                            activeCfg?.configKey === cfg.configKey;
-                          const cfgSymbol = getCurrencySymbol(cfg.currency);
-
-                          // Datacenter pills for this configuration:
-                          // By default show in-stock DCs only (unless showAllInventory or 0 in stock)
-                          const allCfgDcEntries = Object.entries(
-                            cfg.dcStatuses
-                          );
-                          const visibleDcEntries =
-                            showAllInventory || cfg.inStockDcs.length === 0
-                              ? allCfgDcEntries.length > 0
-                                ? allCfgDcEntries
-                                : OVH_DATACENTERS.filter((dc) => {
-                                    const low = server.planCode.toLowerCase();
-                                    if (low.includes('-sgp'))
-                                      return dc.code === 'sgp';
-                                    if (low.includes('-syd'))
-                                      return dc.code === 'syd';
-                                    if (low.includes('-mum'))
-                                      return dc.code === 'mum';
-                                    return true;
-                                  }).map(
-                                    (dc) =>
-                                      [
-                                        dc.code,
-                                        cfg.dcStatuses[dc.code] || 'unavailable',
-                                      ] as [string, string]
-                                  )
-                              : allCfgDcEntries.filter(([_, st]) =>
-                                  isAvailStatus(st)
-                                );
-
-                          return (
-                            <div
-                              key={cfg.configKey}
-                              onClick={() =>
-                                setSelectedConfigKeyMap((prev) => ({
-                                  ...prev,
-                                  [server.planCode]: cfg.configKey,
-                                }))
-                              }
-                              className={`p-2.5 rounded-lg border cursor-pointer transition-all space-y-2 ${
-                                isSelectedCfg
-                                  ? 'bg-cyber-accent/12 border-cyber-accent/60'
-                                  : 'bg-cyber-bg/40 border-cyber-grid hover:border-cyber-accent/30'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span
-                                    className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
-                                      isSelectedCfg
-                                        ? 'border-cyber-accent bg-cyber-accent text-white'
-                                        : 'border-cyber-grid bg-cyber-bg'
-                                    }`}
-                                  >
-                                    {isSelectedCfg && (
-                                      <Check size={10} strokeWidth={3} />
-                                    )}
-                                  </span>
-                                  <span className="text-xs font-semibold text-cyber-text truncate">
-                                    {cfg.label}
-                                  </span>
-                                  {cfg.isDefault && (
-                                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40 flex-shrink-0">
-                                      {t('catalog.defaultConfigBadge')}
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  {cfg.estimatedMonthlyPrice !== null &&
-                                    cfg.estimatedMonthlyPrice > 0 && (
-                                      <span className="text-xs font-bold text-emerald-400 font-mono">
-                                        {cfgSymbol}
-                                        {cfg.estimatedMonthlyPrice.toFixed(2)}
-                                        {t('availability.perMonth')}
-                                      </span>
-                                    )}
-                                </div>
-                              </div>
-
-                              {/* Datacenter Availability Pills inside the configuration item */}
-                              {visibleDcEntries.length > 0 && (
-                                <div className="flex flex-wrap items-center gap-1.5 pl-6">
-                                  {visibleDcEntries.map(([dcCode, st]) => {
-                                    const norm =
-                                      normalizeDatacenterCode(dcCode) || dcCode;
-                                    const inStock = isAvailStatus(st);
-                                    const isDcSelected =
-                                      selectedDcsForCard.includes(norm);
-
-                                    return (
-                                      <button
-                                        key={norm}
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setSelectedConfigKeyMap((prev) => ({
-                                            ...prev,
-                                            [server.planCode]: cfg.configKey,
-                                          }));
-                                          toggleDcForServer(
-                                            server.planCode,
-                                            norm
-                                          );
-                                        }}
-                                        className={`px-2 py-0.5 rounded border text-[10px] font-medium flex items-center gap-1 transition-all ${
-                                          isDcSelected
-                                            ? 'bg-cyber-accent/25 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/50'
-                                            : inStock
-                                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:border-emerald-400'
-                                            : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-500'
-                                        }`}
-                                      >
-                                        {isDcSelected && (
-                                          <Check size={9} strokeWidth={3} />
-                                        )}
-                                        <DCLabel code={norm} mode="compact" />
-                                        <span
-                                          className={
-                                            inStock
-                                              ? 'text-emerald-400 font-semibold'
-                                              : 'text-red-400/70'
-                                          }
-                                        >
-                                          {inStock
-                                            ? st
-                                            : locale === 'zh-CN'
-                                            ? '无'
-                                            : 'Out'}
-                                        </span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Collapsed <details> for Advanced Options (Bandwidth / vRack) */}
-                      {hasAdvOptions && (
-                        <details className="rounded-lg border border-cyber-grid bg-cyber-bg/30 text-xs">
-                          <summary className="px-3 py-2 cursor-pointer font-semibold text-cyber-muted hover:text-cyber-text flex items-center gap-1.5 select-none">
-                            <Settings size={12} className="text-cyber-accent" />
-                            <span>{t('catalog.advancedOptions')}</span>
-                            {selectedAdvOpts.length > 0 && (
-                              <span className="px-1.5 py-0.2 rounded-full bg-cyber-accent/20 text-cyber-accent text-[10px] font-mono">
-                                +{selectedAdvOpts.length}
-                              </span>
-                            )}
-                          </summary>
-                          <div className="p-3 pt-1 border-t border-cyber-grid/50 space-y-2.5">
-                            {advOptions.bandwidth.length > 0 && (
-                              <div>
-                                <div className="text-[11px] font-semibold text-cyber-accent mb-1 flex items-center gap-1">
-                                  <Wifi size={11} />
-                                  <span>公网带宽 / 流量</span>
-                                </div>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {advOptions.bandwidth.map((opt) => {
-                                    const sel = selectedAdvOpts.includes(
-                                      opt.value
-                                    );
-                                    return (
-                                      <button
-                                        key={opt.value}
-                                        type="button"
-                                        onClick={() =>
-                                          toggleAdvancedOptionForServer(
-                                            server,
-                                            opt.value,
-                                            'bandwidth'
-                                          )
-                                        }
-                                        className={`px-2 py-1 rounded border text-[11px] transition-colors ${
-                                          sel
-                                            ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
-                                            : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
-                                        }`}
-                                      >
-                                        {formatServerSpec(opt.value, '带宽')}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-
-                            {advOptions.vrack.length > 0 && (
-                              <div>
-                                <div className="text-[11px] font-semibold text-cyber-accent mb-1 flex items-center gap-1">
-                                  <ArrowRightLeft size={11} />
-                                  <span>vRack 内网带宽</span>
-                                </div>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {advOptions.vrack.map((opt) => {
-                                    const sel = selectedAdvOpts.includes(
-                                      opt.value
-                                    );
-                                    return (
-                                      <button
-                                        key={opt.value}
-                                        type="button"
-                                        onClick={() =>
-                                          toggleAdvancedOptionForServer(
-                                            server,
-                                            opt.value,
-                                            'vrack'
-                                          )
-                                        }
-                                        className={`px-2 py-1 rounded border text-[11px] transition-colors ${
-                                          sel
-                                            ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
-                                            : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
-                                        }`}
-                                      >
-                                        {formatServerSpec(
-                                          opt.value,
-                                          '内网带宽'
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </details>
-                      )}
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => openConfigModal(server)}
+                      className="flex-1 sm:flex-initial px-3 py-1.5 rounded-md bg-cyber-accent/20 hover:bg-cyber-accent/30 text-cyber-accent border border-cyber-accent/50 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <SlidersHorizontal size={12} />
+                      <span>{t('catalog.configureAndOrder')}</span>
+                    </button>
+                  </div>
                 </div>
               </Card>
             );
           })}
         </div>
       )}
+
+      {/* Focused Configuration & Order Modal */}
+      {(() => {
+        if (!configModalServer) return null;
+        const modalServer =
+          servers.find((s) => s.planCode === configModalServer.planCode) ||
+          configModalServer;
+        const listingState = resolveServerListingState(modalServer);
+        const isPresale = listingState === 'presale';
+        const isAnnounced = listingState === 'announced';
+        const generation = inferPlanGeneration(
+          modalServer.planCode,
+          modalServer.generation
+        );
+        const showAllInventory = Boolean(
+          showAllInventoryMap[modalServer.planCode]
+        );
+
+        const unifiedConfigs = buildUnifiedConfigsForServer(modalServer);
+        const defaultCfg =
+          unifiedConfigs.find((c) => c.isDefault) || unifiedConfigs[0] || null;
+        const activeCfgKey =
+          selectedConfigKeyMap[modalServer.planCode] ||
+          defaultCfg?.configKey ||
+          '';
+        const activeCfg =
+          unifiedConfigs.find((c) => c.configKey === activeCfgKey) ||
+          defaultCfg;
+
+        const selectedPricingMode =
+          selectedPricingModeMap[modalServer.planCode] || 'default';
+        const selectedCoupon =
+          selectedCouponMap[modalServer.planCode] || '';
+
+        // Available pricing modes for the active configuration
+        const rawModes =
+          activeCfg && activeCfg.pricingModes.length > 0
+            ? activeCfg.pricingModes
+            : modalServer.pricingModes && modalServer.pricingModes.length > 0
+            ? modalServer.pricingModes
+            : synthesizePricingModes({
+                estimatedMonthlyPrice:
+                  activeCfg?.estimatedMonthlyPrice ??
+                  modalServer.startingPrice ??
+                  modalServer.monthlyPrice ??
+                  0,
+                originalMonthlyPrice:
+                  activeCfg?.originalMonthlyPrice ??
+                  modalServer.originalMonthlyPrice ??
+                  0,
+                setupFee: activeCfg?.setupFee ?? modalServer.setupFee ?? 0,
+                originalSetupFee:
+                  activeCfg?.originalSetupFee ??
+                  modalServer.originalSetupFee ??
+                  0,
+                freeSetup: Boolean(
+                  activeCfg?.freeSetup || modalServer.freeSetup
+                ),
+                hasPromo: Boolean(activeCfg?.hasPromo || modalServer.hasPromo),
+                promoCode: activeCfg?.promoCode || modalServer.promoCode,
+                promoBadge: activeCfg?.promoBadge || modalServer.promoBadge,
+                promoDescription:
+                  activeCfg?.promoDescription || modalServer.promoDescription,
+              });
+
+        const availablePricingModes: PlanPricingMode[] =
+          rawModes.length > 1
+            ? rawModes
+            : rawModes.length === 1
+            ? [
+                rawModes[0],
+                {
+                  ...rawModes[0],
+                  mode: 'upfront12',
+                  duration: 'P12M',
+                  intervalMonths: 12,
+                  commitmentMonths: 12,
+                  periodPrice: Number(
+                    (rawModes[0].monthlyEquivalentPrice * 12).toFixed(2)
+                  ),
+                  originalPeriodPrice: Number(
+                    (rawModes[0].originalMonthlyPrice * 12).toFixed(2)
+                  ),
+                  setupFee: 0,
+                  freeSetup: true,
+                },
+                {
+                  ...rawModes[0],
+                  mode: 'upfront24',
+                  duration: 'P24M',
+                  intervalMonths: 24,
+                  commitmentMonths: 24,
+                  periodPrice: Number(
+                    (rawModes[0].monthlyEquivalentPrice * 24).toFixed(2)
+                  ),
+                  originalPeriodPrice: Number(
+                    (rawModes[0].originalMonthlyPrice * 24).toFixed(2)
+                  ),
+                  setupFee: 0,
+                  freeSetup: true,
+                },
+              ]
+            : [];
+
+        const activeModeEntry =
+          resolvePricingModeEntry(availablePricingModes, selectedPricingMode) ||
+          availablePricingModes[0] ||
+          null;
+
+        const allInStockDcSet = new Set<string>();
+        unifiedConfigs.forEach((c) => {
+          c.inStockDcs.forEach((dc) => allInStockDcSet.add(dc));
+        });
+        (modalServer.datacenters || []).forEach((d) => {
+          if (isAvailStatus(d.availability)) {
+            const norm = normalizeDatacenterCode(d.datacenter);
+            if (norm) allInStockDcSet.add(norm);
+          }
+        });
+        const allInStockDcs = Array.from(allInStockDcSet);
+        const hasAnyStock = allInStockDcs.length > 0;
+
+        const visibleConfigs =
+          showAllInventory || !hasAnyStock
+            ? unifiedConfigs
+            : unifiedConfigs.filter((c) => c.inStockDcs.length > 0);
+
+        const startingPrice =
+          typeof modalServer.startingPrice === 'number' &&
+          modalServer.startingPrice > 0
+            ? modalServer.startingPrice
+            : typeof modalServer.monthlyPrice === 'number' &&
+              modalServer.monthlyPrice > 0
+            ? modalServer.monthlyPrice
+            : defaultCfg?.estimatedMonthlyPrice ?? null;
+
+        const symbol = getCurrencySymbol(
+          activeCfg?.currency || modalServer.currency
+        );
+
+        const selectedDcsForModal =
+          selectedDcsMap[modalServer.planCode] || [];
+        const advOptions = getAdvancedOptionsForServer(modalServer);
+        const hasAdvOptions =
+          advOptions.bandwidth.length > 0 || advOptions.vrack.length > 0;
+        const selectedAdvOpts =
+          selectedAddonOptionsMap[modalServer.planCode] || [];
+
+        const activeCfgDcEntries = activeCfg
+          ? Object.entries(activeCfg.dcStatuses)
+          : [];
+        const allCandidateDcs: [string, string][] =
+          activeCfgDcEntries.length > 0
+            ? activeCfgDcEntries
+            : OVH_DATACENTERS.filter((dc) => {
+                const low = modalServer.planCode.toLowerCase();
+                if (low.includes('-sgp')) return dc.code === 'sgp';
+                if (low.includes('-syd')) return dc.code === 'syd';
+                if (low.includes('-mum')) return dc.code === 'mum';
+                return true;
+              }).map(
+                (dc) =>
+                  [
+                    dc.code,
+                    activeCfg?.dcStatuses[dc.code] || 'unavailable',
+                  ] as [string, string]
+              );
+
+        const visibleDcForActiveCfg =
+          showAllInventory || (activeCfg?.inStockDcs.length ?? 0) === 0
+            ? allCandidateDcs
+            : allCandidateDcs.filter(([_, st]) => isAvailStatus(st));
+
+        const canQuickOrder =
+          !isPresale &&
+          !isAnnounced &&
+          isAuthenticated &&
+          ((activeCfg?.inStockDcs.length ?? 0) > 0 ||
+            allInStockDcs.length > 0 ||
+            selectedDcsForModal.length > 0);
+
+        const modalHasPromo = Boolean(
+          modalServer.hasPromo ||
+            activeModeEntry?.hasPromo ||
+            activeCfg?.hasPromo
+        );
+        const modalPromoBadge =
+          activeModeEntry?.promoBadge ||
+          activeCfg?.promoBadge ||
+          modalServer.promoBadge;
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+            onClick={() => setConfigModalServer(null)}
+          >
+            <div
+              className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-xl bg-cyber-surface border border-cyber-accent/40 shadow-2xl overflow-hidden text-cyber-text"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className="px-5 py-4 border-b border-cyber-grid/60 flex items-center justify-between gap-3 bg-cyber-bg/40">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base sm:text-lg font-bold text-cyber-accent truncate">
+                      {modalServer.name}
+                    </h2>
+                    <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/50 text-cyber-muted">
+                      {modalServer.planCode}
+                    </span>
+                    {modalHasPromo && (
+                      <span
+                        title={
+                          activeModeEntry?.promoDescription ||
+                          modalServer.promoDescription
+                        }
+                        className="px-2 py-0.5 text-[11px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40"
+                      >
+                        🔥 {modalPromoBadge || t('promo.badge')}
+                      </span>
+                    )}
+                    {isAnnounced && (
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        {t('announced.badge')}
+                      </span>
+                    )}
+                    {isPresale && (
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        {t('presale.badge')}
+                      </span>
+                    )}
+                    {!isPresale && !isAnnounced && (
+                      <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                        {t('listed.badge')}
+                      </span>
+                    )}
+                    {generation && (
+                      <span className="px-2 py-0.5 text-[11px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                        {t('presale.generation', { year: generation })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 flex-shrink-0">
+                  {startingPrice !== null && startingPrice > 0 && !isPresale && (
+                    <span className="px-2.5 py-1 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
+                      {t('catalog.fromPrice', {
+                        price: `${symbol}${startingPrice.toFixed(2)}`,
+                      })}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setConfigModalServer(null)}
+                    className="p-1.5 rounded-lg bg-cyber-bg hover:bg-cyber-grid/50 text-cyber-muted hover:text-cyber-text border border-cyber-grid transition-colors"
+                    aria-label="Close"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Default Spec Summary Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-5 py-3 bg-cyber-bg/60 border-b border-cyber-grid/50">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Cpu size={14} className="text-cyber-accent flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specCpu')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.cpu, 'CPU')}
+                    >
+                      {formatServerSpec(modalServer.cpu, 'CPU')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Database
+                    size={14}
+                    className="text-cyber-accent flex-shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specRam')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.memory, '内存')}
+                    >
+                      {formatServerSpec(modalServer.memory, '内存')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <HardDrive
+                    size={14}
+                    className="text-cyber-accent flex-shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specStorage')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.storage, '存储')}
+                    >
+                      {formatServerSpec(modalServer.storage, '存储')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Wifi size={14} className="text-cyber-accent flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specBandwidth')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.bandwidth, '带宽')}
+                    >
+                      {formatServerSpec(modalServer.bandwidth, '带宽')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Scrollable Modal Body */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                {/* Billing / Commitment Mode Selector + Coupon Bar */}
+                {!isPresale && availablePricingModes.length > 0 && (
+                  <div className="p-3.5 rounded-xl border border-cyber-accent/30 bg-cyber-bg/50 space-y-3">
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-bold text-cyber-accent">
+                        {t('billing.modeSelectorTitle')}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {availablePricingModes.map((m) => {
+                          const isSelectedMode =
+                            (activeModeEntry?.mode || selectedPricingMode) ===
+                            m.mode;
+                          const modeLabelKey = `billing.mode.${m.mode}`;
+                          const modeTitle =
+                            t(modeLabelKey) !== modeLabelKey
+                              ? t(modeLabelKey)
+                              : m.mode;
+                          return (
+                            <button
+                              key={m.mode}
+                              type="button"
+                              onClick={() =>
+                                setSelectedPricingModeMap((prev) => ({
+                                  ...prev,
+                                  [modalServer.planCode]: m.mode,
+                                }))
+                              }
+                              className={`p-2.5 rounded-lg border text-left transition-all flex flex-col justify-between gap-1 ${
+                                isSelectedMode
+                                  ? 'bg-cyber-accent/15 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/40'
+                                  : 'bg-cyber-surface/60 border-cyber-grid text-cyber-muted hover:border-cyber-accent/40 hover:text-cyber-text'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-xs font-bold truncate">
+                                  {modeTitle}
+                                </span>
+                                {m.hasPromo && (
+                                  <span
+                                    title={m.promoDescription}
+                                    className="px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-300 border border-rose-500/35 text-[10px] font-bold flex-shrink-0"
+                                  >
+                                    🔥 {m.promoBadge || t('promo.badge')}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-baseline gap-1 font-mono">
+                                {m.monthlyEquivalentPrice > 0 ? (
+                                  <>
+                                    <span className="text-sm font-bold text-emerald-400">
+                                      {symbol}
+                                      {m.monthlyEquivalentPrice.toFixed(2)}
+                                      {t('availability.perMonth')}
+                                    </span>
+                                    {m.originalMonthlyPrice >
+                                      m.monthlyEquivalentPrice + 0.01 && (
+                                      <span className="line-through text-[10px] text-cyber-muted">
+                                        {symbol}
+                                        {m.originalMonthlyPrice.toFixed(2)}
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-xs text-cyber-muted">
+                                    {m.duration}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                                {m.intervalMonths > 1 && m.periodPrice > 0 ? (
+                                  <span className="text-cyber-muted font-mono">
+                                    {t('billing.periodTotal', {
+                                      price: `${symbol}${m.periodPrice.toFixed(
+                                        2
+                                      )}`,
+                                      months: m.intervalMonths,
+                                    })}
+                                  </span>
+                                ) : (
+                                  <span />
+                                )}
+
+                                {m.setupFee === 0 || m.freeSetup ? (
+                                  <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold font-mono">
+                                    {t('promo.freeSetupWithZero', {
+                                      zero: `${symbol}0.00`,
+                                    })}
+                                    {m.originalSetupFee > 0 && (
+                                      <span className="line-through opacity-70 ml-1">
+                                        {symbol}
+                                        {m.originalSetupFee.toFixed(2)}
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-cyber-grid/40 text-cyber-muted font-mono">
+                                    {t('promo.setupFee', {
+                                      price: `${symbol}${m.setupFee.toFixed(2)}`,
+                                    })}
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Optional Custom Coupon Code Input */}
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t border-cyber-grid/40">
+                      <label className="text-xs font-semibold text-cyber-muted flex-shrink-0">
+                        {t('coupon.label')}:
+                      </label>
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={selectedCoupon}
+                          onChange={(e) =>
+                            setSelectedCouponMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: e.target.value,
+                            }))
+                          }
+                          placeholder={t('coupon.placeholder')}
+                          className="cyber-input w-full text-xs py-1.5 pr-7 font-mono"
+                        />
+                        {selectedCoupon && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedCouponMap((prev) => ({
+                                ...prev,
+                                [modalServer.planCode]: '',
+                              }))
+                            }
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-cyber-muted hover:text-cyber-text"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Unified Configuration Selector Section */}
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-cyber-accent">
+                        {t('catalog.unifiedConfigsTitle')}
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyber-accent/15 text-cyber-accent">
+                        {visibleConfigs.length}/{unifiedConfigs.length}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="flex items-center gap-1.5 text-xs text-cyber-muted hover:text-cyber-text cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showAllInventory}
+                          onChange={(e) =>
+                            setShowAllInventoryMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: e.target.checked,
+                            }))
+                          }
+                          className="h-3.5 w-3.5 accent-cyber-accent"
+                        />
+                        <span>{t('catalog.showAllInventory')}</span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          checkAvailability(modalServer.planCode, activeCfg)
+                        }
+                        disabled={isCheckingAvailability || !isAuthenticated}
+                        className="px-2.5 py-1 rounded bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 text-xs font-medium flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <RefreshCw
+                          size={11}
+                          className={
+                            isCheckingAvailability &&
+                            selectedServer === modalServer.planCode
+                              ? 'animate-spin'
+                              : ''
+                          }
+                        />
+                        <span>实时检测</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {!hasAnyStock && !isAnnounced && (
+                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs">
+                      {t('catalog.noInStockConfigsNotice')}
+                    </div>
+                  )}
+
+                  {isAnnounced && (
+                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs">
+                      {t('announced.noStockFeedHint')}
+                    </div>
+                  )}
+
+                  {/* Configuration Cards */}
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {visibleConfigs.map((cfg) => {
+                      const isSelectedCfg =
+                        activeCfg?.configKey === cfg.configKey;
+                      const cfgSymbol = getCurrencySymbol(cfg.currency);
+                      const cfgMode =
+                        resolvePricingModeEntry(
+                          cfg.pricingModes,
+                          selectedPricingMode
+                        ) || null;
+                      const cfgMonthlyPrice =
+                        cfgMode && cfgMode.monthlyEquivalentPrice > 0
+                          ? cfgMode.monthlyEquivalentPrice
+                          : cfg.estimatedMonthlyPrice;
+                      const cfgOrigMonthly =
+                        cfgMode && cfgMode.originalMonthlyPrice > 0
+                          ? cfgMode.originalMonthlyPrice
+                          : cfg.originalMonthlyPrice;
+                      const cfgSetupFee =
+                        typeof cfgMode?.setupFee === 'number'
+                          ? cfgMode.setupFee
+                          : cfg.setupFee;
+                      const cfgOrigSetupFee =
+                        typeof cfgMode?.originalSetupFee === 'number'
+                          ? cfgMode.originalSetupFee
+                          : cfg.originalSetupFee;
+                      const cfgFreeSetup = Boolean(
+                        cfgMode?.freeSetup ||
+                          cfg.freeSetup ||
+                          (cfgSetupFee === 0 && (cfgOrigSetupFee ?? 0) > 0)
+                      );
+                      const cfgHasPromo = Boolean(
+                        cfgMode?.hasPromo || cfg.hasPromo
+                      );
+                      const cfgPromoBadge =
+                        cfgMode?.promoBadge || cfg.promoBadge;
+
+                      const allCfgDcEntries = Object.entries(cfg.dcStatuses);
+                      const cfgVisibleDcs =
+                        showAllInventory || cfg.inStockDcs.length === 0
+                          ? allCfgDcEntries
+                          : allCfgDcEntries.filter(([_, st]) =>
+                              isAvailStatus(st)
+                            );
+
+                      return (
+                        <div
+                          key={cfg.configKey}
+                          onClick={() =>
+                            setSelectedConfigKeyMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: cfg.configKey,
+                            }))
+                          }
+                          className={`p-3 rounded-lg border cursor-pointer transition-all space-y-2 ${
+                            isSelectedCfg
+                              ? 'bg-cyber-accent/12 border-cyber-accent/70 ring-1 ring-cyber-accent/30'
+                              : 'bg-cyber-bg/40 border-cyber-grid hover:border-cyber-accent/30'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <span
+                                className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
+                                  isSelectedCfg
+                                    ? 'border-cyber-accent bg-cyber-accent text-white'
+                                    : 'border-cyber-grid bg-cyber-bg'
+                                }`}
+                              >
+                                {isSelectedCfg && (
+                                  <Check size={10} strokeWidth={3} />
+                                )}
+                              </span>
+                              <span className="text-xs sm:text-sm font-semibold text-cyber-text">
+                                {cfg.label}
+                              </span>
+                              {cfg.isDefault && (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40 flex-shrink-0">
+                                  {t('catalog.defaultConfigBadge')}
+                                </span>
+                              )}
+                              {cfgHasPromo && (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/35 flex-shrink-0">
+                                  🔥 {cfgPromoBadge || t('promo.badge')}
+                                </span>
+                              )}
+                              {(cfg.memory || cfg.storage) && (
+                                <span className="text-[10px] font-mono text-cyber-muted">
+                                  {[cfg.memory, cfg.storage]
+                                    .filter(Boolean)
+                                    .join(' + ')}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-end gap-2 flex-shrink-0">
+                              {cfgSetupFee === 0 || cfgFreeSetup ? (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold font-mono">
+                                  {t('promo.freeSetup')}
+                                  {cfgOrigSetupFee !== null &&
+                                    cfgOrigSetupFee > 0 && (
+                                      <span className="line-through opacity-70 ml-1">
+                                        {cfgSymbol}
+                                        {cfgOrigSetupFee.toFixed(2)}
+                                      </span>
+                                    )}
+                                </span>
+                              ) : cfgSetupFee !== null && cfgSetupFee > 0 ? (
+                                <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted border border-cyber-grid text-[10px] font-mono">
+                                  {t('promo.setupFee', {
+                                    price: `${cfgSymbol}${cfgSetupFee.toFixed(
+                                      2
+                                    )}`,
+                                  })}
+                                </span>
+                              ) : null}
+
+                              {cfgMonthlyPrice !== null &&
+                                cfgMonthlyPrice > 0 && (
+                                  <div className="text-right font-mono">
+                                    <span className="text-xs sm:text-sm font-bold text-emerald-400">
+                                      {cfgSymbol}
+                                      {cfgMonthlyPrice.toFixed(2)}
+                                      {t('availability.perMonth')}
+                                    </span>
+                                    {cfgOrigMonthly !== null &&
+                                      cfgOrigMonthly >
+                                        cfgMonthlyPrice + 0.01 && (
+                                        <span className="line-through text-[10px] text-cyber-muted ml-1">
+                                          {cfgSymbol}
+                                          {cfgOrigMonthly.toFixed(2)}
+                                        </span>
+                                      )}
+                                    {cfgMode &&
+                                      cfgMode.intervalMonths > 1 &&
+                                      cfgMode.periodPrice > 0 && (
+                                        <div className="text-[10px] text-cyber-muted">
+                                          {t('billing.periodTotal', {
+                                            price: `${cfgSymbol}${cfgMode.periodPrice.toFixed(
+                                              2
+                                            )}`,
+                                            months: cfgMode.intervalMonths,
+                                          })}
+                                        </div>
+                                      )}
+                                  </div>
+                                )}
+                            </div>
+                          </div>
+
+                          {cfgVisibleDcs.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pl-6">
+                              {cfgVisibleDcs.map(([dcCode, st]) => {
+                                const norm =
+                                  normalizeDatacenterCode(dcCode) || dcCode;
+                                const inStock = isAvailStatus(st);
+                                return (
+                                  <span
+                                    key={norm}
+                                    className={`px-2 py-0.5 rounded border text-[10px] font-medium inline-flex items-center gap-1 ${
+                                      inStock
+                                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                        : 'bg-slate-800/50 border-slate-700 text-slate-400'
+                                    }`}
+                                  >
+                                    <DCLabel code={norm} mode="compact" />
+                                    <span
+                                      className={
+                                        inStock
+                                          ? 'text-emerald-400 font-semibold'
+                                          : 'text-red-400/70'
+                                      }
+                                    >
+                                      {inStock
+                                        ? st
+                                        : locale === 'zh-CN'
+                                        ? '无'
+                                        : 'Out'}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Datacenter Selection Section (for the selected configuration) */}
+                {visibleDcForActiveCfg.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-cyber-grid/40">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-cyber-accent">
+                        {t('catalog.dcSelectionTitle')}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const inStockList =
+                              activeCfg && activeCfg.inStockDcs.length > 0
+                                ? activeCfg.inStockDcs
+                                : allInStockDcs;
+                            setSelectedDcsMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: inStockList,
+                            }));
+                          }}
+                          className="text-[11px] text-cyber-accent hover:underline"
+                        >
+                          {t('catalog.selectAllInStockDcs')}
+                        </button>
+                        <span className="text-cyber-grid">|</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSelectedDcsMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: [],
+                            }))
+                          }
+                          className="text-[11px] text-cyber-muted hover:text-cyber-text"
+                        >
+                          {t('catalog.clearSelectedDcs')}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                      {visibleDcForActiveCfg.map(([dcCode, st]) => {
+                        const norm = normalizeDatacenterCode(dcCode) || dcCode;
+                        const inStock = isAvailStatus(st);
+                        const isDcSelected =
+                          selectedDcsForModal.includes(norm);
+
+                        return (
+                          <button
+                            key={norm}
+                            type="button"
+                            onClick={() =>
+                              toggleDcForServer(modalServer.planCode, norm)
+                            }
+                            className={`px-3 py-2 rounded-lg border text-xs font-medium flex items-center justify-between gap-2 transition-all ${
+                              isDcSelected
+                                ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/50'
+                                : inStock
+                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:border-emerald-400'
+                                : 'bg-cyber-bg/50 border-cyber-grid text-cyber-muted hover:border-cyber-accent/30'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0 truncate">
+                              {isDcSelected && (
+                                <Check
+                                  size={12}
+                                  strokeWidth={3}
+                                  className="text-cyber-accent flex-shrink-0"
+                                />
+                              )}
+                              <DCLabel code={norm} mode="full" />
+                            </span>
+                            <span
+                              className={`text-[10px] font-mono px-1.5 py-0.5 rounded flex-shrink-0 ${
+                                inStock
+                                  ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
+                                  : 'bg-red-500/15 text-red-400/80'
+                              }`}
+                            >
+                              {inStock
+                                ? st
+                                : locale === 'zh-CN'
+                                ? '无货'
+                                : 'Out'}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Collapsible Advanced Options (<details>) */}
+                {hasAdvOptions && (
+                  <details className="rounded-lg border border-cyber-grid bg-cyber-bg/30 text-xs">
+                    <summary className="px-3.5 py-2.5 cursor-pointer font-semibold text-cyber-muted hover:text-cyber-text flex items-center gap-1.5 select-none">
+                      <Settings size={13} className="text-cyber-accent" />
+                      <span>{t('catalog.advancedOptions')}</span>
+                      {selectedAdvOpts.length > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-cyber-accent/20 text-cyber-accent text-[10px] font-mono">
+                          +{selectedAdvOpts.length}
+                        </span>
+                      )}
+                    </summary>
+                    <div className="p-3.5 pt-2 border-t border-cyber-grid/50 space-y-3">
+                      {advOptions.bandwidth.length > 0 && (
+                        <div>
+                          <div className="text-[11px] font-semibold text-cyber-accent mb-1.5 flex items-center gap-1">
+                            <Wifi size={12} />
+                            <span>公网带宽 / 流量</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {advOptions.bandwidth.map((opt) => {
+                              const sel = selectedAdvOpts.includes(opt.value);
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  onClick={() =>
+                                    toggleAdvancedOptionForServer(
+                                      modalServer,
+                                      opt.value,
+                                      'bandwidth'
+                                    )
+                                  }
+                                  className={`px-2.5 py-1 rounded border text-xs transition-colors ${
+                                    sel
+                                      ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
+                                      : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
+                                  }`}
+                                >
+                                  {formatServerSpec(opt.value, '带宽')}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {advOptions.vrack.length > 0 && (
+                        <div>
+                          <div className="text-[11px] font-semibold text-cyber-accent mb-1.5 flex items-center gap-1">
+                            <ArrowRightLeft size={12} />
+                            <span>vRack 内网带宽</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {advOptions.vrack.map((opt) => {
+                              const sel = selectedAdvOpts.includes(opt.value);
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  onClick={() =>
+                                    toggleAdvancedOptionForServer(
+                                      modalServer,
+                                      opt.value,
+                                      'vrack'
+                                    )
+                                  }
+                                  className={`px-2.5 py-1 rounded border text-xs transition-colors ${
+                                    sel
+                                      ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
+                                      : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
+                                  }`}
+                                >
+                                  {formatServerSpec(opt.value, '内网带宽')}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-5 py-3.5 border-t border-cyber-grid/60 bg-cyber-bg/60 space-y-2.5">
+                {(() => {
+                  const periodPrice =
+                    activeModeEntry?.periodPrice ??
+                    activeCfg?.estimatedMonthlyPrice ??
+                    0;
+                  const origPeriodPrice =
+                    activeModeEntry?.originalPeriodPrice ??
+                    activeCfg?.originalMonthlyPrice ??
+                    periodPrice;
+                  const monthlyEq =
+                    activeModeEntry?.monthlyEquivalentPrice ??
+                    activeCfg?.estimatedMonthlyPrice ??
+                    0;
+                  const origMonthlyEq =
+                    activeModeEntry?.originalMonthlyPrice ??
+                    activeCfg?.originalMonthlyPrice ??
+                    monthlyEq;
+                  const setupFee =
+                    typeof activeModeEntry?.setupFee === 'number'
+                      ? activeModeEntry.setupFee
+                      : activeCfg?.setupFee ?? 0;
+                  const origSetupFee =
+                    typeof activeModeEntry?.originalSetupFee === 'number'
+                      ? activeModeEntry.originalSetupFee
+                      : activeCfg?.originalSetupFee ?? setupFee;
+                  const isFreeSetup = Boolean(
+                    activeModeEntry?.freeSetup ||
+                      activeCfg?.freeSetup ||
+                      setupFee === 0
+                  );
+                  const firstTotal = Number((periodPrice + setupFee).toFixed(2));
+
+                  return (
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      <div className="space-y-1 text-xs min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-cyber-muted">
+                            {t('catalog.selectedConfigSummary')}:
+                          </span>
+                          <span className="font-semibold text-cyber-text truncate">
+                            {activeCfg?.label || modalServer.planCode}
+                          </span>
+                          {selectedCoupon.trim() && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/35 text-[10px] font-mono">
+                              {t('coupon.badge', {
+                                coupon: selectedCoupon.trim(),
+                              })}
+                            </span>
+                          )}
+                        </div>
+
+                        {!isPresale && periodPrice > 0 && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
+                            <span>
+                              <span className="text-cyber-muted font-sans">
+                                {t('billing.periodFeeLabel')}:{' '}
+                              </span>
+                              <span className="text-emerald-400 font-bold">
+                                {symbol}
+                                {periodPrice.toFixed(2)}
+                              </span>
+                              {origPeriodPrice > periodPrice + 0.01 && (
+                                <span className="line-through text-cyber-muted ml-1">
+                                  {symbol}
+                                  {origPeriodPrice.toFixed(2)}
+                                </span>
+                              )}
+                              <span className="text-cyber-muted ml-1">
+                                (
+                                {t('billing.monthlyEquivalent', {
+                                  price: `${symbol}${monthlyEq.toFixed(2)}`,
+                                })}
+                                {origMonthlyEq > monthlyEq + 0.01
+                                  ? ` / ${symbol}${origMonthlyEq.toFixed(2)}`
+                                  : ''}
+                                )
+                              </span>
+                            </span>
+
+                            <span>
+                              <span className="text-cyber-muted font-sans">
+                                {t('promo.setupFeeLabel')}:{' '}
+                              </span>
+                              {isFreeSetup ? (
+                                <span className="text-emerald-300 font-semibold">
+                                  {t('promo.freeSetupWithZero', {
+                                    zero: `${symbol}0.00`,
+                                  })}
+                                  {origSetupFee > 0 && (
+                                    <span className="line-through text-cyber-muted ml-1">
+                                      {symbol}
+                                      {origSetupFee.toFixed(2)}
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="text-cyber-text">
+                                  {symbol}
+                                  {setupFee.toFixed(2)}
+                                </span>
+                              )}
+                            </span>
+
+                            <span>
+                              <span className="text-cyber-muted font-sans">
+                                {t('billing.firstPaymentTotalLabel')}:{' '}
+                              </span>
+                              <span className="text-cyber-accent font-bold text-xs">
+                                {symbol}
+                                {firstTotal.toFixed(2)}
+                              </span>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-end gap-2 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setQuickMonitorTarget({
+                              server: modalServer,
+                              initialConfig: activeCfg
+                                ? {
+                                    configKey: activeCfg.configKey,
+                                    options: activeCfg.options,
+                                    label: activeCfg.label,
+                                    estimatedMonthlyPrice:
+                                      monthlyEq > 0
+                                        ? monthlyEq
+                                        : activeCfg.estimatedMonthlyPrice ??
+                                          undefined,
+                                    originalMonthlyPrice:
+                                      origMonthlyEq > 0
+                                        ? origMonthlyEq
+                                        : activeCfg.originalMonthlyPrice ??
+                                          undefined,
+                                    setupFee,
+                                    originalSetupFee: origSetupFee,
+                                    freeSetup: isFreeSetup,
+                                    hasPromo: Boolean(
+                                      activeModeEntry?.hasPromo ||
+                                        activeCfg.hasPromo
+                                    ),
+                                    promoCode:
+                                      activeModeEntry?.promoCode ||
+                                      activeCfg.promoCode,
+                                    promoBadge:
+                                      activeModeEntry?.promoBadge ||
+                                      activeCfg.promoBadge,
+                                    promoDescription:
+                                      activeModeEntry?.promoDescription ||
+                                      activeCfg.promoDescription,
+                                    pricingModes: activeCfg.pricingModes,
+                                    pricingMode:
+                                      activeModeEntry?.mode ||
+                                      selectedPricingMode,
+                                    duration:
+                                      activeModeEntry?.duration ||
+                                      resolvePricingModeDuration(
+                                        selectedPricingMode,
+                                        activeCfg.pricingModes
+                                      ),
+                                    coupon: selectedCoupon.trim() || undefined,
+                                    currency: activeCfg.currency,
+                                    memory: activeCfg.memory,
+                                    storage: activeCfg.storage,
+                                  }
+                                : null,
+                              initialConfigs: unifiedConfigs.map((c) => ({
+                                configKey: c.configKey,
+                                label: c.label,
+                                memory: c.memory,
+                                storage: c.storage,
+                                options: c.options,
+                                isDefault: c.isDefault,
+                                estimatedMonthlyPrice:
+                                  c.estimatedMonthlyPrice ?? undefined,
+                                originalMonthlyPrice:
+                                  c.originalMonthlyPrice ?? undefined,
+                                setupFee: c.setupFee ?? undefined,
+                                originalSetupFee:
+                                  c.originalSetupFee ?? undefined,
+                                freeSetup: c.freeSetup,
+                                hasPromo: c.hasPromo,
+                                promoCode: c.promoCode,
+                                promoBadge: c.promoBadge,
+                                promoDescription: c.promoDescription,
+                                pricingModes: c.pricingModes,
+                                currency: c.currency,
+                                datacenters: c.dcStatuses,
+                                inStockCount: c.inStockDcs.length,
+                              })),
+                              initialSelectedDcs: selectedDcsForModal,
+                            })
+                          }
+                          disabled={!isAuthenticated}
+                          className="px-3 py-1.5 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                        >
+                          <Bell size={13} />
+                          <span>{t('catalog.monitorThisConfig')}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleOpenAddToQueue(
+                              modalServer,
+                              activeCfg,
+                              activeCfg?.inStockDcs || allInStockDcs
+                            )
+                          }
+                          disabled={
+                            !isAuthenticated || isPresale || isAnnounced
+                          }
+                          className="px-3 py-1.5 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 text-cyber-accent border border-cyber-accent/40 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                        >
+                          <ShoppingCart size={13} />
+                          <span>{t('catalog.addToQueueBtn')}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => quickOrderFromModal(modalServer)}
+                          disabled={!canQuickOrder || isQuickOrdering}
+                          className="px-3.5 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm"
+                        >
+                          <Zap size={13} />
+                          <span>
+                            {isQuickOrdering
+                              ? t('catalog.quickOrdering')
+                              : t('catalog.quickOrderNow')}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <QuickMonitorDialog
         open={Boolean(quickMonitorTarget)}
@@ -1987,26 +3357,46 @@ const ServersPage = () => {
             <AlertDialogDescription asChild>
               <div className="space-y-3 pt-2 text-xs text-cyber-muted">
                 {pendingQueueTarget?.selectedConfig && (
-                  <div className="p-2.5 rounded-md border border-cyber-accent/30 bg-cyber-accent/10 text-cyber-text flex items-center justify-between gap-2">
-                    <div>
+                  <div className="p-2.5 rounded-md border border-cyber-accent/30 bg-cyber-accent/10 text-cyber-text flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-cyber-muted">已选硬件配置：</span>
                       <span className="font-semibold text-cyber-accent">
                         {pendingQueueTarget.selectedConfig.label}
                       </span>
+                      {pendingQueueTarget.pricingMode && (
+                        <span className="px-1.5 py-0.2 rounded bg-cyber-grid/50 text-cyber-text text-[10px] font-semibold">
+                          {t(
+                            `billing.modeShort.${pendingQueueTarget.pricingMode}`
+                          )}
+                        </span>
+                      )}
+                      {pendingQueueTarget.coupon && (
+                        <span className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/35 text-[10px] font-mono">
+                          {t('coupon.badge', {
+                            coupon: pendingQueueTarget.coupon,
+                          })}
+                        </span>
+                      )}
                     </div>
-                    {pendingQueueTarget.selectedConfig.estimatedMonthlyPrice &&
-                      pendingQueueTarget.selectedConfig.estimatedMonthlyPrice >
-                        0 && (
+                    {(() => {
+                      const modeEntry = resolvePricingModeEntry(
+                        pendingQueueTarget.selectedConfig.pricingModes,
+                        pendingQueueTarget.pricingMode
+                      );
+                      const moPrice =
+                        modeEntry?.monthlyEquivalentPrice ??
+                        pendingQueueTarget.selectedConfig.estimatedMonthlyPrice;
+                      if (!moPrice || moPrice <= 0) return null;
+                      return (
                         <span className="font-mono font-bold text-emerald-400">
                           {getCurrencySymbol(
                             pendingQueueTarget.selectedConfig.currency
                           )}
-                          {pendingQueueTarget.selectedConfig.estimatedMonthlyPrice.toFixed(
-                            2
-                          )}
+                          {moPrice.toFixed(2)}
                           {t('availability.perMonth')}
                         </span>
-                      )}
+                      );
+                    })()}
                   </div>
                 )}
 
