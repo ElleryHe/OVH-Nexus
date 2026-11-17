@@ -35,7 +35,7 @@ AI 模型在上下文中永远不会接触到原始 OVH 主机名、完整公网
 
 | 级别 | 权限键 | 默认状态 | 包含工具与硬性边界 |
 | :--- | :---: | :---: | :--- |
-| **L1 只读查询** | `read` | **开启** | **11 个工具**：查询脱敏后的账户画像、独服列表与硬件详情、VPS 列表、边缘防火墙状态、服务到期倒计时、订单交付进度、全球机房实时库存（`catalog_availability`，支持 `offset` 分页、`nextOffset`、`listingState`、`generation` 及 `presale_only` 预售过滤）与 SKU 变动时间线（`catalog_sku_changes`）。 |
+| **L1 只读查询** | `read` | **开启** | **11 个工具**：查询脱敏后的账户画像、独服列表与硬件详情、VPS 列表、边缘防火墙状态、服务到期倒计时、订单交付进度、全球机房实时库存（`catalog_availability`，支持 `offset` 分页、`nextOffset`、统一的 `listingState`（`listed` / `announced` / `presale`）、`generation` 及 `presale_only` 预售过滤）与 SKU 变动时间线（`catalog_sku_changes`，返回 `listingState`、`saleStarted` 开售标识以及 `replaced` / `replacedFrom` 产品线换代信息）。 |
 | **L2 免付采购** | `procurement` | **关闭** | **5 个工具**：两步确认生成【未付款订单】（`order_quote` → `order_create_unpaid`）、采购队列任务管理（`queue_add`、`queue_manage`）与库存订阅管理。**底层代码硬性锁死 `auto_pay=false` 且单次数量固定为 `1`。** |
 | **L3 可逆运维** | `operations` | **关闭** | **4 个工具**：独服/VPS 硬件重启（`baremetal_reboot`、`vps_reboot`）、重置卡死的 IPMI 会话（`baremetal_ipmi_reset`）、边缘防火墙规则与永久防洪开关（`baremetal_firewall_update`）。需启用 2FA 后方可解锁。 |
 | **L4 高危与财务** | *代码级封禁* | **永久熔断** | **0 个工具（不提供任何开启开关）**：自动扣款结账（`autoPay`）、重装系统/格式化磁盘、退订销毁服务、读取带一次性令牌的 KVM 远程控制台链接、增删 SSH 公钥或 API 密钥均被永久排除。 |

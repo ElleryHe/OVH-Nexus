@@ -213,6 +213,10 @@ func (s *Service) MountRoutes(r chi.Router) {
 	r.Get("/sku/status", s.HandleSKUStatus)
 	r.Get("/sku/changes", s.HandleSKUChanges)
 	r.Post("/sku/check", s.HandleSKUCheck)
+	r.Get("/monitor/sku", s.HandleSKUChanges)
+	r.Get("/monitor/sku/status", s.HandleSKUStatus)
+	r.Get("/monitor/sku/changes", s.HandleSKUChanges)
+	r.Post("/monitor/sku/check", s.HandleSKUCheck)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

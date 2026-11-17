@@ -496,7 +496,8 @@ func IsNonServerAddonCode(code string) bool {
 	return false
 }
 
-// ParsePlanRegion extracts the base planCode and optional regional suffix tag.
+// ParsePlanRegion extracts the base planCode (with regional suffix removed, preserving version suffix)
+// and optional regional suffix tag.
 func ParsePlanRegion(planCode string) (string, *RegionTag) {
 	code := strings.TrimSpace(planCode)
 	if code == "" {
@@ -511,14 +512,42 @@ func ParsePlanRegion(planCode string) (string, *RegionTag) {
 		}
 		code = code[:loc[0]]
 	}
-	baseCode := reVersionSuffix.ReplaceAllString(code, "")
-	return baseCode, regTag
+	return code, regTag
+}
+
+// StripPlanVersion removes both the regional suffix and any trailing -vN version suffix from planCode.
+func StripPlanVersion(planCode string) string {
+	baseCode, _ := ParsePlanRegion(planCode)
+	return reVersionSuffix.ReplaceAllString(baseCode, "")
+}
+
+// BuildConfigKey constructs a canonical configuration fingerprint from memory and storage codes.
+func BuildConfigKey(memory, storage string) string {
+	mem := strings.TrimSpace(memory)
+	sto := strings.TrimSpace(storage)
+	if strings.EqualFold(mem, "N/A") || strings.EqualFold(mem, "none") {
+		mem = ""
+	}
+	if strings.EqualFold(sto, "N/A") || strings.EqualFold(sto, "none") {
+		sto = ""
+	}
+	switch {
+	case mem != "" && sto != "":
+		return mem + "+" + sto
+	case mem != "":
+		return mem
+	case sto != "":
+		return sto
+	default:
+		return "default"
+	}
 }
 
 // InferPlanFromCode resolves a commercial name and product range deterministically from a planCode.
 func InferPlanFromCode(planCode string) PlanMeta {
 	baseCode, regionInfo := ParsePlanRegion(planCode)
-	clean := reTrailingVer.ReplaceAllString(strings.ToLower(baseCode), "$1")
+	noVer := reVersionSuffix.ReplaceAllString(baseCode, "")
+	clean := reTrailingVer.ReplaceAllString(strings.ToLower(noVer), "$1")
 
 	body := clean
 	if m := rePlanBody.FindStringSubmatch(clean); len(m) == 3 {

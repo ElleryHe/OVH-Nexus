@@ -2,13 +2,30 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, Search, Database, Filter, Download, TrendingUp, ChevronLeft, ChevronRight, Sparkles, ChevronDown, ChevronUp, History, Bell } from 'lucide-react';
+import {
+  RefreshCw,
+  Search,
+  Database,
+  Filter,
+  Download,
+  TrendingUp,
+  ChevronLeft,
+  ChevronRight,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  History,
+  Bell,
+} from 'lucide-react';
 import axios from 'axios';
 import apiClient from '@/utils/apiClient';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useLocale } from '@/context/LocaleContext';
 import { DCLabel } from '@/components/DCLabel';
-import { QuickMonitorDialog } from '@/components/QuickMonitorDialog';
+import {
+  QuickMonitorDialog,
+  QuickMonitorInitialConfig,
+} from '@/components/QuickMonitorDialog';
 import {
   formatDatacenter,
   normalizeDatacenterCode,
@@ -21,115 +38,176 @@ import {
   formatMemoryCode,
   formatStorageCode,
   formatGpuCode,
+  buildConfigKey,
+  formatConfigLabel,
+  getCurrencySymbol,
+  parsePlanRegion,
 } from '@/utils/hardwareFormat';
-
-/**
- * OVH 数据中心可用性查询页面
- * 直接调用 OVH 公开 API（无需认证）
- * 根据后端配置的 endpoint 自动选择对应的区域 API：
- * - EU: https://eu.api.ovh.com/v1/dedicated/server/datacenter/availabilities
- * - US: https://api.us.ovhcloud.com/v1/dedicated/server/datacenter/availabilities
- * - CA: https://ca.api.ovh.com/v1/dedicated/server/datacenter/availabilities
- */
+import type {
+  ListingState,
+  OVHAvailabilityRow,
+  PlanConfigOption,
+  SkuChangeRecord,
+} from '@/types';
 
 interface DatacenterInfo {
   datacenter: string;
   availability: string;
 }
 
-interface AvailabilityItem {
+interface MergedConfigEntry {
+  configKey: string;
   fqn: string;
   memory: string;
-  planCode: string;
-  server: string;
   storage: string;
   systemStorage?: string;
   gpu?: string;
-  listingState?: 'listed' | 'presale' | 'delisted' | string;
-  catalogSource?: string;
-  orderable?: boolean;
-  generation?: number;
+  options: string[];
+  isDefault: boolean;
+  label: string;
+  estimatedMonthlyPrice: number | null;
+  currency: string;
   datacenters: DatacenterInfo[];
+  dcMap: Record<string, string>;
+  inStockCount: number;
 }
 
-interface SkuChangeRecord {
-  id: string;
-  type: 'added' | 'removed' | 'config_changed' | 'presale' | 'listed';
-  listingState?: 'listed' | 'presale' | string;
-  timestamp: string;
-  skuKey: string;
-  planCodes?: string[];
-  name: string;
-  range?: string;
-  cpuText?: string;
-  memorySummary?: string;
-  storageSummary?: string;
-  stockState?: string;
-  addedConfigs?: string[];
-  removedConfigs?: string[];
+interface MergedDatacenterCell {
+  datacenter: string;
+  bestAvailability: string;
+  inStockConfigsCount: number;
+  inStockConfigLabels: string[];
 }
+
+interface MergedPlanRow {
+  planCode: string;
+  server: string;
+  listingState: ListingState;
+  orderable: boolean;
+  generation?: number;
+  isRecentlyAdded: boolean;
+  startingPrice: number | null;
+  currency: string;
+  configs: MergedConfigEntry[];
+  allDatacenters: MergedDatacenterCell[];
+  totalInStockDcs: number;
+  has1HStock: boolean;
+}
+
+type ListingFilterTab = 'all' | 'listed' | 'announced' | 'presale' | 'new';
+
+const isStatusInStock = (status?: string): boolean =>
+  Boolean(status && status !== 'unavailable' && status !== 'unknown');
+
+const rankAvailabilityStatus = (status?: string): number => {
+  if (!status || status === 'unknown') return 0;
+  if (status === 'unavailable') return 1;
+  switch (status) {
+    case '1H-high':
+      return 100;
+    case '1H-low':
+      return 90;
+    case '24H':
+      return 80;
+    case '72H':
+      return 70;
+    case '240H':
+      return 60;
+    case '480H':
+      return 50;
+    default:
+      return 65;
+  }
+};
 
 const OVHAvailabilityPage = () => {
   const isMobile = useIsMobile();
   const { locale, t } = useLocale();
   const catalogDict = useCatalogDictionary();
-  const [availabilities, setAvailabilities] = useState<AvailabilityItem[]>([]);
+  const [availabilities, setAvailabilities] = useState<OVHAvailabilityRow[]>([]);
   const [skuChanges, setSkuChanges] = useState<SkuChangeRecord[]>([]);
   const [recentSkuMap, setRecentSkuMap] = useState<Record<string, string>>({});
   const [presaleSkuMap, setPresaleSkuMap] = useState<Record<string, string>>({});
-  const [serverListingMap, setServerListingMap] = useState<Record<string, { listingState?: string; orderable?: boolean; catalogSource?: string }>>({});
+  const [announcedSkuMap, setAnnouncedSkuMap] = useState<Record<string, string>>({});
+  const [serverListingMap, setServerListingMap] = useState<
+    Record<
+      string,
+      {
+        listingState?: string;
+        listedAt?: string;
+        orderable?: boolean;
+        catalogSource?: string;
+        memory?: string;
+        storage?: string;
+        monthlyPrice?: number | null;
+        startingPrice?: number | null;
+        currency?: string;
+      }
+    >
+  >({});
   const [skuTotalIndexed, setSkuTotalIndexed] = useState<number>(0);
   const [showSkuTimeline, setShowSkuTimeline] = useState<boolean>(false);
   const [isCheckingSku, setIsCheckingSku] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false); // 区分初始加载和刷新
-  const [isConfigLoading, setIsConfigLoading] = useState(true); // 配置加载状态
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setIsConfigLoading] = useState(true);
   const [endpoint, setEndpoint] = useState<string>('');
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
-  // 使用ref保存上一次的数据，防止刷新时短暂显示"暂无数据"
-  const prevAvailabilitiesRef = useRef<AvailabilityItem[]>([]);
-  
-  // 搜索和过滤
+  const prevAvailabilitiesRef = useRef<OVHAvailabilityRow[]>([]);
+
+  // Per-row configuration selector state: planCode -> 'all' | configKey
+  const [selectedRowConfigs, setSelectedRowConfigs] = useState<
+    Record<string, string>
+  >({});
+
+  // Search and filters
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filterDatacenter, setFilterDatacenter] = useState('all');
   const [filterAvailability, setFilterAvailability] = useState('all');
   const [filterMemory, setFilterMemory] = useState('all');
-  const [filterPresaleOnly, setFilterPresaleOnly] = useState(false);
+  const [listingFilterTab, setListingFilterTab] =
+    useState<ListingFilterTab>('all');
+
   const [quickMonitorTarget, setQuickMonitorTarget] = useState<{
     planCode: string;
     serverName?: string;
+    listingState?: ListingState;
     isPresale?: boolean;
     datacenters?: DatacenterInfo[];
-    memory?: string;
-    storage?: string;
+    initialConfig?: QuickMonitorInitialConfig | null;
+    initialConfigs?: PlanConfigOption[];
   } | null>(null);
-  
-  // 排序
-  const [sortBy, setSortBy] = useState<'planCode' | 'memory' | 'availability' | 'price'>('planCode');
+
+  // Sorting & pagination
+  const [sortBy, setSortBy] = useState<
+    'planCode' | 'memory' | 'availability' | 'price'
+  >('planCode');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-  
-  // 分页
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = isMobile ? 20 : 50;
-  
-  // 搜索防抖
+  const itemsPerPage = isMobile ? 20 : 40;
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(searchTerm);
-      setCurrentPage(1); // 搜索时重置页码
+      setCurrentPage(1);
     }, 300);
     return () => clearTimeout(timer);
   }, [searchTerm]);
-  
-  // 过滤条件改变时重置页码
+
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterDatacenter, filterAvailability, filterMemory, filterPresaleOnly, sortBy, sortOrder]);
+  }, [
+    filterDatacenter,
+    filterAvailability,
+    filterMemory,
+    listingFilterTab,
+    sortBy,
+    sortOrder,
+  ]);
 
-  // 根据 endpoint 获取对应的 API 基础地址
-  const getApiBaseUrl = (endpoint: string): string => {
-    switch (endpoint) {
+  const getApiBaseUrl = (ep: string): string => {
+    switch (ep) {
       case 'ovh-us':
         return 'https://api.us.ovhcloud.com';
       case 'ovh-ca':
@@ -140,90 +218,70 @@ const OVHAvailabilityPage = () => {
     }
   };
 
-  // 获取所有可用性数据
-  const fetchAvailabilities = useCallback(async (isRefresh = false) => {
-    if (!apiBaseUrl) return;
-    
-    // 如果是刷新且有数据，只设置刷新状态，保留旧数据
-    const hasExistingData = prevAvailabilitiesRef.current.length > 0;
-    if (isRefresh && hasExistingData) {
-      setIsRefreshing(true);
-      // 刷新时不清空数据，保持旧数据可见
-    } else {
-      setIsLoading(true);
-    }
-    try {
-      const apiUrl = `${apiBaseUrl}/v1/dedicated/server/datacenter/availabilities`;
-      // 只在非刷新时显示提示，避免频繁提示
-      if (!isRefresh) {
-        toast.info('正在从 OVH 公开 API 获取数据...', { duration: 2000 });
-      }
-      
-      console.log(`正在从 ${apiUrl} 获取数据...`);
-      
-      // 优先尝试后端代理接口（支持单飞合并与预售状态标注），若不可用则直接回退到 OVH 公开 API
-      let newData: AvailabilityItem[] = [];
-      try {
-        const backendRes = await apiClient.get('/availability', { timeout: 30000 });
-        if (Array.isArray(backendRes.data) && backendRes.data.length > 0) {
-          newData = backendRes.data;
-        }
-      } catch {
-        // Fallback to direct OVH API below
-      }
-      if (newData.length === 0) {
-        const response = await axios.get(apiUrl, {
-          timeout: 30000
-        });
-        console.log('OVH API 返回数据:', response.data);
-        newData = Array.isArray(response.data) ? response.data : [];
-      }
-      
-      // 保存到ref，用于渲染时的备用检查
-      prevAvailabilitiesRef.current = newData;
-      
-      // 更新数据状态（React会自动批处理状态更新）
-      setAvailabilities(newData);
-      
-      // 只在非刷新时显示成功提示，避免频繁提示
-      if (!isRefresh && newData.length > 0) {
-        toast.success(`成功获取 ${newData.length} 条可用性记录`);
-      } else if (isRefresh && newData.length > 0 && hasExistingData) {
-        // 刷新成功但静默更新，不显示提示
-      }
-    } catch (error: any) {
-      console.error('获取 OVH 数据失败:', error);
-      
-      let errorMessage = '获取数据失败';
-      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-        errorMessage = '请求超时，请重试';
-      } else if (error.message) {
-        errorMessage = `获取数据失败: ${error.message}`;
-      }
-      
-      toast.error(errorMessage);
-    } finally {
-      // 确保加载状态在最后更新
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, [apiBaseUrl]);
+  const fetchAvailabilities = useCallback(
+    async (isRefresh = false) => {
+      if (!apiBaseUrl) return;
 
-  // 获取 endpoint 配置
+      const hasExistingData = prevAvailabilitiesRef.current.length > 0;
+      if (isRefresh && hasExistingData) {
+        setIsRefreshing(true);
+      } else {
+        setIsLoading(true);
+      }
+      try {
+        const apiUrl = `${apiBaseUrl}/v1/dedicated/server/datacenter/availabilities`;
+        if (!isRefresh) {
+          toast.info('正在从 OVH 公开 API 获取数据...', { duration: 2000 });
+        }
+
+        let newData: OVHAvailabilityRow[] = [];
+        try {
+          const backendRes = await apiClient.get('/availability', {
+            timeout: 30000,
+          });
+          if (Array.isArray(backendRes.data) && backendRes.data.length > 0) {
+            newData = backendRes.data;
+          }
+        } catch {
+          // Fallback to direct OVH API below
+        }
+        if (newData.length === 0) {
+          const response = await axios.get(apiUrl, { timeout: 30000 });
+          newData = Array.isArray(response.data) ? response.data : [];
+        }
+
+        prevAvailabilitiesRef.current = newData;
+        setAvailabilities(newData);
+
+        if (!isRefresh && newData.length > 0) {
+          toast.success(`成功获取 ${newData.length} 条配置可用性记录`);
+        }
+      } catch (error: any) {
+        let errorMessage = '获取数据失败';
+        if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+          errorMessage = '请求超时，请重试';
+        } else if (error.message) {
+          errorMessage = `获取数据失败: ${error.message}`;
+        }
+        toast.error(errorMessage);
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    [apiBaseUrl]
+  );
+
   const fetchEndpointConfig = useCallback(async () => {
     setIsConfigLoading(true);
     try {
       const response = await apiClient.get('/endpoint-config');
       const configEndpoint = response.data.endpoint || 'ovh-eu';
       setEndpoint(configEndpoint);
-      const baseUrl = getApiBaseUrl(configEndpoint);
-      setApiBaseUrl(baseUrl);
-      console.log(`✅ 使用 OVH API: ${configEndpoint} - ${baseUrl}`);
-    } catch (error) {
-      console.error('获取 endpoint 配置失败，使用默认值 ovh-eu:', error);
+      setApiBaseUrl(getApiBaseUrl(configEndpoint));
+    } catch {
       setEndpoint('ovh-eu');
       setApiBaseUrl('https://eu.api.ovh.com');
-      toast.error('获取区域配置失败，使用默认欧洲区域');
     } finally {
       setIsConfigLoading(false);
     }
@@ -236,6 +294,7 @@ const OVHAvailabilityPage = () => {
         setSkuChanges(res.data.changes || []);
         setRecentSkuMap(res.data.status?.recentFirstSeen || {});
         setPresaleSkuMap(res.data.status?.presaleSkus || {});
+        setAnnouncedSkuMap(res.data.status?.announcedSkus || {});
         setSkuTotalIndexed(res.data.status?.totalSkus || 0);
       }
     } catch {
@@ -248,20 +307,39 @@ const OVHAvailabilityPage = () => {
       const res = await apiClient.get('/servers');
       const list = Array.isArray(res.data) ? res.data : res.data?.servers || [];
       if (Array.isArray(list) && list.length > 0) {
-        const map: Record<string, { listingState?: string; orderable?: boolean; catalogSource?: string }> = {};
+        const map: Record<
+          string,
+          {
+            listingState?: string;
+            listedAt?: string;
+            orderable?: boolean;
+            catalogSource?: string;
+            memory?: string;
+            storage?: string;
+            monthlyPrice?: number | null;
+            startingPrice?: number | null;
+            currency?: string;
+          }
+        > = {};
         list.forEach((srv: any) => {
           if (srv && srv.planCode) {
             map[srv.planCode] = {
               listingState: srv.listingState,
+              listedAt: srv.listedAt,
               orderable: srv.orderable,
               catalogSource: srv.catalogSource,
+              memory: srv.memory,
+              storage: srv.storage,
+              monthlyPrice: srv.monthlyPrice,
+              startingPrice: srv.startingPrice,
+              currency: srv.currency,
             };
           }
         });
         setServerListingMap(map);
       }
     } catch {
-      // ignore if unauthenticated or offline
+      // ignore
     }
   }, []);
 
@@ -273,203 +351,493 @@ const OVHAvailabilityPage = () => {
         setSkuChanges(res.data.changes || []);
         setRecentSkuMap(res.data.status?.recentFirstSeen || {});
         setPresaleSkuMap(res.data.status?.presaleSkus || {});
+        setAnnouncedSkuMap(res.data.status?.announcedSkus || {});
         setSkuTotalIndexed(res.data.status?.totalSkus || 0);
       }
       toast.success('已同步最新货架 SKU 基线与变动');
     } catch (err: any) {
-      toast.error('同步 SKU 变动失败: ' + (err.response?.data?.message || err.message));
+      toast.error(
+        '同步 SKU 变动失败: ' + (err.response?.data?.message || err.message)
+      );
     } finally {
       setIsCheckingSku(false);
     }
   };
 
-  // 初始加载：先获取 endpoint 配置，再获取数据
   useEffect(() => {
     fetchEndpointConfig();
     fetchSkuChanges();
     fetchServerListingStates();
   }, [fetchEndpointConfig, fetchSkuChanges, fetchServerListingStates]);
 
-  // 当 apiBaseUrl 改变时，获取数据
   useEffect(() => {
     if (apiBaseUrl) {
       fetchAvailabilities();
     }
   }, [apiBaseUrl, fetchAvailabilities]);
 
-  // 判定单条可用性记录是否属于预售/待上架机型
-  const isItemPresale = useCallback(
-    (item: AvailabilityItem): boolean => {
+  // Resolve listingState ('listed' | 'announced' | 'presale') for an availability item
+  const resolveItemListingState = useCallback(
+    (item: OVHAvailabilityRow): ListingState => {
+      if (item.listingState === 'announced') return 'announced';
       if (
         item.listingState === 'presale' ||
-        item.catalogSource === 'presale' ||
-        item.orderable === false
+        item.catalogSource === 'presale'
       ) {
-        return true;
+        return 'presale';
       }
-      if (item.listingState === 'listed' || item.orderable === true) {
-        return false;
-      }
+      if (item.listingState === 'listed') return 'listed';
+
       const srvMeta = serverListingMap[item.planCode];
       if (srvMeta) {
-        return (
+        if (srvMeta.listingState === 'announced') return 'announced';
+        if (
           srvMeta.listingState === 'presale' ||
-          srvMeta.catalogSource === 'presale' ||
-          srvMeta.orderable === false
-        );
+          srvMeta.catalogSource === 'presale'
+        ) {
+          return 'presale';
+        }
+        if (srvMeta.listingState === 'listed') return 'listed';
       }
       if (presaleSkuMap[item.planCode]) {
-        return true;
+        return 'presale';
       }
-      if (catalogDict && catalogDict.plans && Object.keys(catalogDict.plans).length > 0) {
-        const directPlan = catalogDict.plans[item.planCode];
+      if (
+        announcedSkuMap[item.planCode] &&
+        (!item.datacenters || item.datacenters.length === 0)
+      ) {
+        return 'announced';
+      }
+      const realPlans = catalogDict?.realPlans || catalogDict?.plans || {};
+      if (Object.keys(realPlans).length > 0) {
+        const { baseCode } = parsePlanRegion(item.planCode);
+        const directPlan = realPlans[item.planCode] || realPlans[baseCode];
         if (!directPlan || directPlan.catalogSource === 'presale') {
-          return true;
+          return 'presale';
         }
       }
-      return false;
+      if (!item.datacenters || item.datacenters.length === 0) {
+        return 'announced';
+      }
+      return 'listed';
     },
-    [serverListingMap, presaleSkuMap, catalogDict]
+    [serverListingMap, presaleSkuMap, announcedSkuMap, catalogDict]
   );
 
-  // 统计预售/待上架机型的去重型号数（与服务器目录页口径一致）
-  const presaleModelCount = useMemo(() => {
-    const set = new Set<string>();
+  // Merge availability rows by exact planCode (regional variants like -sgp / -mum stay separate rows)
+  const mergedRows = useMemo<MergedPlanRow[]>(() => {
+    const groups = new Map<string, OVHAvailabilityRow[]>();
+    const seenBaseCodesInAvail = new Set<string>();
+
     availabilities.forEach((item) => {
-      if (isItemPresale(item)) {
-        set.add(item.planCode);
+      if (!item || !item.planCode) return;
+      const code = item.planCode.trim();
+      if (!groups.has(code)) {
+        groups.set(code, []);
+      }
+      groups.get(code)!.push(item);
+      if (item.datacenters && item.datacenters.length > 0) {
+        const { baseCode } = parsePlanRegion(code);
+        seenBaseCodesInAvail.add(code.toLowerCase());
+        if (baseCode) seenBaseCodesInAvail.add(baseCode.toLowerCase());
       }
     });
-    return set.size;
-  }, [availabilities, isItemPresale]);
 
-  // 使用useMemo优化过滤和排序
-  const filteredData = useMemo(() => {
-    let filtered = [...availabilities];
+    // Synthesize announced plans from serverListingMap or catalogDict.realPlans if not already in availabilities
+    Object.entries(serverListingMap).forEach(([planCode, meta]) => {
+      if (meta.listingState === 'announced' && !groups.has(planCode)) {
+        groups.set(planCode, [
+          {
+            fqn: `${planCode}.announced`,
+            planCode,
+            server: planCode,
+            memory: meta.memory || '',
+            storage: meta.storage || '',
+            listingState: 'announced',
+            orderable: false,
+            estimatedMonthlyPrice:
+              typeof meta.startingPrice === 'number'
+                ? meta.startingPrice
+                : typeof meta.monthlyPrice === 'number'
+                ? meta.monthlyPrice
+                : undefined,
+            currency: meta.currency || catalogDict?.currency || 'EUR',
+            datacenters: [],
+          },
+        ]);
+      }
+    });
 
-    // 仅看预售过滤
-    if (filterPresaleOnly) {
-      filtered = filtered.filter((item) => isItemPresale(item));
+    if (catalogDict?.realPlans) {
+      Object.entries(catalogDict.realPlans).forEach(([planCode, entry]) => {
+        if (groups.has(planCode)) return;
+        const { baseCode } = parsePlanRegion(planCode);
+        if (
+          seenBaseCodesInAvail.has(planCode.toLowerCase()) ||
+          (baseCode && seenBaseCodesInAvail.has(baseCode.toLowerCase()))
+        ) {
+          return;
+        }
+        groups.set(planCode, [
+          {
+            fqn: `${planCode}.announced`,
+            planCode,
+            server: entry.product || planCode,
+            memory: entry.defaultSpecs?.memory || '',
+            storage: entry.defaultSpecs?.storage || '',
+            listingState: 'announced',
+            orderable: false,
+            estimatedMonthlyPrice:
+              typeof entry.price === 'number' ? entry.price : undefined,
+            currency: entry.currency || catalogDict.currency || 'EUR',
+            datacenters: [],
+          },
+        ]);
+      });
     }
-    
-    // 搜索过滤（支持按消费者友好型号名如 KS-A、CPU 型号、转换后的内存/硬盘以及原始 SKU 搜索）
+
+    const result: MergedPlanRow[] = [];
+
+    groups.forEach((items, planCode) => {
+      const first = items[0];
+      const planMeta = resolvePlanDisplay(
+        planCode,
+        first.server,
+        locale,
+        catalogDict
+      );
+      const listingState = resolveItemListingState(first);
+      const generation = inferPlanGeneration(planCode, first.generation);
+      const listedAtStr =
+        first.listedAt || serverListingMap[planCode]?.listedAt || '';
+      const isListedWithin7d = Boolean(
+        listedAtStr &&
+          Date.now() - Date.parse(listedAtStr) <= 7 * 24 * 3600 * 1000
+      );
+      const isRecentlyAdded = Boolean(
+        listingState === 'listed' &&
+          (recentSkuMap[planCode] ||
+            recentSkuMap[planMeta.baseCode] ||
+            isListedWithin7d)
+      );
+
+      const configMap = new Map<string, MergedConfigEntry>();
+      const dcAggregate = new Map<
+        string,
+        {
+          bestAvailability: string;
+          inStockConfigsCount: number;
+          inStockConfigLabels: string[];
+        }
+      >();
+
+      let minPrice: number | null =
+        typeof planMeta.basePrice === 'number' && planMeta.basePrice > 0
+          ? planMeta.basePrice
+          : null;
+      const currency = first.currency || planMeta.currency || 'EUR';
+
+      items.forEach((it, idx) => {
+        const cfgKey =
+          it.configKey || buildConfigKey(it.memory, it.storage) || `cfg-${idx}`;
+        const priceInfo = resolveConfigPrice(planMeta, it);
+        const estPrice =
+          typeof it.estimatedMonthlyPrice === 'number' &&
+          it.estimatedMonthlyPrice > 0
+            ? it.estimatedMonthlyPrice
+            : typeof it.price === 'number' && it.price > 0
+            ? it.price
+            : priceInfo.totalPrice;
+
+        if (estPrice !== null && estPrice > 0) {
+          if (minPrice === null || estPrice < minPrice) {
+            minPrice = estPrice;
+          }
+        }
+
+        const label = formatConfigLabel(it.memory, it.storage, locale);
+        const dcMap: Record<string, string> = {};
+        const dcs: DatacenterInfo[] = [];
+
+        (it.datacenters || []).forEach((dc) => {
+          const norm = normalizeDatacenterCode(dc.datacenter) || dc.datacenter;
+          dcMap[norm] = dc.availability;
+          dcs.push({ datacenter: norm, availability: dc.availability });
+        });
+
+        const inStockCount = dcs.filter((d) =>
+          isStatusInStock(d.availability)
+        ).length;
+
+        const existingCfg = configMap.get(cfgKey);
+        if (!existingCfg) {
+          configMap.set(cfgKey, {
+            configKey: cfgKey,
+            fqn: it.fqn || `${planCode}.${cfgKey}`,
+            memory: it.memory || '',
+            storage: it.storage || '',
+            systemStorage: it.systemStorage,
+            gpu: it.gpu,
+            options:
+              Array.isArray(it.options) && it.options.length > 0
+                ? it.options
+                : [it.memory, it.storage].filter(
+                    (x) => x && x !== 'N/A' && x !== 'none'
+                  ),
+            isDefault: Boolean(it.isDefault || idx === 0),
+            label,
+            estimatedMonthlyPrice: estPrice ?? null,
+            currency: it.currency || currency,
+            datacenters: dcs,
+            dcMap,
+            inStockCount,
+          });
+        } else {
+          dcs.forEach((d) => {
+            const cur = existingCfg.dcMap[d.datacenter];
+            if (
+              !cur ||
+              rankAvailabilityStatus(d.availability) >
+                rankAvailabilityStatus(cur)
+            ) {
+              existingCfg.dcMap[d.datacenter] = d.availability;
+            }
+          });
+          existingCfg.datacenters = Object.entries(existingCfg.dcMap).map(
+            ([datacenter, availability]) => ({ datacenter, availability })
+          );
+          existingCfg.inStockCount = existingCfg.datacenters.filter((d) =>
+            isStatusInStock(d.availability)
+          ).length;
+        }
+      });
+
+      const configsList = Array.from(configMap.values()).sort((a, b) => {
+        if (a.isDefault && !b.isDefault) return -1;
+        if (!a.isDefault && b.isDefault) return 1;
+        if (b.inStockCount !== a.inStockCount) {
+          return b.inStockCount - a.inStockCount;
+        }
+        return (
+          (a.estimatedMonthlyPrice ?? 999999) -
+          (b.estimatedMonthlyPrice ?? 999999)
+        );
+      });
+
+      // Compute best availability and in-stock config count per datacenter across all configs of this planCode
+      configsList.forEach((cfg) => {
+        cfg.datacenters.forEach((d) => {
+          const prev = dcAggregate.get(d.datacenter);
+          const inStock = isStatusInStock(d.availability);
+          if (!prev) {
+            dcAggregate.set(d.datacenter, {
+              bestAvailability: d.availability,
+              inStockConfigsCount: inStock ? 1 : 0,
+              inStockConfigLabels: inStock ? [cfg.label] : [],
+            });
+          } else {
+            if (
+              rankAvailabilityStatus(d.availability) >
+              rankAvailabilityStatus(prev.bestAvailability)
+            ) {
+              prev.bestAvailability = d.availability;
+            }
+            if (inStock) {
+              prev.inStockConfigsCount += 1;
+              if (!prev.inStockConfigLabels.includes(cfg.label)) {
+                prev.inStockConfigLabels.push(cfg.label);
+              }
+            }
+          }
+        });
+      });
+
+      const allDatacenters: MergedDatacenterCell[] = Array.from(
+        dcAggregate.entries()
+      ).map(([datacenter, info]) => ({
+        datacenter,
+        bestAvailability: info.bestAvailability,
+        inStockConfigsCount: info.inStockConfigsCount,
+        inStockConfigLabels: info.inStockConfigLabels,
+      }));
+
+      const totalInStockDcs = allDatacenters.filter((d) =>
+        isStatusInStock(d.bestAvailability)
+      ).length;
+      const has1HStock = allDatacenters.some(
+        (d) =>
+          d.bestAvailability === '1H-low' || d.bestAvailability === '1H-high'
+      );
+
+      result.push({
+        planCode,
+        server: first.server || planCode,
+        listingState,
+        orderable: listingState === 'listed',
+        generation,
+        isRecentlyAdded,
+        startingPrice: minPrice,
+        currency,
+        configs: configsList,
+        allDatacenters,
+        totalInStockDcs,
+        has1HStock,
+      });
+    });
+
+    return result;
+  }, [availabilities, serverListingMap, catalogDict, locale, resolveItemListingState, recentSkuMap]);
+
+  // Tab counts
+  const tabCounts = useMemo(() => {
+    const counts = {
+      all: mergedRows.length,
+      listed: 0,
+      announced: 0,
+      presale: 0,
+      new: 0,
+    };
+    mergedRows.forEach((r) => {
+      if (r.listingState === 'listed') counts.listed += 1;
+      else if (r.listingState === 'announced') counts.announced += 1;
+      else if (r.listingState === 'presale') counts.presale += 1;
+      if (r.isRecentlyAdded) counts.new += 1;
+    });
+    return counts;
+  }, [mergedRows]);
+
+  const filteredData = useMemo(() => {
+    let filtered = [...mergedRows];
+
+    if (listingFilterTab === 'listed') {
+      filtered = filtered.filter((r) => r.listingState === 'listed');
+    } else if (listingFilterTab === 'announced') {
+      filtered = filtered.filter((r) => r.listingState === 'announced');
+    } else if (listingFilterTab === 'presale') {
+      filtered = filtered.filter((r) => r.listingState === 'presale');
+    } else if (listingFilterTab === 'new') {
+      filtered = filtered.filter((r) => r.isRecentlyAdded);
+    }
+
     if (debouncedSearch) {
       const term = debouncedSearch.toLowerCase();
-      filtered = filtered.filter((item) => {
-        const planMeta = resolvePlanDisplay(item.planCode, item.server, locale, catalogDict);
-        const memFriendly = formatMemoryCode(item.memory, locale).toLowerCase();
-        const stoFriendly = formatStorageCode(item.storage, locale, false).toLowerCase();
-        return (
-          item.planCode.toLowerCase().includes(term) ||
-          item.server.toLowerCase().includes(term) ||
-          item.fqn.toLowerCase().includes(term) ||
-          item.memory.toLowerCase().includes(term) ||
-          item.storage.toLowerCase().includes(term) ||
+      filtered = filtered.filter((row) => {
+        const planMeta = resolvePlanDisplay(
+          row.planCode,
+          row.server,
+          locale,
+          catalogDict
+        );
+        if (
+          row.planCode.toLowerCase().includes(term) ||
+          row.server.toLowerCase().includes(term) ||
           planMeta.name.toLowerCase().includes(term) ||
-          planMeta.cpuText.toLowerCase().includes(term) ||
-          memFriendly.includes(term) ||
-          stoFriendly.includes(term)
+          planMeta.cpuText.toLowerCase().includes(term)
+        ) {
+          return true;
+        }
+        return row.configs.some(
+          (c) =>
+            c.memory.toLowerCase().includes(term) ||
+            c.storage.toLowerCase().includes(term) ||
+            c.label.toLowerCase().includes(term) ||
+            c.fqn.toLowerCase().includes(term)
         );
       });
     }
-    
-    // 数据中心过滤
+
     if (filterDatacenter !== 'all') {
       const targetDc = normalizeDatacenterCode(filterDatacenter);
-      filtered = filtered.filter(item =>
-        item.datacenters.some(dc => normalizeDatacenterCode(dc.datacenter) === targetDc)
+      filtered = filtered.filter((row) =>
+        row.allDatacenters.some(
+          (dc) => normalizeDatacenterCode(dc.datacenter) === targetDc
+        )
       );
     }
-    
-    // 可用性状态过滤
+
     if (filterAvailability !== 'all') {
-      filtered = filtered.filter(item => {
+      filtered = filtered.filter((row) => {
         if (filterAvailability === 'available') {
-          return item.datacenters.some(dc => 
-            dc.availability !== 'unavailable' && dc.availability !== 'unknown'
-          );
+          return row.totalInStockDcs > 0;
         } else if (filterAvailability === 'unavailable') {
-          return item.datacenters.every(dc => 
-            dc.availability === 'unavailable' || dc.availability === 'unknown'
-          );
+          return row.totalInStockDcs === 0;
         } else if (filterAvailability === '1h') {
-          return item.datacenters.some(dc => 
-            dc.availability === '1H-low' || dc.availability === '1H-high'
-          );
+          return row.has1HStock;
         }
         return true;
       });
     }
-    
-    // 内存过滤
+
     if (filterMemory !== 'all') {
-      filtered = filtered.filter(item => {
-        const memMatch = item.memory.match(/(\d+)g/i);
-        if (memMatch) {
-          const memSize = parseInt(memMatch[1]);
+      filtered = filtered.filter((row) =>
+        row.configs.some((c) => {
+          const memMatch = c.memory.match(/(\d+)g/i);
+          if (!memMatch) return false;
+          const memSize = parseInt(memMatch[1], 10);
           switch (filterMemory) {
-            case '<=128': return memSize <= 128;
-            case '256': return memSize >= 128 && memSize <= 256;
-            case '512': return memSize >= 256 && memSize <= 512;
-            case '>=1024': return memSize >= 1024;
-            default: return true;
+            case '<=128':
+              return memSize <= 128;
+            case '256':
+              return memSize >= 128 && memSize <= 256;
+            case '512':
+              return memSize >= 256 && memSize <= 512;
+            case '>=1024':
+              return memSize >= 1024;
+            default:
+              return true;
           }
-        }
-        return true;
-      });
+        })
+      );
     }
-    
-    // 排序
+
     filtered.sort((a, b) => {
       let compareValue = 0;
-      
       switch (sortBy) {
         case 'planCode':
           compareValue = a.planCode.localeCompare(b.planCode);
           break;
-        case 'memory':
-          const aMemMatch = a.memory.match(/(\d+)g/i);
-          const bMemMatch = b.memory.match(/(\d+)g/i);
-          const aMem = aMemMatch ? parseInt(aMemMatch[1]) : 0;
-          const bMem = bMemMatch ? parseInt(bMemMatch[1]) : 0;
+        case 'memory': {
+          const aMemMatch = a.configs[0]?.memory.match(/(\d+)g/i);
+          const bMemMatch = b.configs[0]?.memory.match(/(\d+)g/i);
+          const aMem = aMemMatch ? parseInt(aMemMatch[1], 10) : 0;
+          const bMem = bMemMatch ? parseInt(bMemMatch[1], 10) : 0;
           compareValue = aMem - bMem;
           break;
-        case 'availability': {
-          const aAvail = a.datacenters.filter(dc => 
-            dc.availability !== 'unavailable' && dc.availability !== 'unknown'
-          ).length;
-          const bAvail = b.datacenters.filter(dc => 
-            dc.availability !== 'unavailable' && dc.availability !== 'unknown'
-          ).length;
-          compareValue = aAvail - bAvail;
-          break;
         }
+        case 'availability':
+          compareValue = a.totalInStockDcs - b.totalInStockDcs;
+          break;
         case 'price': {
-          const aMeta = resolvePlanDisplay(a.planCode, a.server, locale, catalogDict);
-          const bMeta = resolvePlanDisplay(b.planCode, b.server, locale, catalogDict);
-          const aPrice = resolveConfigPrice(aMeta, a).totalPrice ?? 999999;
-          const bPrice = resolveConfigPrice(bMeta, b).totalPrice ?? 999999;
+          const aPrice = a.startingPrice ?? 999999;
+          const bPrice = b.startingPrice ?? 999999;
           compareValue = aPrice - bPrice;
           break;
         }
       }
-      
       return sortOrder === 'asc' ? compareValue : -compareValue;
     });
-    
+
     return filtered;
-  }, [availabilities, filterPresaleOnly, isItemPresale, debouncedSearch, filterDatacenter, filterAvailability, filterMemory, sortBy, sortOrder, locale, catalogDict]);
-  
-  // 分页数据
+  }, [
+    mergedRows,
+    listingFilterTab,
+    debouncedSearch,
+    filterDatacenter,
+    filterAvailability,
+    filterMemory,
+    sortBy,
+    sortOrder,
+    locale,
+    catalogDict,
+  ]);
+
   const paginatedData = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    return filteredData.slice(startIndex, endIndex);
+    return filteredData.slice(startIndex, startIndex + itemsPerPage);
   }, [filteredData, currentPage, itemsPerPage]);
-  
+
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
 
-  // 导出数据为 JSON
   const exportData = () => {
     const dataStr = JSON.stringify(filteredData, null, 2);
     const dataBlob = new Blob([dataStr], { type: 'application/json' });
@@ -482,43 +850,124 @@ const OVHAvailabilityPage = () => {
     toast.success('数据已导出');
   };
 
-  // 统计信息
   const stats = {
     total: filteredData.length,
-    available: filteredData.filter(item => 
-      item.datacenters.some(dc => 
-        dc.availability !== 'unavailable' && dc.availability !== 'unknown'
-      )
-    ).length,
-    oneHour: filteredData.filter(item => 
-      item.datacenters.some(dc => 
-        dc.availability === '1H-low' || dc.availability === '1H-high'
-      )
-    ).length,
+    available: filteredData.filter((r) => r.totalInStockDcs > 0).length,
+    oneHour: filteredData.filter((r) => r.has1HStock).length,
   };
 
-  // 获取可用性状态的显示信息
   const getAvailabilityInfo = (availability: string) => {
     switch (availability) {
       case '1H-low':
-        return { text: '1小时-低库存', color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30' };
+        return {
+          text: '1H-Low',
+          color: 'text-yellow-400',
+          bg: 'bg-yellow-500/10',
+          border: 'border-yellow-500/30',
+        };
       case '1H-high':
-        return { text: '1小时-高库存', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30' };
+        return {
+          text: '1H-High',
+          color: 'text-green-400',
+          bg: 'bg-green-500/10',
+          border: 'border-green-500/30',
+        };
       case '72H':
-        return { text: '72小时', color: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/30' };
+        return {
+          text: '72H',
+          color: 'text-blue-400',
+          bg: 'bg-blue-500/10',
+          border: 'border-blue-500/30',
+        };
       case '480H':
-        return { text: '480小时', color: 'text-purple-400', bg: 'bg-purple-500/10', border: 'border-purple-500/30' };
+        return {
+          text: '480H',
+          color: 'text-purple-400',
+          bg: 'bg-purple-500/10',
+          border: 'border-purple-500/30',
+        };
       case 'unavailable':
-        return { text: '不可用', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30' };
+        return {
+          text: locale === 'zh-CN' ? '无货' : locale === 'fr' ? 'Rupture' : 'Out',
+          color: 'text-red-400/80',
+          bg: 'bg-red-500/5',
+          border: 'border-red-500/20',
+        };
       case 'unknown':
-        return { text: '未知', color: 'text-gray-400', bg: 'bg-gray-500/10', border: 'border-gray-500/30' };
+        return {
+          text: '-',
+          color: 'text-gray-400',
+          bg: 'bg-gray-500/10',
+          border: 'border-gray-500/30',
+        };
       default:
-        return { text: availability, color: 'text-cyan-400', bg: 'bg-cyan-500/10', border: 'border-cyan-500/30' };
+        return {
+          text: availability,
+          color: 'text-cyan-400',
+          bg: 'bg-cyan-500/10',
+          border: 'border-cyan-500/30',
+        };
     }
   };
 
+  const renderSkuChangeBadge = (chg: SkuChangeRecord) => {
+    if (chg.type === 'replaced') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+          {t('sku.replaced', {
+            oldCode: chg.replacedFrom || 'old',
+            newCode: chg.planCode || chg.skuKey,
+          })}
+        </span>
+      );
+    }
+    if (chg.saleStarted) {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+          {t('sku.saleStarted')}
+        </span>
+      );
+    }
+    if (chg.listingState === 'announced') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+          {t('announced.skuAdded')}
+        </span>
+      );
+    }
+    if (
+      chg.type === 'presale' ||
+      (chg.type === 'added' && chg.listingState === 'presale')
+    ) {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/30">
+          {t('presale.skuAdded')}
+        </span>
+      );
+    }
+    if (chg.type === 'added' || chg.type === 'listed') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+          {t('sku.newListed')}
+        </span>
+      );
+    }
+    if (chg.type === 'removed') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-red-500/15 text-red-400 border border-red-500/30">
+          {t('sku.removedBadge')}
+        </span>
+      );
+    }
+    return (
+      <span className="px-2 py-0.5 rounded font-semibold bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
+        {t('sku.configChangedBadge')}
+      </span>
+    );
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -526,10 +975,18 @@ const OVHAvailabilityPage = () => {
       >
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className={`${isMobile ? 'text-2xl' : 'text-3xl'} font-bold mb-1 cyber-glow-text`}>OVH 实时可用性</h1>
-            <p className="text-cyber-muted text-sm">直接查询 OVH 公开 API（无需认证）</p>
+            <h1
+              className={`${
+                isMobile ? 'text-2xl' : 'text-3xl'
+              } font-bold mb-1 cyber-glow-text`}
+            >
+              OVH 实时可用性矩阵
+            </h1>
+            <p className="text-cyber-muted text-sm">
+              按型号合并展示（区域变体独立成行），支持行内按配置筛选价格与机房实时库存
+            </p>
           </div>
-          
+
           <div className="flex gap-2">
             <Button
               onClick={exportData}
@@ -548,51 +1005,16 @@ const OVHAvailabilityPage = () => {
               size="sm"
               className="flex items-center gap-2 text-xs sm:text-sm"
             >
-              <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 flex-shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <RefreshCw
+                className={`w-3 h-3 sm:w-4 sm:h-4 flex-shrink-0 ${
+                  isRefreshing ? 'animate-spin' : ''
+                }`}
+              />
               <span className="min-w-[2.5rem]">刷新</span>
             </Button>
           </div>
         </div>
       </motion.div>
-
-      {/* API 信息 */}
-      {endpoint && (
-        <div className="cyber-panel p-4 border-cyan-500/50 backdrop-blur-0 overflow-visible">
-          <div className="flex items-start gap-3">
-            <Database className="w-5 h-5 text-cyan-400 mt-0.5" />
-            <div className="flex-1">
-              <>
-                <h3 className="font-semibold text-cyan-400 mb-2 flex items-center gap-2">
-                  OVH 公开 API
-                  <span className="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300">
-                    {endpoint === 'ovh-us' ? '🇺🇸 美国' : endpoint === 'ovh-ca' ? '🇨🇦 加拿大' : '🇪🇺 欧洲'}
-                  </span>
-                </h3>
-                <div className="space-y-1 text-sm">
-                  <div className="flex items-start gap-2">
-                    <span className="text-cyber-muted min-w-[60px]">端点：</span>
-                    <code className="text-cyan-400 bg-cyber-grid/50 px-2 py-0.5 rounded text-xs break-all">
-                      {apiBaseUrl}/v1/dedicated/server/datacenter/availabilities
-                    </code>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="text-cyber-muted min-w-[60px]">区域：</span>
-                    <span className="text-slate-300">
-                      {endpoint === 'ovh-us' ? '美国 (US)' : endpoint === 'ovh-ca' ? '加拿大 (CA)' : '欧洲 (EU)'}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="text-cyber-muted min-w-[60px]">说明：</span>
-                    <span className="text-slate-300">
-                      此 API 无需认证，实时返回所有 OVH 专用服务器在各数据中心的库存状态
-                    </span>
-                  </div>
-                </div>
-              </>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* SKU 货架变动记录折叠面板 */}
       <div className="cyber-panel p-3.5 sm:p-4 border-cyber-accent/30">
@@ -626,7 +1048,9 @@ const OVHAvailabilityPage = () => {
             size="sm"
             className="text-xs flex items-center gap-1.5"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isCheckingSku ? 'animate-spin' : ''}`} />
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${isCheckingSku ? 'animate-spin' : ''}`}
+            />
             {isCheckingSku ? '检测中...' : '立即检测 SKU 变动'}
           </Button>
         </div>
@@ -635,7 +1059,7 @@ const OVHAvailabilityPage = () => {
           <div className="mt-3 pt-3 border-t border-cyber-grid space-y-2.5 max-h-80 overflow-y-auto">
             {skuChanges.length === 0 ? (
               <div className="text-xs sm:text-sm text-cyber-muted py-4 text-center">
-                暂无货架 SKU 增删变动记录（首次运行仅建立基线，后续检测到新型号上架或旧型号移除将在此展示并推送通知）。
+                暂无货架 SKU 增删变动记录（首次运行仅建立基线，后续检测到新型号上架、开售、换代或移除将在此展示并推送通知）。
               </div>
             ) : (
               skuChanges.map((chg) => (
@@ -645,33 +1069,29 @@ const OVHAvailabilityPage = () => {
                 >
                   <div className="space-y-0.5">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`px-2 py-0.5 rounded font-semibold ${
-                          chg.type === 'presale' || (chg.type === 'added' && chg.listingState === 'presale')
-                            ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
-                            : chg.type === 'added' || chg.type === 'listed'
-                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
-                            : chg.type === 'removed'
-                            ? 'bg-red-500/15 text-red-500 border border-red-500/30'
-                            : 'bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30'
-                        }`}
-                      >
-                        {chg.type === 'presale' || (chg.type === 'added' && chg.listingState === 'presale')
-                          ? t('presale.skuAdded')
-                          : chg.type === 'added' || chg.type === 'listed'
-                          ? t('sku.newListed')
-                          : chg.type === 'removed'
-                          ? '📤 已下架'
-                          : '🔧 配置更新'}
+                      {renderSkuChangeBadge(chg)}
+                      <span className="font-bold text-cyber-text text-sm">
+                        {chg.name}
                       </span>
-                      <span className="font-bold text-cyber-text text-sm">{chg.name}</span>
-                      <span className="font-mono text-cyber-muted">({chg.skuKey})</span>
-                      {chg.cpuText && <span className="text-cyber-muted">· {chg.cpuText}</span>}
+                      <span className="font-mono text-cyber-muted">
+                        (
+                        {chg.type === 'replaced' && chg.replacedFrom
+                          ? `${chg.replacedFrom} → ${chg.planCode || chg.skuKey}`
+                          : chg.planCode || chg.skuKey}
+                        )
+                      </span>
+                      {chg.cpuText && (
+                        <span className="text-cyber-muted">· {chg.cpuText}</span>
+                      )}
                     </div>
                     {(chg.memorySummary || chg.storageSummary) && (
                       <div className="text-cyber-muted">
-                        {chg.memorySummary && <span>内存: {chg.memorySummary} </span>}
-                        {chg.storageSummary && <span>· 存储: {chg.storageSummary}</span>}
+                        {chg.memorySummary && (
+                          <span>内存: {chg.memorySummary} </span>
+                        )}
+                        {chg.storageSummary && (
+                          <span>· 存储: {chg.storageSummary}</span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -693,60 +1113,74 @@ const OVHAvailabilityPage = () => {
       </div>
 
       {/* 统计卡片 */}
-      {availabilities.length > 0 && (
+      {mergedRows.length > 0 && (
         <div className="grid grid-cols-3 gap-2 sm:gap-4">
-          <div className="cyber-panel p-2 sm:p-4 backdrop-blur-0 overflow-visible">
-            <div className="flex items-center gap-1 sm:gap-2 text-cyber-muted text-xs sm:text-sm mb-1">
-              <Database className="w-3 h-3 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">总记录数</span>
-              <span className="sm:hidden">总数</span>
+          <div className="cyber-panel p-2 sm:p-3.5 backdrop-blur-0 overflow-visible">
+            <div className="flex items-center gap-1 sm:gap-2 text-cyber-muted text-xs mb-0.5">
+              <Database className="w-3.5 h-3.5" />
+              <span>机型总数 (按 planCode)</span>
             </div>
-            <div className="text-lg sm:text-2xl font-bold text-cyber-accent">{stats.total}</div>
+            <div className="text-lg sm:text-2xl font-bold text-cyber-accent">
+              {stats.total}
+            </div>
           </div>
-          <div className="cyber-panel p-2 sm:p-4 backdrop-blur-0 overflow-visible">
-            <div className="flex items-center gap-1 sm:gap-2 text-cyber-muted text-xs sm:text-sm mb-1">
-              <TrendingUp className="w-3 h-3 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">有货服务器</span>
-              <span className="sm:hidden">有货</span>
+          <div className="cyber-panel p-2 sm:p-3.5 backdrop-blur-0 overflow-visible">
+            <div className="flex items-center gap-1 sm:gap-2 text-cyber-muted text-xs mb-0.5">
+              <TrendingUp className="w-3.5 h-3.5" />
+              <span>有货机型</span>
             </div>
-            <div className="text-lg sm:text-2xl font-bold text-green-400">{stats.available}</div>
+            <div className="text-lg sm:text-2xl font-bold text-green-400">
+              {stats.available}
+            </div>
           </div>
-          <div className="cyber-panel p-2 sm:p-4 backdrop-blur-0 overflow-visible">
-            <div className="flex items-center gap-1 sm:gap-2 text-cyber-muted text-xs sm:text-sm mb-1">
-              <Filter className="w-3 h-3 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">1小时内</span>
-              <span className="sm:hidden">1H内</span>
+          <div className="cyber-panel p-2 sm:p-3.5 backdrop-blur-0 overflow-visible">
+            <div className="flex items-center gap-1 sm:gap-2 text-cyber-muted text-xs mb-0.5">
+              <Filter className="w-3.5 h-3.5" />
+              <span>1 小时内急速交付</span>
             </div>
-            <div className="text-lg sm:text-2xl font-bold text-yellow-400">{stats.oneHour}</div>
+            <div className="text-lg sm:text-2xl font-bold text-yellow-400">
+              {stats.oneHour}
+            </div>
           </div>
         </div>
       )}
 
-      {/* 搜索和过滤器 */}
-      {availabilities.length > 0 && (
-        <div className="cyber-panel p-3 sm:p-4 backdrop-blur-0 overflow-visible">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4">
-            {/* 搜索框 */}
+      {/* 搜索、过滤与状态分页签 */}
+      {mergedRows.length > 0 && (
+        <div className="cyber-panel p-3 sm:p-4 backdrop-blur-0 overflow-visible space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="relative sm:col-span-2 lg:col-span-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 sm:w-4 sm:h-4 text-cyber-muted" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-cyber-muted" />
               <input
                 type="text"
-                placeholder={isMobile ? "搜索..." : "搜索服务器、内存、存储..."}
+                placeholder={
+                  isMobile ? '搜索...' : '搜索型号、planCode、CPU、内存、存储...'
+                }
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="cyber-input pl-8 sm:pl-10 w-full text-sm"
+                className="cyber-input pl-9 w-full text-sm"
               />
             </div>
-            
-            {/* 数据中心过滤 */}
+
             <select
               value={filterDatacenter}
               onChange={(e) => setFilterDatacenter(e.target.value)}
-              className="cyber-input w-full"
+              className="cyber-input w-full text-sm"
             >
               <option value="all">所有数据中心</option>
               <optgroup label="🇪🇺 欧洲 (Europe)">
-                {['rbx', 'sbg', 'gra', 'par', 'mrs', 'lim', 'fra', 'lon', 'eri', 'waw'].map((dc) => (
+                {[
+                  'rbx',
+                  'sbg',
+                  'gra',
+                  'par',
+                  'mrs',
+                  'lim',
+                  'fra',
+                  'lon',
+                  'eri',
+                  'waw',
+                ].map((dc) => (
                   <option key={dc} value={dc}>
                     {formatDatacenter(dc, locale, 'full')}
                   </option>
@@ -767,24 +1201,22 @@ const OVHAvailabilityPage = () => {
                 ))}
               </optgroup>
             </select>
-            
-            {/* 可用性过滤 */}
+
             <select
               value={filterAvailability}
               onChange={(e) => setFilterAvailability(e.target.value)}
-              className="cyber-input w-full"
+              className="cyber-input w-full text-sm"
             >
-              <option value="all">所有状态</option>
+              <option value="all">所有库存状态</option>
               <option value="available">有货</option>
-              <option value="1h">1小时内</option>
+              <option value="1h">1小时内 (1H)</option>
               <option value="unavailable">无货</option>
             </select>
-            
-            {/* 内存过滤 */}
+
             <select
               value={filterMemory}
               onChange={(e) => setFilterMemory(e.target.value)}
-              className="cyber-input w-full"
+              className="cyber-input w-full text-sm"
             >
               <option value="all">所有内存</option>
               <option value="<=128">≤ 128GB</option>
@@ -793,310 +1225,417 @@ const OVHAvailabilityPage = () => {
               <option value=">=1024">≥ 1TB</option>
             </select>
           </div>
-          
-          {/* 排序选项与预售筛选 */}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-cyber-muted">排序：</span>
-              <Button
-                onClick={() => {
-                  if (sortBy === 'planCode') {
-                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                  } else {
-                    setSortBy('planCode');
-                    setSortOrder('asc');
-                  }
-                }}
-                variant="cyber"
-                size="sm"
-                className={`text-xs ${sortBy === 'planCode' ? 'bg-cyber-accent/20' : ''}`}
-              >
-                型号 {sortBy === 'planCode' && (sortOrder === 'asc' ? '↑' : '↓')}
-              </Button>
-              <Button
-                onClick={() => {
-                  if (sortBy === 'memory') {
-                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                  } else {
-                    setSortBy('memory');
-                    setSortOrder('asc');
-                  }
-                }}
-                variant="cyber"
-                size="sm"
-                className={`text-xs ${sortBy === 'memory' ? 'bg-cyber-accent/20' : ''}`}
-              >
-                内存 {sortBy === 'memory' && (sortOrder === 'asc' ? '↑' : '↓')}
-              </Button>
-              <Button
-                onClick={() => {
-                  if (sortBy === 'availability') {
-                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                  } else {
-                    setSortBy('availability');
-                    setSortOrder('desc');
-                  }
-                }}
-                variant="cyber"
-                size="sm"
-                className={`text-xs ${sortBy === 'availability' ? 'bg-cyber-accent/20' : ''}`}
-              >
-                可用性 {sortBy === 'availability' && (sortOrder === 'asc' ? '↑' : '↓')}
-              </Button>
-              <Button
-                onClick={() => {
-                  if (sortBy === 'price') {
-                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                  } else {
-                    setSortBy('price');
-                    setSortOrder('asc');
-                  }
-                }}
-                variant="cyber"
-                size="sm"
-                className={`text-xs ${sortBy === 'price' ? 'bg-cyber-accent/20' : ''}`}
-              >
-                价格 {sortBy === 'price' && (sortOrder === 'asc' ? '↑' : '↓')}
-              </Button>
+
+          {/* 排序按钮与状态 Filter Tabs (All, Listed, Announced, Presale, New) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs sm:text-sm pt-1 border-t border-cyber-grid/50">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-cyber-muted text-xs">排序：</span>
+              {(
+                [
+                  ['planCode', '型号'],
+                  ['memory', '内存'],
+                  ['availability', '有货机房'],
+                  ['price', '起始月价'],
+                ] as const
+              ).map(([key, label]) => (
+                <Button
+                  key={key}
+                  onClick={() => {
+                    if (sortBy === key) {
+                      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                    } else {
+                      setSortBy(key);
+                      setSortOrder(key === 'availability' ? 'desc' : 'asc');
+                    }
+                  }}
+                  variant="cyber"
+                  size="sm"
+                  className={`text-xs h-7 px-2.5 ${
+                    sortBy === key ? 'bg-cyber-accent/20' : ''
+                  }`}
+                >
+                  {label} {sortBy === key && (sortOrder === 'asc' ? '↑' : '↓')}
+                </Button>
+              ))}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setFilterPresaleOnly((prev) => !prev)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
-                filterPresaleOnly
-                  ? 'bg-purple-500/20 text-purple-300 border-purple-500/50 shadow-sm'
-                  : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-purple-300 hover:border-purple-500/35'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-              <span>{t('presale.filterOnly')}</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[11px] font-mono bg-purple-500/20 text-purple-300">
-                {presaleModelCount}
-              </span>
-            </button>
+            {/* Listing State Filter Tabs */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  {
+                    id: 'all',
+                    label: t('listing.filter.all'),
+                    count: tabCounts.all,
+                    activeCls:
+                      'bg-cyber-accent/20 text-cyber-accent border-cyber-accent/50',
+                  },
+                  {
+                    id: 'listed',
+                    label: t('listing.filter.listed'),
+                    count: tabCounts.listed,
+                    activeCls:
+                      'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
+                  },
+                  {
+                    id: 'announced',
+                    label: t('listing.filter.announced'),
+                    count: tabCounts.announced,
+                    activeCls:
+                      'bg-amber-500/20 text-amber-300 border-amber-500/50',
+                  },
+                  {
+                    id: 'presale',
+                    label: t('listing.filter.presale'),
+                    count: tabCounts.presale,
+                    activeCls:
+                      'bg-purple-500/20 text-purple-300 border-purple-500/50',
+                  },
+                  {
+                    id: 'new',
+                    label: t('listing.filter.new'),
+                    count: tabCounts.new,
+                    activeCls:
+                      'bg-cyan-500/20 text-cyan-300 border-cyan-500/50',
+                  },
+                ] as const
+              ).map((tab) => {
+                const isActive = listingFilterTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setListingFilterTab(tab.id)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
+                      isActive
+                        ? tab.activeCls
+                        : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-cyber-text'
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                      {tab.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
-      {/* 数据列表 */}
-      {filteredData.length === 0 && availabilities.length > 0 ? (
-        // 有数据但过滤后为空，显示"没有匹配的结果"
+      {/* 紧凑型实时库存矩阵列表（每款 planCode 一行） */}
+      {filteredData.length === 0 && mergedRows.length > 0 ? (
         <div className="cyber-panel p-8 text-center backdrop-blur-0 overflow-visible">
-          <Filter className="w-16 h-16 text-cyber-muted mx-auto mb-4 opacity-50" />
-          <p className="text-cyber-muted mb-2">没有匹配的结果</p>
-          <p className="text-sm text-slate-500">尝试修改搜索或过滤条件</p>
+          <Filter className="w-12 h-12 text-cyber-muted mx-auto mb-3 opacity-50" />
+          <p className="text-cyber-muted mb-1">没有匹配的服务器型号</p>
+          <p className="text-xs text-slate-500">尝试切换状态筛选或搜索关键字</p>
         </div>
       ) : filteredData.length > 0 ? (
-        // 有数据时显示列表
         <>
-          <div className="space-y-2 sm:space-y-3">
-            {paginatedData.map((item, index) => {
-              const planMeta = resolvePlanDisplay(item.planCode, item.server, locale, catalogDict);
-              const priceInfo = resolveConfigPrice(planMeta, item);
-              const friendlyMem = formatMemoryCode(item.memory, locale);
-              const friendlySto = formatStorageCode(item.storage, locale, false);
-              const friendlySys = item.systemStorage
-                ? formatStorageCode(item.systemStorage, locale, true)
-                : '';
-              const friendlyGpu = item.gpu ? formatGpuCode(item.gpu, locale) : '';
-              const isPresale = isItemPresale(item);
-              const generation = inferPlanGeneration(item.planCode, item.generation);
-              const isRecentlyAdded = Boolean(
-                !isPresale &&
-                  (recentSkuMap[item.planCode] || recentSkuMap[planMeta.baseCode])
+          <div className="space-y-2">
+            {paginatedData.map((row) => {
+              const planMeta = resolvePlanDisplay(
+                row.planCode,
+                row.server,
+                locale,
+                catalogDict
               );
-              const hasAddonDelta =
-                priceInfo.memoryDelta > 0 ||
-                priceInfo.storageDelta > 0 ||
-                priceInfo.systemStorageDelta > 0 ||
-                priceInfo.gpuDelta > 0;
-              const priceTooltip =
-                priceInfo.totalPrice !== null
-                  ? hasAddonDelta
-                    ? `基础月租: ${priceInfo.symbol}${priceInfo.basePrice?.toFixed(2)}` +
-                      (priceInfo.memoryDelta > 0 ? ` + 内存: ${priceInfo.symbol}${priceInfo.memoryDelta.toFixed(2)}` : '') +
-                      (priceInfo.storageDelta > 0 ? ` + 数据盘: ${priceInfo.symbol}${priceInfo.storageDelta.toFixed(2)}` : '') +
-                      (priceInfo.systemStorageDelta > 0 ? ` + 系统盘: ${priceInfo.symbol}${priceInfo.systemStorageDelta.toFixed(2)}` : '') +
-                      (priceInfo.gpuDelta > 0 ? ` + GPU: ${priceInfo.symbol}${priceInfo.gpuDelta.toFixed(2)}` : '') +
-                      ' (均不含税)'
-                    : `目录月付基础价 (不含税)`
-                  : t('presale.notOrderableHint');
+              const selectedCfgKey = selectedRowConfigs[row.planCode] || 'all';
+              const activeConfig =
+                selectedCfgKey !== 'all'
+                  ? row.configs.find((c) => c.configKey === selectedCfgKey) ||
+                    null
+                  : null;
+
+              const symbol = getCurrencySymbol(
+                activeConfig?.currency || row.currency
+              );
+              const displayPrice = activeConfig
+                ? activeConfig.estimatedMonthlyPrice
+                : row.startingPrice;
+
+              const activeGpuText = activeConfig?.gpu
+                ? formatGpuCode(activeConfig.gpu, locale)
+                : '';
+
+              const dcCellsToRender: {
+                datacenter: string;
+                availability: string;
+                inStockConfigsCount: number;
+                tooltip?: string;
+              }[] = activeConfig
+                ? activeConfig.datacenters.map((d) => ({
+                    datacenter: d.datacenter,
+                    availability: d.availability,
+                    inStockConfigsCount: isStatusInStock(d.availability) ? 1 : 0,
+                  }))
+                : row.allDatacenters.map((d) => ({
+                    datacenter: d.datacenter,
+                    availability: d.bestAvailability,
+                    inStockConfigsCount: d.inStockConfigsCount,
+                    tooltip:
+                      d.inStockConfigLabels.length > 0
+                        ? t('availability.bestStatusTooltip', {
+                            dc: d.datacenter.toUpperCase(),
+                            configs: d.inStockConfigLabels.join(' | '),
+                          })
+                        : undefined,
+                  }));
 
               return (
-              <div
-                key={item.fqn || index}
-                className="cyber-panel p-3 sm:p-4 hover:border-cyber-accent/50 transition-colors backdrop-blur-0 overflow-visible"
-              >
-              <div className="mb-2 sm:mb-3">
-                <div className="flex items-start justify-between mb-2 gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base sm:text-lg font-bold text-cyber-accent truncate">
-                        {planMeta.name}
-                      </h3>
-                      {planMeta.regionLabel && (
-                        <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
-                          {planMeta.regionLabel}
+                <div
+                  key={row.planCode}
+                  className="cyber-panel px-3 py-2.5 sm:px-4 sm:py-3 hover:border-cyber-accent/50 transition-colors backdrop-blur-0 overflow-visible"
+                >
+                  {/* Top Row: Model, Badges, Config Selector Dropdown, Price & Quick Monitor */}
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+                    {/* Left: Model identity & CPU */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <h3 className="text-sm sm:text-base font-bold text-cyber-accent truncate">
+                          {planMeta.name}
+                        </h3>
+                        {planMeta.regionLabel && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
+                            {planMeta.regionLabel}
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-cyber-grid/40 text-cyber-muted">
+                          {row.planCode}
                         </span>
-                      )}
-                      {isPresale && (
-                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
-                          <Sparkles className="w-3 h-3" />
-                          {t('presale.badge')}
-                        </span>
-                      )}
-                      {generation && (
-                        <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
-                          {t('presale.generation', { year: generation })}
-                        </span>
-                      )}
-                      {isRecentlyAdded && (
-                        <span className="px-2 py-0.5 text-[11px] font-bold rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                          <Sparkles className="w-3 h-3" />
-                          {t('sku.newListed')}
-                        </span>
-                      )}
-                      <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/40 text-cyber-muted">
-                        SKU: {item.planCode}
-                      </span>
+                        {row.listingState === 'announced' && (
+                          <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            {t('announced.badge')}
+                          </span>
+                        )}
+                        {row.listingState === 'presale' && (
+                          <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            {t('presale.badge')}
+                          </span>
+                        )}
+                        {row.listingState === 'listed' && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                            {t('listed.badge')}
+                          </span>
+                        )}
+                        {row.generation && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                            {t('presale.generation', { year: row.generation })}
+                          </span>
+                        )}
+                        {row.isRecentlyAdded && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            {t('sku.newListed')}
+                          </span>
+                        )}
+                        {planMeta.cpuText && (
+                          <span className="text-xs text-cyber-muted truncate max-w-md">
+                            · {planMeta.cpuText}
+                          </span>
+                        )}
+                        {activeGpuText && (
+                          <span className="text-xs text-cyber-accent font-medium">
+                            · {activeGpuText}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-xs sm:text-sm text-cyber-muted line-clamp-1 mt-0.5">
-                      {planMeta.cpuText
-                        ? `${planMeta.cpuText} · 内部标识 ${item.server}`
-                        : `内部标识: ${item.server}`}
-                    </p>
-                  </div>
-                  <div className="text-right flex-shrink-0 flex flex-col items-end gap-1.5">
-                    <div className="flex items-center gap-2">
+
+                    {/* Right: Inline Configuration Dropdown + Price + Quick Monitor Button */}
+                    <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
+                      {row.configs.length > 0 && (
+                        <div className="flex items-center gap-1.5 min-w-[220px] sm:min-w-[280px] max-w-full">
+                          <select
+                            aria-label={t('availability.configSelectorLabel')}
+                            value={selectedCfgKey}
+                            onChange={(e) =>
+                              setSelectedRowConfigs((prev) => ({
+                                ...prev,
+                                [row.planCode]: e.target.value,
+                              }))
+                            }
+                            className="cyber-input text-xs py-1 px-2 w-full"
+                          >
+                            <option value="all">
+                              {t('availability.allConfigs', {
+                                count: row.configs.length,
+                              })}
+                            </option>
+                            {row.configs.map((cfg) => {
+                              const cfgSym = getCurrencySymbol(cfg.currency);
+                              const pricePart =
+                                cfg.estimatedMonthlyPrice &&
+                                cfg.estimatedMonthlyPrice > 0
+                                  ? ` — ${cfgSym}${cfg.estimatedMonthlyPrice.toFixed(
+                                      2
+                                    )}${t('availability.perMonth')}`
+                                  : '';
+                              const dcPart = ` (${t(
+                                'availability.inStockDcCount',
+                                { count: cfg.inStockCount }
+                              )})`;
+                              return (
+                                <option
+                                  key={cfg.configKey}
+                                  value={cfg.configKey}
+                                >
+                                  {`${cfg.label}${pricePart}${dcPart}`}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                      )}
+
+                      {/* Price Pill */}
+                      {displayPrice !== null &&
+                      displayPrice > 0 &&
+                      row.listingState !== 'presale' ? (
+                        <div className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-xs sm:text-sm leading-none whitespace-nowrap">
+                          {activeConfig
+                            ? `${symbol}${displayPrice.toFixed(2)}${t(
+                                'availability.perMonth'
+                              )}`
+                            : t('availability.fromPrice', {
+                                price: `${symbol}${displayPrice.toFixed(2)}`,
+                              })}
+                        </div>
+                      ) : row.listingState === 'presale' ? (
+                        <div
+                          title={t('presale.notOrderableHint')}
+                          className="px-2 py-1 rounded bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs font-medium whitespace-nowrap"
+                        >
+                          {t('presale.pricingTbd')}
+                        </div>
+                      ) : null}
+
+                      {/* Quick Monitor Button */}
                       <button
                         type="button"
                         onClick={() =>
                           setQuickMonitorTarget({
-                            planCode: item.planCode,
+                            planCode: row.planCode,
                             serverName: planMeta.name,
-                            isPresale,
-                            datacenters: item.datacenters,
-                            memory: item.memory,
-                            storage: item.storage,
+                            listingState: row.listingState,
+                            isPresale: row.listingState === 'presale',
+                            datacenters: activeConfig
+                              ? activeConfig.datacenters
+                              : row.allDatacenters.map((d) => ({
+                                  datacenter: d.datacenter,
+                                  availability: d.bestAvailability,
+                                })),
+                            initialConfig: activeConfig
+                              ? {
+                                  configKey: activeConfig.configKey,
+                                  options: activeConfig.options,
+                                  label: activeConfig.label,
+                                  estimatedMonthlyPrice:
+                                    activeConfig.estimatedMonthlyPrice ??
+                                    undefined,
+                                  currency: activeConfig.currency,
+                                  memory: activeConfig.memory,
+                                  storage: activeConfig.storage,
+                                }
+                              : null,
+                            initialConfigs: row.configs.map((c) => ({
+                              configKey: c.configKey,
+                              label: c.label,
+                              memory: c.memory,
+                              storage: c.storage,
+                              options: c.options,
+                              isDefault: c.isDefault,
+                              estimatedMonthlyPrice:
+                                c.estimatedMonthlyPrice ?? undefined,
+                              currency: c.currency,
+                              datacenters: c.dcMap,
+                              inStockCount: c.inStockCount,
+                            })),
                           })
                         }
-                        className="px-2.5 py-1 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 border border-cyber-accent/40 text-cyber-accent text-xs font-semibold flex items-center gap-1 transition-colors"
+                        className="px-2.5 py-1 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 border border-cyber-accent/40 text-cyber-accent text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap"
                       >
                         <Bell className="w-3.5 h-3.5" />
                         <span>{t('quickMonitor.button')}</span>
                       </button>
+                    </div>
+                  </div>
 
-                      {priceInfo.totalPrice !== null && !isPresale ? (
-                        <div
-                          title={priceTooltip}
-                          className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-sm sm:text-base leading-none flex items-baseline gap-1"
-                        >
-                          <span>{priceInfo.formattedTotal}</span>
-                          <span className="text-[11px] font-normal text-cyber-muted">/ 月</span>
-                        </div>
-                      ) : (
-                        <div
-                          title={priceTooltip}
-                          className="px-2 py-1 rounded bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs font-medium"
-                        >
-                          {t('presale.pricingTbd')}
-                        </div>
-                      )}
-                    </div>
-                    {!isMobile && (
-                      <div className="font-mono text-[11px] text-cyber-muted opacity-80">{item.fqn}</div>
-                    )}
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 sm:gap-2.5 text-xs sm:text-sm pt-1">
-                  <div title={`原始代码: ${item.memory}`}>
-                    <span className="text-cyber-muted">内存：</span>
-                    <span className="text-cyber-text font-medium ml-1">{friendlyMem}</span>
-                    {priceInfo.memoryDelta > 0 && (
-                      <span className="text-cyber-accent text-xs font-semibold ml-1.5">
-                        (+{priceInfo.symbol}{priceInfo.memoryDelta.toFixed(2)})
-                      </span>
-                    )}
-                    <span className="text-cyber-muted text-[11px] font-mono ml-1.5">({item.memory})</span>
-                  </div>
-                  <div title={`原始代码: ${item.storage}`}>
-                    <span className="text-cyber-muted">数据盘：</span>
-                    <span className="text-cyber-text font-medium ml-1">{friendlySto}</span>
-                    {priceInfo.storageDelta > 0 && (
-                      <span className="text-cyber-accent text-xs font-semibold ml-1.5">
-                        (+{priceInfo.symbol}{priceInfo.storageDelta.toFixed(2)})
-                      </span>
-                    )}
-                    <span className="text-cyber-muted text-[11px] font-mono ml-1.5">({item.storage})</span>
-                  </div>
-                  {friendlySys && (
-                    <div title={`原始代码: ${item.systemStorage}`}>
-                      <span className="text-cyber-muted">系统盘：</span>
-                      <span className="text-cyber-text font-medium ml-1">{friendlySys}</span>
-                      {priceInfo.systemStorageDelta > 0 && (
-                        <span className="text-cyber-accent text-xs font-semibold ml-1.5">
-                          (+{priceInfo.symbol}{priceInfo.systemStorageDelta.toFixed(2)})
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {friendlyGpu && (
-                    <div title={`原始代码: ${item.gpu}`}>
-                      <span className="text-cyber-muted">GPU：</span>
-                      <span className="text-cyber-accent font-semibold ml-1">{friendlyGpu}</span>
-                      {priceInfo.gpuDelta > 0 && (
-                        <span className="text-cyber-accent text-xs font-semibold ml-1.5">
-                          (+{priceInfo.symbol}{priceInfo.gpuDelta.toFixed(2)})
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-              
-              <div className="cyber-grid-line pt-2 sm:pt-3">
-                <h4 className="text-xs font-semibold text-cyber-muted mb-2">
-                  数据中心可用性 ({item.datacenters.length} 个)
-                </h4>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-1.5 sm:gap-2">
-                  {item.datacenters.map((dc) => {
-                    const availInfo = getAvailabilityInfo(dc.availability);
-                    
-                    return (
-                      <div
-                        key={dc.datacenter}
-                        className={`${availInfo.bg} ${availInfo.border} border rounded px-1.5 sm:px-2 py-1 sm:py-1.5 text-xs`}
-                      >
-                        <div className="font-semibold text-slate-200 text-[10px] sm:text-xs">
-                          <DCLabel code={dc.datacenter} mode="compact" />
-                        </div>
-                        <div className={`${availInfo.color} text-[9px] sm:text-[10px] font-medium`}>
-                          {availInfo.text}
-                        </div>
+                  {/* Datacenter Cells Row */}
+                  <div className="mt-2 pt-2 border-t border-cyber-grid/40">
+                    {row.listingState === 'announced' &&
+                    dcCellsToRender.length === 0 ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/25 rounded px-2.5 py-1.5">
+                        <span>{t('announced.noStockFeedHint')}</span>
+                        {row.configs[0] &&
+                          (row.configs[0].memory || row.configs[0].storage) && (
+                            <span className="font-mono text-[11px] text-cyber-muted">
+                              {row.configs[0].label}
+                            </span>
+                          )}
                       </div>
-                    );
-                  })}
+                    ) : (
+                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
+                        {dcCellsToRender.map((dc) => {
+                          const availInfo = getAvailabilityInfo(
+                            dc.availability
+                          );
+                          return (
+                            <div
+                              key={dc.datacenter}
+                              title={dc.tooltip}
+                              className={`${availInfo.bg} ${availInfo.border} border rounded px-2 py-1 flex items-center justify-between gap-1 text-xs`}
+                            >
+                              <div className="font-semibold text-slate-200 text-[11px] truncate">
+                                <DCLabel code={dc.datacenter} mode="compact" />
+                              </div>
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <span
+                                  className={`${availInfo.color} text-[10px] font-semibold`}
+                                >
+                                  {availInfo.text}
+                                </span>
+                                {!activeConfig &&
+                                  dc.inStockConfigsCount > 1 && (
+                                    <span className="px-1 py-0.1 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-mono">
+                                      {t('availability.multiConfigBadge', {
+                                        count: dc.inStockConfigsCount,
+                                      })}
+                                    </span>
+                                  )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </div>
               );
             })}
           </div>
-          
+
           {/* 分页控件 */}
           {totalPages > 1 && (
             <div className="cyber-panel p-3 sm:p-4 mt-3 sm:mt-4 backdrop-blur-0 overflow-visible">
               <div className="flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4">
                 <div className="text-xs sm:text-sm text-cyber-muted">
                   {isMobile ? (
-                    <>{currentPage}/{totalPages}</>
+                    <>
+                      {currentPage}/{totalPages}
+                    </>
                   ) : (
-                    <>显示 {((currentPage - 1) * itemsPerPage) + 1} - {Math.min(currentPage * itemsPerPage, filteredData.length)} / 共 {filteredData.length} 条</>
+                    <>
+                      显示 {(currentPage - 1) * itemsPerPage + 1} -{' '}
+                      {Math.min(currentPage * itemsPerPage, filteredData.length)}{' '}
+                      / 共 {filteredData.length} 款机型
+                    </>
                   )}
                 </div>
-                
+
                 <div className="flex items-center gap-1.5 sm:gap-2">
                   {!isMobile && (
                     <Button
@@ -1109,9 +1648,11 @@ const OVHAvailabilityPage = () => {
                       首页
                     </Button>
                   )}
-                  
+
                   <Button
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    onClick={() =>
+                      setCurrentPage((prev) => Math.max(1, prev - 1))
+                    }
                     disabled={currentPage === 1}
                     variant="cyber"
                     size="sm"
@@ -1119,15 +1660,19 @@ const OVHAvailabilityPage = () => {
                   >
                     <ChevronLeft className="w-3 h-3 sm:w-4 sm:h-4" />
                   </Button>
-                  
+
                   <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 bg-cyber-grid/30 rounded text-xs sm:text-sm">
-                    <span className="text-cyber-accent font-medium">{currentPage}</span>
+                    <span className="text-cyber-accent font-medium">
+                      {currentPage}
+                    </span>
                     <span className="text-cyber-muted">/</span>
                     <span className="text-cyber-muted">{totalPages}</span>
                   </div>
-                  
+
                   <Button
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    onClick={() =>
+                      setCurrentPage((prev) => Math.min(totalPages, prev + 1))
+                    }
                     disabled={currentPage === totalPages}
                     variant="cyber"
                     size="sm"
@@ -1135,7 +1680,7 @@ const OVHAvailabilityPage = () => {
                   >
                     <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4" />
                   </Button>
-                  
+
                   {!isMobile && (
                     <Button
                       onClick={() => setCurrentPage(totalPages)}
@@ -1161,10 +1706,11 @@ const OVHAvailabilityPage = () => {
         }}
         planCode={quickMonitorTarget?.planCode || ''}
         serverName={quickMonitorTarget?.serverName}
+        listingState={quickMonitorTarget?.listingState}
         isPresale={quickMonitorTarget?.isPresale}
         initialDatacenters={quickMonitorTarget?.datacenters}
-        initialMemory={quickMonitorTarget?.memory}
-        initialStorage={quickMonitorTarget?.storage}
+        initialConfig={quickMonitorTarget?.initialConfig}
+        initialConfigs={quickMonitorTarget?.initialConfigs}
       />
     </div>
   );

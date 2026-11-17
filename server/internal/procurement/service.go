@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -27,6 +29,10 @@ var (
 	ErrOutOfStock = errors.New("server is currently out of stock in the requested datacenters")
 	// ErrNoPricedConfig indicates no available configuration with valid catalog options exists in the target datacenter.
 	ErrNoPricedConfig = errors.New("No priced configuration available in the specified datacenter")
+	// ErrConfigRequiredForAutoOrder indicates stock-monitor auto-order was triggered without explicit configuration options.
+	ErrConfigRequiredForAutoOrder = errors.New("CONFIG_REQUIRED_FOR_AUTO_ORDER: stock-monitor auto-order requires explicit configuration options")
+	// ErrPriceAboveLimit indicates the live OVH cart recurring monthly ex-VAT price exceeds MaxMonthlyPrice.
+	ErrPriceAboveLimit = errors.New("PRICE_ABOVE_LIMIT: live cart monthly price exceeds configured maxMonthlyPrice")
 	// ErrDuplicateOrder indicates an active queue task or recent order exists within the 2-minute window.
 	ErrDuplicateOrder = errors.New("duplicate order detected within the 2-minute cooldown window")
 	// ErrPriceCheckFailed indicates OVH price validation failed or returned zero price.
@@ -79,6 +85,12 @@ type QuickOrderRequest struct {
 	PlanCode                string   `json:"planCode"`
 	Datacenter              string   `json:"datacenter"`
 	Options                 []string `json:"options"`
+	ConfigKey               string   `json:"configKey,omitempty"`
+	ConfigLabel             string   `json:"configLabel,omitempty"`
+	Quantity                int      `json:"quantity"`
+	MaxMonthlyPrice         float64  `json:"maxMonthlyPrice"`
+	Currency                string   `json:"currency,omitempty"`
+	Subsidiary              string   `json:"subsidiary,omitempty"`
 	SkipPriceCheck          bool     `json:"skipPriceCheck"`
 	SkipDuplicateCheck      bool     `json:"skipDuplicateCheck"`
 	AutoPay                 bool     `json:"auto_pay"`
@@ -89,14 +101,19 @@ type QuickOrderRequest struct {
 
 // QuickOrderResult holds the queued quick-order task and validated quote payload.
 type QuickOrderResult struct {
-	Success  bool                        `json:"success"`
-	ID       string                      `json:"id"`
-	Message  string                      `json:"message"`
-	Price    *catalog.ServerPricePayload `json:"price,omitempty"`
-	Options  []string                    `json:"options"`
-	Code     string                      `json:"code,omitempty"`
-	Error    string                      `json:"error,omitempty"`
-	Item     *store.QueueItem            `json:"item,omitempty"`
+	Success      bool                        `json:"success"`
+	ID           string                      `json:"id"`
+	Message      string                      `json:"message"`
+	Price        *catalog.ServerPricePayload `json:"price,omitempty"`
+	MonthlyPrice float64                     `json:"monthlyPrice,omitempty"`
+	SetupFee     float64                     `json:"setupFee,omitempty"`
+	Quantity     int                         `json:"quantity,omitempty"`
+	OrderIDs     []string                    `json:"orderIds,omitempty"`
+	Options      []string                    `json:"options"`
+	Code         string                      `json:"code,omitempty"`
+	ErrorCode    string                      `json:"errorCode,omitempty"`
+	Error        string                      `json:"error,omitempty"`
+	Item         *store.QueueItem            `json:"item,omitempty"`
 }
 
 // CreateQueueRequest captures queue task creation fields. AutoPay and WaiveRetractationPeriod default to false.
@@ -105,6 +122,10 @@ type CreateQueueRequest struct {
 	PlanCode                string
 	Datacenters             []string
 	Options                 []string
+	ConfigKey               string
+	ConfigLabel             string
+	MaxMonthlyPrice         float64
+	Currency                string
 	Quantity                int
 	MaxRetryCount           int
 	RetryInterval           int
@@ -121,6 +142,9 @@ type UpdateQueueRequest struct {
 	HasDatacenters          bool
 	Options                 []string
 	HasOptions              bool
+	ConfigKey               *string
+	ConfigLabel             *string
+	MaxMonthlyPrice         *float64
 	Quantity                *int
 	RetryInterval           *int
 	AutoPay                 *bool
@@ -317,65 +341,82 @@ func (s *Service) ProcessDueTasksOnce(ctx context.Context) {
 }
 
 func (s *Service) executeQueueTask(ctx context.Context, taskID string) {
-	item, err := s.store.GetQueueItem(ctx, taskID)
-	if err != nil || item == nil {
-		return
-	}
-	if item.Status != "running" {
-		return
-	}
-	if item.Purchased >= item.Quantity {
-		item.Status = "completed"
-		_, _ = s.store.UpdateQueueItem(ctx, *item)
-		return
-	}
-
-	item.LastCheckTime = time.Now().Unix()
-	item.RetryCount++
-	_, _ = s.store.UpdateQueueItem(ctx, *item)
-
-	if s.log != nil {
-		s.log.Info(logger.SourceQueue, "Executing procurement queue task",
-			"taskId", item.ID,
-			"planCode", item.PlanCode,
-			"datacenters", strings.Join(item.Datacenters, ","),
-			"attempt", item.RetryCount,
-		)
-	}
-
-	_, purchaseErr := s.purchaseServer(ctx, *item)
-
-	// Reload latest item state in case the user paused/deleted/edited while checkout ran.
-	latest, getErr := s.store.GetQueueItem(ctx, taskID)
-	if getErr != nil || latest == nil {
-		return
-	}
-
-	if purchaseErr == nil {
-		latest.Purchased++
-		latest.FailureCount = 0
-		latest.LastError = ""
-		if latest.Purchased >= latest.Quantity {
-			latest.Status = "completed"
-			latest.NextAttemptAt = 0
-		} else {
-			latest.NextAttemptAt = computeNextAttempt(latest.RetryInterval, 0)
+	for {
+		item, err := s.store.GetQueueItem(ctx, taskID)
+		if err != nil || item == nil {
+			return
 		}
-	} else {
+		if item.Status != "running" {
+			return
+		}
+		if item.Quantity <= 0 {
+			item.Quantity = 1
+		}
+		if item.Purchased >= item.Quantity {
+			item.Status = "completed"
+			item.NextAttemptAt = 0
+			_, _ = s.store.UpdateQueueItem(ctx, *item)
+			return
+		}
+
+		item.LastCheckTime = time.Now().Unix()
+		item.RetryCount++
+		_, _ = s.store.UpdateQueueItem(ctx, *item)
+
+		if s.log != nil {
+			s.log.Info(logger.SourceQueue, "Executing procurement queue task",
+				"taskId", item.ID,
+				"planCode", item.PlanCode,
+				"datacenters", strings.Join(item.Datacenters, ","),
+				"attempt", item.RetryCount,
+				"quantity", item.Quantity,
+				"purchased", item.Purchased,
+			)
+		}
+
+		_, purchaseErr := s.purchaseServer(ctx, *item)
+
+		// Reload latest item state in case the user paused/deleted/edited while checkout ran.
+		latest, getErr := s.store.GetQueueItem(ctx, taskID)
+		if getErr != nil || latest == nil {
+			return
+		}
+		if latest.Quantity <= 0 {
+			latest.Quantity = 1
+		}
+
+		if purchaseErr == nil {
+			latest.Purchased++
+			latest.FailureCount = 0
+			latest.LastError = ""
+			if latest.Purchased >= latest.Quantity {
+				latest.Status = "completed"
+				latest.NextAttemptAt = 0
+				_, _ = s.store.UpdateQueueItem(ctx, *latest)
+				return
+			}
+			_, _ = s.store.UpdateQueueItem(ctx, *latest)
+			if latest.Status != "running" {
+				return
+			}
+			continue
+		}
+
 		latest.FailureCount++
 		latest.LastError = purchaseErr.Error()
 		maxRetries := latest.MaxRetryCount
 		if maxRetries <= 0 {
 			maxRetries = 50
 		}
-		if latest.FailureCount >= maxRetries {
+		if errors.Is(purchaseErr, ErrPriceAboveLimit) || latest.FailureCount >= maxRetries {
 			latest.Status = "failed"
+			latest.NextAttemptAt = 0
 		} else {
 			latest.NextAttemptAt = computeNextAttempt(latest.RetryInterval, latest.FailureCount)
 		}
+		_, _ = s.store.UpdateQueueItem(ctx, *latest)
+		return
 	}
-
-	_, _ = s.store.UpdateQueueItem(ctx, *latest)
 }
 
 func computeNextAttempt(baseInterval, failures int) int64 {
@@ -423,6 +464,10 @@ func (s *Service) CreateQueueTask(ctx context.Context, req CreateQueueRequest) (
 		PlanCode:                planCode,
 		Datacenters:             dcs,
 		Options:                 cleanStringList(req.Options),
+		ConfigKey:               strings.TrimSpace(req.ConfigKey),
+		ConfigLabel:             strings.TrimSpace(req.ConfigLabel),
+		MaxMonthlyPrice:         req.MaxMonthlyPrice,
+		Currency:                strings.TrimSpace(req.Currency),
 		Quantity:                qty,
 		MaxRetryCount:           maxRetries,
 		Status:                  "running",
@@ -464,6 +509,15 @@ func (s *Service) UpdateQueueTask(ctx context.Context, id string, req UpdateQueu
 	}
 	if req.HasOptions {
 		existing.Options = cleanStringList(req.Options)
+	}
+	if req.ConfigKey != nil {
+		existing.ConfigKey = strings.TrimSpace(*req.ConfigKey)
+	}
+	if req.ConfigLabel != nil {
+		existing.ConfigLabel = strings.TrimSpace(*req.ConfigLabel)
+	}
+	if req.MaxMonthlyPrice != nil && *req.MaxMonthlyPrice >= 0 {
+		existing.MaxMonthlyPrice = *req.MaxMonthlyPrice
 	}
 	if req.RetryInterval != nil && *req.RetryInterval > 0 {
 		existing.RetryInterval = *req.RetryInterval
@@ -593,85 +647,163 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 	datacenter := strings.ToLower(strings.TrimSpace(req.Datacenter))
 	if planCode == "" || datacenter == "" {
 		return &QuickOrderResult{
-			Success: false,
-			Code:    "MISSING_PARAMS",
-			Error:   "planCode and datacenter are required",
-		}, 400, errors.New("planCode and datacenter are required")
+			Success:   false,
+			Code:      "MISSING_PARAMS",
+			ErrorCode: "MISSING_PARAMS",
+			Error:     "planCode and datacenter are required",
+			Message:   "planCode and datacenter are required",
+		}, http.StatusBadRequest, errors.New("planCode and datacenter are required")
+	}
+
+	qty := req.Quantity
+	if qty <= 0 {
+		qty = 1
+	} else if qty > 10 {
+		qty = 10
 	}
 
 	opts := cleanStringList(req.Options)
-	if len(opts) == 0 && s.catalog != nil {
-		ep, zn := s.resolveAccountEndpointZone(ctx, req.AccountID)
-		cfgs, err := s.catalog.GetConfigLevelAvailabilities(ctx, ep, zn, planCode)
-		if err == nil {
-			apiDC := catalog.NormalizeAPIDatacenter(datacenter)
-			for _, cfg := range cfgs {
-				if cfg == nil {
-					continue
+	if len(opts) == 0 {
+		if strings.EqualFold(strings.TrimSpace(req.Source), "stock-monitor") {
+			if s.log != nil {
+				s.log.Warn(logger.SourceQueue, "Quick order rejected: stock-monitor auto-order requires explicit configuration options",
+					"planCode", planCode,
+					"datacenter", datacenter,
+				)
+			}
+			return &QuickOrderResult{
+				Success:   false,
+				Code:      "CONFIG_REQUIRED_FOR_AUTO_ORDER",
+				ErrorCode: "CONFIG_REQUIRED_FOR_AUTO_ORDER",
+				Error:     ErrConfigRequiredForAutoOrder.Error(),
+				Message:   ErrConfigRequiredForAutoOrder.Error(),
+				Quantity:  qty,
+			}, http.StatusBadRequest, ErrConfigRequiredForAutoOrder
+		}
+
+		if s.catalog != nil {
+			ep, zn := s.resolveAccountEndpointZone(ctx, req.AccountID)
+			if strings.TrimSpace(req.Subsidiary) != "" {
+				zn = strings.TrimSpace(req.Subsidiary)
+			}
+			cfgs, err := s.catalog.GetConfigLevelAvailabilities(ctx, ep, zn, planCode)
+			if err == nil {
+				apiDC := catalog.NormalizeAPIDatacenter(datacenter)
+				dict, _ := s.catalog.GetDictionary(ctx, ep, zn, false)
+				var defMem, defSto string
+				if dict != nil {
+					if e, ok := dict.RealPlans[planCode]; ok {
+						defMem = nonEmptyStr(e.DefaultMemory, e.DefaultSpecs.Memory)
+						defSto = nonEmptyStr(e.DefaultStorage, e.DefaultSpecs.Storage)
+					} else if e, ok := dict.Plans[planCode]; ok {
+						defMem = nonEmptyStr(e.DefaultMemory, e.DefaultSpecs.Memory)
+						defSto = nonEmptyStr(e.DefaultStorage, e.DefaultSpecs.Storage)
+					}
 				}
-				status := cfg.Datacenters[apiDC]
-				if status == "" {
-					status = cfg.Datacenters[datacenter]
-				}
-				if status != "" && status != "unavailable" && status != "unknown" && len(cfg.Options) > 0 {
-					opts = cfg.Options
-					break
+
+				for _, cfg := range cfgs {
+					if cfg == nil {
+						continue
+					}
+					isDef := cfg.IsDefault
+					if !isDef && (defMem != "" || defSto != "") {
+						memOK := defMem == "" || strings.EqualFold(cfg.Memory, defMem) || catalog.StandardizeConfig(cfg.Memory) == catalog.StandardizeConfig(defMem)
+						stoOK := defSto == "" || strings.EqualFold(cfg.Storage, defSto) || catalog.StandardizeConfig(cfg.Storage) == catalog.StandardizeConfig(defSto)
+						isDef = memOK && stoOK
+					}
+					if !isDef {
+						continue
+					}
+					status := cfg.Datacenters[apiDC]
+					if status == "" {
+						status = cfg.Datacenters[datacenter]
+					}
+					if status != "" && status != "unavailable" && status != "unknown" && len(cfg.Options) > 0 {
+						opts = cfg.Options
+						if strings.TrimSpace(req.ConfigKey) == "" {
+							req.ConfigKey = cfg.ConfigKey
+						}
+						if strings.TrimSpace(req.ConfigLabel) == "" {
+							req.ConfigLabel = cfg.Label
+						}
+						break
+					}
 				}
 			}
 		}
 		if len(opts) == 0 {
-			if s.log != nil && !strings.EqualFold(strings.TrimSpace(req.Source), "stock-monitor") {
-				s.log.Warn(logger.SourceQueue, "Quick order rejected: no priced configuration in datacenter", "planCode", planCode, "datacenter", datacenter)
+			if s.log != nil {
+				s.log.Warn(logger.SourceQueue, "Quick order rejected: no priced default configuration in datacenter", "planCode", planCode, "datacenter", datacenter)
 			}
 			return &QuickOrderResult{
-				Success: false,
-				Code:    "NO_PRICED_CONFIG",
-				Error:   "No priced configuration available in the specified datacenter",
-			}, 400, ErrNoPricedConfig
+				Success:   false,
+				Code:      "NO_PRICED_CONFIG",
+				ErrorCode: "NO_PRICED_CONFIG",
+				Error:     "No priced configuration available in the specified datacenter",
+				Message:   "No priced configuration available in the specified datacenter",
+				Quantity:  qty,
+			}, http.StatusBadRequest, ErrNoPricedConfig
 		}
 	}
 
 	var pricePayload *catalog.ServerPricePayload
-	if req.SkipPriceCheck {
+	var liveMonthlyExVAT, setupFeeExVAT float64
+	currency := nonEmptyStr(req.Currency, "EUR")
+
+	if req.SkipPriceCheck && req.MaxMonthlyPrice <= 0 {
 		zero := 0.0
 		pricePayload = &catalog.ServerPricePayload{
 			PricingMode: "default",
 			Prices: catalog.ServerPriceValues{
 				WithTax:      &zero,
-				CurrencyCode: "EUR",
+				CurrencyCode: currency,
 			},
 		}
 	} else {
-		if s.catalog == nil {
-			return &QuickOrderResult{
-				Success: false,
-				Code:    "CATALOG_UNAVAILABLE",
-				Error:   "Catalog service is unavailable",
-			}, 500, errors.New("catalog service is unavailable")
-		}
-		priceRes, err := s.catalog.GetServerPrice(ctx, req.AccountID, planCode, datacenter, opts)
-		if err != nil {
-			code := "PRICE_CHECK_FAILED"
-			errMsg := err.Error()
-			if errors.Is(err, ovhclient.ErrCredentialsMissing) {
-				code = "OVH_CREDENTIALS_MISSING"
-				errMsg = "OVH API credentials are not configured"
+		var quoteErr error
+		pricePayload, liveMonthlyExVAT, setupFeeExVAT, currency, quoteErr = s.quoteLiveCart(ctx, req.AccountID, req.Subsidiary, planCode, datacenter, opts)
+		if quoteErr != nil {
+			if req.SkipPriceCheck && errors.Is(quoteErr, ovhclient.ErrCredentialsMissing) {
+				zero := 0.0
+				pricePayload = &catalog.ServerPricePayload{
+					PricingMode: "default",
+					Prices: catalog.ServerPriceValues{
+						WithTax:      &zero,
+						CurrencyCode: currency,
+					},
+				}
+			} else {
+				code := "PRICE_CHECK_FAILED"
+				errMsg := quoteErr.Error()
+				if errors.Is(quoteErr, ovhclient.ErrCredentialsMissing) {
+					code = "OVH_CREDENTIALS_MISSING"
+					errMsg = "OVH API credentials are not configured"
+				}
+				return &QuickOrderResult{
+					Success:   false,
+					Code:      code,
+					ErrorCode: code,
+					Error:     errMsg,
+					Message:   errMsg,
+					Quantity:  qty,
+				}, http.StatusBadRequest, quoteErr
 			}
-			return &QuickOrderResult{
-				Success: false,
-				Code:    code,
-				Error:   errMsg,
-			}, 400, err
+		} else {
+			validPrice := liveMonthlyExVAT > 0 || (pricePayload != nil && pricePayload.Prices.WithTax != nil && *pricePayload.Prices.WithTax > 0)
+			if !validPrice {
+				return &QuickOrderResult{
+					Success:   false,
+					Code:      "PRICE_CHECK_FAILED",
+					ErrorCode: "PRICE_CHECK_FAILED",
+					Error:     "No valid price returned for the selected configuration",
+					Message:   "No valid price returned for the selected configuration",
+					Quantity:  qty,
+				}, http.StatusBadRequest, ErrPriceCheckFailed
+			}
+			if req.MaxMonthlyPrice > 0 && liveMonthlyExVAT > req.MaxMonthlyPrice+0.01 {
+				return s.abortPriceAboveLimit(ctx, req, planCode, datacenter, opts, qty, pricePayload, liveMonthlyExVAT, setupFeeExVAT, currency)
+			}
 		}
-		if priceRes == nil || !priceRes.Success || priceRes.Price == nil ||
-			priceRes.Price.Prices.WithTax == nil || *priceRes.Price.Prices.WithTax <= 0 {
-			return &QuickOrderResult{
-				Success: false,
-				Code:    "PRICE_CHECK_FAILED",
-				Error:   "No valid price returned for the selected configuration",
-			}, 400, ErrPriceCheckFailed
-		}
-		pricePayload = priceRes.Price
 	}
 
 	if !req.SkipDuplicateCheck {
@@ -684,10 +816,13 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 					(item.Status == "running" || item.Status == "pending" || item.Status == "paused") &&
 					optionsFingerprint(item.Options) == targetFP {
 					return &QuickOrderResult{
-						Success: false,
-						Code:    "DUPLICATE_QUEUE_TASK",
-						Error:   "An active queue task with identical configuration already exists",
-					}, 429, ErrDuplicateOrder
+						Success:   false,
+						Code:      "DUPLICATE_QUEUE_TASK",
+						ErrorCode: "DUPLICATE_QUEUE_TASK",
+						Error:     "An active queue task with identical configuration already exists",
+						Message:   "An active queue task with identical configuration already exists",
+						Quantity:  qty,
+					}, http.StatusTooManyRequests, ErrDuplicateOrder
 				}
 			}
 		}
@@ -702,10 +837,13 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 					optionsFingerprint(h.Options) == targetFP {
 					if ts, parseErr := time.Parse(time.RFC3339Nano, h.Timestamp); parseErr == nil && ts.After(cutoff) {
 						return &QuickOrderResult{
-							Success: false,
-							Code:    "RECENT_DUPLICATE_ORDER",
-							Error:   "Identical configuration ordered within the last 120 seconds",
-						}, 429, ErrDuplicateOrder
+							Success:   false,
+							Code:      "RECENT_DUPLICATE_ORDER",
+							ErrorCode: "RECENT_DUPLICATE_ORDER",
+							Error:     "Identical configuration ordered within the last 120 seconds",
+							Message:   "Identical configuration ordered within the last 120 seconds",
+							Quantity:  qty,
+						}, http.StatusTooManyRequests, ErrDuplicateOrder
 					}
 				}
 			}
@@ -722,7 +860,11 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 		PlanCode:                planCode,
 		Datacenters:             []string{datacenter},
 		Options:                 opts,
-		Quantity:                1,
+		ConfigKey:               strings.TrimSpace(req.ConfigKey),
+		ConfigLabel:             strings.TrimSpace(req.ConfigLabel),
+		MaxMonthlyPrice:         req.MaxMonthlyPrice,
+		Currency:                currency,
+		Quantity:                qty,
 		MaxRetryCount:           3,
 		Status:                  "running",
 		RetryInterval:           2,
@@ -733,10 +875,13 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 	})
 	if err != nil {
 		return &QuickOrderResult{
-			Success: false,
-			Code:    "QUEUE_CREATE_FAILED",
-			Error:   err.Error(),
-		}, 500, err
+			Success:   false,
+			Code:      "QUEUE_CREATE_FAILED",
+			ErrorCode: "QUEUE_CREATE_FAILED",
+			Error:     err.Error(),
+			Message:   err.Error(),
+			Quantity:  qty,
+		}, http.StatusInternalServerError, err
 	}
 
 	if s.log != nil {
@@ -744,19 +889,216 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 			"taskId", created.ID,
 			"planCode", planCode,
 			"datacenter", datacenter,
+			"quantity", qty,
+			"maxMonthlyPrice", req.MaxMonthlyPrice,
+			"monthlyExVat", liveMonthlyExVAT,
+			"setupFeeExVat", setupFeeExVAT,
 			"autoPay", created.AutoPay,
 			"waiveRetractationPeriod", created.WaiveRetractationPeriod,
 		)
 	}
 
 	return &QuickOrderResult{
-		Success: true,
-		ID:      created.ID,
-		Message: fmt.Sprintf("%s (%s) added to procurement queue", planCode, strings.ToUpper(datacenter)),
-		Price:   pricePayload,
-		Options: opts,
-		Item:    created,
-	}, 200, nil
+		Success:      true,
+		ID:           created.ID,
+		Message:      fmt.Sprintf("%s (%s) added to procurement queue", planCode, strings.ToUpper(datacenter)),
+		Price:        pricePayload,
+		MonthlyPrice: liveMonthlyExVAT,
+		SetupFee:     setupFeeExVAT,
+		Quantity:     qty,
+		Options:      opts,
+		Item:         created,
+	}, http.StatusOK, nil
+}
+
+func (s *Service) quoteLiveCart(
+	ctx context.Context,
+	accountID string,
+	subsidiary string,
+	planCode string,
+	datacenter string,
+	options []string,
+) (*catalog.ServerPricePayload, float64, float64, string, error) {
+	client, acc, err := s.getAccountClient(ctx, accountID)
+	if err != nil {
+		if s.catalog != nil {
+			res, catErr := s.catalog.GetServerPrice(ctx, accountID, planCode, datacenter, options)
+			if catErr != nil {
+				return nil, 0, 0, "EUR", catErr
+			}
+			if res == nil || !res.Success || res.Price == nil {
+				return nil, 0, 0, "EUR", ErrPriceCheckFailed
+			}
+			monthly, setup, curr := extractCartRecurringAndSetupPrice(nil, nil, res.Price)
+			return res.Price, monthly, setup, curr, nil
+		}
+		return nil, 0, 0, "EUR", err
+	}
+
+	ep := ovhclient.EndpointEU
+	zone := "IE"
+	if acc != nil {
+		ep = ovhclient.NormalizeEndpoint(acc.Endpoint)
+		zone = ovhclient.NormalizeZone(acc.Zone, ep)
+	}
+	if strings.TrimSpace(subsidiary) != "" {
+		zone = strings.TrimSpace(subsidiary)
+	}
+
+	preferredSource := ""
+	if s.catalog != nil {
+		meta := s.catalog.ResolvePlan(ctx, planCode, "", ep, zone)
+		preferredSource = meta.CatalogSource
+	}
+
+	apiDC := catalog.NormalizeAPIDatacenter(datacenter)
+	var cartResp struct {
+		CartID string `json:"cartId"`
+	}
+	if err := client.PostWithContext(ctx, "/order/cart", map[string]any{
+		"ovhSubsidiary": normalizeSub(ep, zone),
+	}, &cartResp); err != nil {
+		return nil, 0, 0, "EUR", err
+	}
+	cartID := cartResp.CartID
+	defer s.deleteCartQuietly(client, cartID)
+
+	_ = client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/assign", url.PathEscape(cartID)), nil, nil)
+
+	catPath, itemID, addErr := catalog.AddCartServerItem(ctx, client, cartID, planCode, preferredSource, 1)
+	if addErr != nil {
+		return nil, 0, 0, "EUR", addErr
+	}
+
+	configs := map[string]string{
+		"dedicated_datacenter": apiDC,
+		"dedicated_os":         "none_64.en",
+	}
+	if reg := catalog.InferCartRegion(apiDC); reg != "" {
+		configs["region"] = reg
+	}
+	for k, v := range configs {
+		_ = client.PostWithContext(ctx,
+			fmt.Sprintf("/order/cart/%s/item/%d/configuration", url.PathEscape(cartID), itemID),
+			map[string]any{"label": k, "value": v},
+			nil,
+		)
+	}
+
+	if len(options) > 0 {
+		catalog.AddCartOptions(ctx, client, cartID, itemID, catPath, planCode, options, s.log)
+	}
+
+	var cartSummary map[string]any
+	if err := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/summary", url.PathEscape(cartID)), &cartSummary); err != nil {
+		return nil, 0, 0, "EUR", err
+	}
+
+	var cartInfo map[string]any
+	_ = client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s", url.PathEscape(cartID)), &cartInfo)
+
+	parsed := catalog.ExtractCartPricePayload(cartSummary, cartInfo)
+	monthlyExVAT, setupFeeExVAT, currency := extractCartRecurringAndSetupPrice(cartSummary, cartInfo, parsed)
+	if parsed != nil {
+		if parsed.Prices.WithoutTax == nil && monthlyExVAT > 0 {
+			mCopy := monthlyExVAT
+			parsed.Prices.WithoutTax = &mCopy
+		}
+		if parsed.Prices.WithTax == nil && monthlyExVAT > 0 {
+			tot := monthlyExVAT + setupFeeExVAT
+			parsed.Prices.WithTax = &tot
+		}
+		if parsed.Prices.CurrencyCode == "" && currency != "" {
+			parsed.Prices.CurrencyCode = currency
+		}
+	}
+	return parsed, monthlyExVAT, setupFeeExVAT, currency, nil
+}
+
+func (s *Service) abortPriceAboveLimit(
+	ctx context.Context,
+	req QuickOrderRequest,
+	planCode string,
+	datacenter string,
+	opts []string,
+	qty int,
+	pricePayload *catalog.ServerPricePayload,
+	liveMonthlyExVAT float64,
+	setupFeeExVAT float64,
+	currency string,
+) (*QuickOrderResult, int, error) {
+	slog.Warn("quick order aborted: live cart monthly price exceeds configured maxMonthlyPrice",
+		"planCode", planCode,
+		"liveMonthlyExVAT", liveMonthlyExVAT,
+		"maxMonthlyPrice", req.MaxMonthlyPrice,
+		"setupFeeExVAT", setupFeeExVAT,
+	)
+	if s.log != nil {
+		s.log.Warn(logger.SourceQueue, "quick order aborted: live cart monthly price exceeds configured maxMonthlyPrice",
+			"planCode", planCode,
+			"liveMonthlyExVAT", liveMonthlyExVAT,
+			"maxMonthlyPrice", req.MaxMonthlyPrice,
+			"setupFeeExVAT", setupFeeExVAT,
+		)
+	}
+
+	labelPart := strings.TrimSpace(req.ConfigLabel)
+	if labelPart == "" {
+		labelPart = strings.TrimSpace(req.ConfigKey)
+	}
+	var errMsg string
+	if labelPart != "" {
+		errMsg = fmt.Sprintf("PRICE_ABOVE_LIMIT: auto-order for %s (%s) was blocked by the price cap (liveMonthlyExVAT %.2f %s > maxMonthlyPrice %.2f %s)",
+			planCode, labelPart, liveMonthlyExVAT, currency, req.MaxMonthlyPrice, currency)
+	} else {
+		errMsg = fmt.Sprintf("PRICE_ABOVE_LIMIT: auto-order for %s was blocked by the price cap (liveMonthlyExVAT %.2f %s > maxMonthlyPrice %.2f %s)",
+			planCode, liveMonthlyExVAT, currency, req.MaxMonthlyPrice, currency)
+	}
+
+	syntheticItem := store.QueueItem{
+		AccountID:       strings.TrimSpace(req.AccountID),
+		PlanCode:        planCode,
+		Datacenters:     []string{datacenter},
+		Options:         opts,
+		ConfigKey:       strings.TrimSpace(req.ConfigKey),
+		ConfigLabel:     strings.TrimSpace(req.ConfigLabel),
+		MaxMonthlyPrice: req.MaxMonthlyPrice,
+		Currency:        currency,
+		Quantity:        qty,
+		AutoPay:         req.AutoPay,
+		Source:          nonEmptyStr(req.Source, "manual"),
+		SourceRef:       strings.TrimSpace(req.SourceRef),
+	}
+	if s.store != nil {
+		_, _ = s.store.AddHistory(ctx, store.PurchaseHistory{
+			AccountID:    syntheticItem.AccountID,
+			PlanCode:     planCode,
+			Datacenter:   datacenter,
+			Options:      opts,
+			ConfigKey:    syntheticItem.ConfigKey,
+			ConfigLabel:  syntheticItem.ConfigLabel,
+			Quantity:     qty,
+			Status:       "failed",
+			PriceText:    fmt.Sprintf("%.2f %s", liveMonthlyExVAT, currency),
+			SetupFee:     setupFeeExVAT,
+			ErrorMessage: errMsg,
+			AttemptCount: 1,
+		})
+	}
+	s.emitOrderNotification(ctx, notify.EventOrderFailed, syntheticItem, datacenter, "", "", fmt.Sprintf("%.2f %s", liveMonthlyExVAT, currency), errMsg)
+
+	return &QuickOrderResult{
+		Success:      false,
+		Code:         "PRICE_ABOVE_LIMIT",
+		ErrorCode:    "PRICE_ABOVE_LIMIT",
+		Error:        errMsg,
+		Message:      errMsg,
+		Price:        pricePayload,
+		MonthlyPrice: liveMonthlyExVAT,
+		SetupFee:     setupFeeExVAT,
+		Quantity:     qty,
+		Options:      opts,
+	}, http.StatusBadRequest, fmt.Errorf("%w: %s", ErrPriceAboveLimit, errMsg)
 }
 
 func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*store.PurchaseHistory, error) {
@@ -845,27 +1187,71 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 
 	var priceInfo *store.PriceInfo
 	var priceText string
+	var liveMonthlyExVAT, setupFeeExVAT float64
+	currency := nonEmptyStr(item.Currency, "EUR")
 	var summary map[string]any
+	var cartInfo map[string]any
 	if sumErr := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/summary", url.PathEscape(cartID)), &summary); sumErr == nil {
-		parsed := catalog.ExtractCartPricePayload(summary, nil)
-		if parsed != nil && (parsed.Prices.WithTax != nil || parsed.Prices.WithoutTax != nil) {
+		_ = client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s", url.PathEscape(cartID)), &cartInfo)
+		parsed := catalog.ExtractCartPricePayload(summary, cartInfo)
+		liveMonthlyExVAT, setupFeeExVAT, currency = extractCartRecurringAndSetupPrice(summary, cartInfo, parsed)
+		if parsed != nil && (parsed.Prices.WithTax != nil || parsed.Prices.WithoutTax != nil || liveMonthlyExVAT > 0) {
 			priceInfo = &store.PriceInfo{
-				CurrencyCode: parsed.Prices.CurrencyCode,
+				CurrencyCode: nonEmptyStr(parsed.Prices.CurrencyCode, currency),
+				SetupFee:     setupFeeExVAT,
+				MonthlyExVAT: liveMonthlyExVAT,
 			}
 			if parsed.Prices.WithTax != nil {
 				priceInfo.WithTax = *parsed.Prices.WithTax
 			}
 			if parsed.Prices.WithoutTax != nil {
 				priceInfo.WithoutTax = *parsed.Prices.WithoutTax
+			} else if liveMonthlyExVAT > 0 {
+				priceInfo.WithoutTax = liveMonthlyExVAT
 			}
 			if parsed.Prices.Tax != nil {
 				priceInfo.Tax = *parsed.Prices.Tax
 			}
 			if parsed.Prices.WithTax != nil {
-				priceText = fmt.Sprintf("%.2f %s", *parsed.Prices.WithTax, parsed.Prices.CurrencyCode)
+				priceText = fmt.Sprintf("%.2f %s", *parsed.Prices.WithTax, priceInfo.CurrencyCode)
+				priceInfo.Text = priceText
+			} else if liveMonthlyExVAT > 0 {
+				priceText = fmt.Sprintf("%.2f %s", liveMonthlyExVAT, priceInfo.CurrencyCode)
 				priceInfo.Text = priceText
 			}
 		}
+	}
+
+	if item.MaxMonthlyPrice > 0 && liveMonthlyExVAT > item.MaxMonthlyPrice+0.01 {
+		s.deleteCartQuietly(client, cartID)
+		slog.Warn("quick order aborted: live cart monthly price exceeds configured maxMonthlyPrice",
+			"planCode", item.PlanCode,
+			"liveMonthlyExVAT", liveMonthlyExVAT,
+			"maxMonthlyPrice", item.MaxMonthlyPrice,
+			"setupFeeExVAT", setupFeeExVAT,
+		)
+		if s.log != nil {
+			s.log.Warn(logger.SourceQueue, "quick order aborted: live cart monthly price exceeds configured maxMonthlyPrice",
+				"planCode", item.PlanCode,
+				"liveMonthlyExVAT", liveMonthlyExVAT,
+				"maxMonthlyPrice", item.MaxMonthlyPrice,
+				"setupFeeExVAT", setupFeeExVAT,
+			)
+		}
+		labelPart := strings.TrimSpace(item.ConfigLabel)
+		if labelPart == "" {
+			labelPart = strings.TrimSpace(item.ConfigKey)
+		}
+		var errMsg string
+		if labelPart != "" {
+			errMsg = fmt.Sprintf("PRICE_ABOVE_LIMIT: auto-order for %s (%s) was blocked by the price cap (liveMonthlyExVAT %.2f %s > maxMonthlyPrice %.2f %s)",
+				item.PlanCode, labelPart, liveMonthlyExVAT, currency, item.MaxMonthlyPrice, currency)
+		} else {
+			errMsg = fmt.Sprintf("PRICE_ABOVE_LIMIT: auto-order for %s was blocked by the price cap (liveMonthlyExVAT %.2f %s > maxMonthlyPrice %.2f %s)",
+				item.PlanCode, liveMonthlyExVAT, currency, item.MaxMonthlyPrice, currency)
+		}
+		_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
+		return nil, fmt.Errorf("%w: %s", ErrPriceAboveLimit, errMsg)
 	}
 
 	// Pre-checkout preview (GET /order/cart/{cartId}/checkout); non-fatal if unavailable.
@@ -897,11 +1283,15 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 		PlanCode:     item.PlanCode,
 		Datacenter:   selectedDisplayDC,
 		Options:      item.Options,
+		ConfigKey:    item.ConfigKey,
+		ConfigLabel:  item.ConfigLabel,
+		Quantity:     max(1, item.Quantity),
 		Status:       "success",
 		OrderID:      orderIDStr,
 		OrderURL:     checkoutRes.URL,
 		PriceText:    priceText,
 		Price:        priceInfo,
+		SetupFee:     setupFeeExVAT,
 		AutoPaid:     item.AutoPay,
 		AttemptCount: item.RetryCount,
 		Sequence:     item.Purchased + 1,
@@ -915,6 +1305,10 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 			"planCode", item.PlanCode,
 			"datacenter", selectedDisplayDC,
 			"orderId", orderIDStr,
+			"quantity", max(1, item.Quantity),
+			"sequence", item.Purchased+1,
+			"monthlyExVat", liveMonthlyExVAT,
+			"setupFeeExVat", setupFeeExVAT,
 			"autoPay", item.AutoPay,
 			"waiveRetractationPeriod", item.WaiveRetractationPeriod,
 		)
@@ -922,6 +1316,263 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 
 	s.emitOrderNotification(ctx, notify.EventOrderSuccess, item, selectedDisplayDC, orderIDStr, checkoutRes.URL, priceText, "")
 	return histEntry, nil
+}
+
+func extractCartRecurringAndSetupPrice(
+	summary map[string]any,
+	info map[string]any,
+	parsed *catalog.ServerPricePayload,
+) (monthlyExVAT float64, setupFeeExVAT float64, currency string) {
+	currency = "EUR"
+	if parsed != nil && strings.TrimSpace(parsed.Prices.CurrencyCode) != "" {
+		currency = strings.TrimSpace(parsed.Prices.CurrencyCode)
+	}
+
+	var explicitMonthly, explicitSetup float64
+	if summary != nil {
+		if c := stringFromAny(summary["currencyCode"]); c != "" {
+			currency = c
+		}
+		if v, cc := extractNumericPriceAndCurrency(summary["setupFee"]); v > 0 {
+			explicitSetup = v
+			if cc != "" {
+				currency = cc
+			}
+		}
+		if v, cc := extractNumericPriceAndCurrency(summary["installationFee"]); v > 0 && explicitSetup == 0 {
+			explicitSetup = v
+			if cc != "" {
+				currency = cc
+			}
+		}
+		if pm, ok := summary["prices"].(map[string]any); ok {
+			if c := stringFromAny(pm["currencyCode"]); c != "" {
+				currency = c
+			}
+			for _, k := range []string{"setup", "installation", "setupFee", "installationFee"} {
+				if v, cc := extractNumericPriceAndCurrency(pm[k]); v > 0 {
+					explicitSetup = v
+					if cc != "" {
+						currency = cc
+					}
+					break
+				}
+			}
+			for _, k := range []string{"monthly", "recurring", "renew", "monthlyExVat", "monthlyWithoutTax"} {
+				if v, cc := extractNumericPriceAndCurrency(pm[k]); v > 0 {
+					explicitMonthly = v
+					if cc != "" {
+						currency = cc
+					}
+					break
+				}
+			}
+		}
+	}
+
+	var rawItems []map[string]any
+	if summary != nil {
+		rawItems = mapSliceFromAny(summary["details"])
+		if len(rawItems) == 0 {
+			rawItems = mapSliceFromAny(summary["items"])
+		}
+	}
+	if len(rawItems) == 0 && info != nil {
+		rawItems = mapSliceFromAny(info["items"])
+	}
+
+	var itemsMonthly, itemsSetup float64
+	for _, it := range rawItems {
+		val, cc := extractCartItemExVATPrice(it)
+		if cc != "" {
+			currency = cc
+		}
+		if val <= 0 {
+			continue
+		}
+		if isSetupFeeCartItem(it) {
+			itemsSetup += val
+		} else {
+			itemsMonthly += val
+		}
+	}
+
+	if itemsSetup == 0 && itemsMonthly == 0 && parsed != nil && len(parsed.Items) > 0 {
+		for _, it := range parsed.Items {
+			var val float64
+			if it.Prices.WithoutTax != nil && *it.Prices.WithoutTax > 0 {
+				val = *it.Prices.WithoutTax
+			} else if it.Prices.WithTax != nil && *it.Prices.WithTax > 0 {
+				val = *it.Prices.WithTax
+			}
+			if val <= 0 {
+				continue
+			}
+			low := strings.ToLower(it.PlanCode + " " + it.Description)
+			if strings.Contains(low, "install") || strings.Contains(low, "setup") || strings.Contains(low, "frais d'installation") || strings.Contains(low, "安装费") {
+				itemsSetup += val
+			} else {
+				itemsMonthly += val
+			}
+		}
+	}
+
+	if itemsSetup > 0 {
+		setupFeeExVAT = itemsSetup
+	} else if explicitSetup > 0 {
+		setupFeeExVAT = explicitSetup
+	}
+
+	switch {
+	case explicitMonthly > 0:
+		monthlyExVAT = explicitMonthly
+	case itemsMonthly > 0:
+		monthlyExVAT = itemsMonthly
+	case parsed != nil && parsed.Prices.WithoutTax != nil && *parsed.Prices.WithoutTax > 0:
+		totalEx := *parsed.Prices.WithoutTax
+		if itemsSetup > 0 && totalEx > itemsSetup {
+			monthlyExVAT = totalEx - itemsSetup
+		} else {
+			monthlyExVAT = totalEx
+		}
+	case parsed != nil && parsed.Prices.WithTax != nil && *parsed.Prices.WithTax > 0:
+		totalInc := *parsed.Prices.WithTax
+		if itemsSetup > 0 && totalInc > itemsSetup {
+			monthlyExVAT = totalInc - itemsSetup
+		} else {
+			monthlyExVAT = totalInc
+		}
+	}
+
+	monthlyExVAT = math.Round(monthlyExVAT*100) / 100
+	setupFeeExVAT = math.Round(setupFeeExVAT*100) / 100
+	return monthlyExVAT, setupFeeExVAT, currency
+}
+
+func isSetupFeeCartItem(it map[string]any) bool {
+	if it == nil {
+		return false
+	}
+	detailType := strings.ToUpper(strings.TrimSpace(stringFromAny(it["detailType"])))
+	switch detailType {
+	case "INSTALLATION", "SETUP", "ONE_OFF", "ONESHOT":
+		return true
+	case "DURATION", "RENEW", "MONTHLY":
+		return false
+	}
+
+	pricingMode := strings.ToLower(strings.TrimSpace(stringFromAny(it["pricingMode"])))
+	mode := strings.ToLower(strings.TrimSpace(stringFromAny(it["mode"])))
+	if pricingMode == "installation" || pricingMode == "setup" || pricingMode == "oneshot" || pricingMode == "one-shot" ||
+		mode == "installation" || mode == "setup" || mode == "oneshot" || mode == "one-shot" {
+		return true
+	}
+
+	duration := strings.ToUpper(strings.TrimSpace(stringFromAny(it["duration"])))
+	if duration == "NONE" || duration == "ONCE" || duration == "ONE-OFF" || duration == "ONESHOT" || duration == "P0D" {
+		return true
+	}
+
+	caps := stringsFromAny(it["capacities"])
+	if len(caps) > 0 {
+		hasInstall := false
+		hasRenew := false
+		for _, c := range caps {
+			switch strings.ToLower(strings.TrimSpace(c)) {
+			case "installation", "setup":
+				hasInstall = true
+			case "renew":
+				hasRenew = true
+			}
+		}
+		if hasInstall && !hasRenew {
+			return true
+		}
+		if hasRenew {
+			return false
+		}
+	}
+
+	combined := strings.ToLower(strings.Join([]string{
+		stringFromAny(it["planCode"]),
+		stringFromAny(it["description"]),
+		stringFromAny(it["label"]),
+		stringFromAny(it["productType"]),
+	}, " "))
+	return strings.Contains(combined, "install") ||
+		strings.Contains(combined, "setup") ||
+		strings.Contains(combined, "frais d'installation") ||
+		strings.Contains(combined, "安装费")
+}
+
+func extractCartItemExVATPrice(it map[string]any) (float64, string) {
+	if it == nil {
+		return 0, ""
+	}
+	if pm, ok := it["prices"].(map[string]any); ok {
+		if v, cc := extractNumericPriceAndCurrency(pm["withoutTax"]); v > 0 {
+			return v, cc
+		}
+		if v, cc := extractNumericPriceAndCurrency(pm["price"]); v > 0 {
+			return v, cc
+		}
+		if v, cc := extractNumericPriceAndCurrency(pm["totalPrice"]); v > 0 {
+			return v, cc
+		}
+		if v, cc := extractNumericPriceAndCurrency(pm["withTax"]); v > 0 {
+			return v, cc
+		}
+	}
+	for _, k := range []string{"withoutTax", "totalPrice", "unitPrice", "price"} {
+		if v, cc := extractNumericPriceAndCurrency(it[k]); v > 0 {
+			return v, cc
+		}
+	}
+	return 0, ""
+}
+
+func extractNumericPriceAndCurrency(raw any) (float64, string) {
+	if raw == nil {
+		return 0, ""
+	}
+	switch v := raw.(type) {
+	case map[string]any:
+		cc := stringFromAny(v["currencyCode"])
+		if withoutTax, ok := v["withoutTax"]; ok && withoutTax != nil {
+			val, subCC := extractNumericPriceAndCurrency(withoutTax)
+			if subCC != "" {
+				cc = subCC
+			}
+			return val, cc
+		}
+		if val, ok := v["value"]; ok && val != nil {
+			return floatFromAny(val, 0), cc
+		}
+		return 0, cc
+	case float64:
+		return v, ""
+	case int:
+		return float64(v), ""
+	default:
+		return floatFromAny(raw, 0), ""
+	}
+}
+
+func mapSliceFromAny(raw any) []map[string]any {
+	switch s := raw.(type) {
+	case []map[string]any:
+		return s
+	case []any:
+		out := make([]map[string]any, 0, len(s))
+		for _, el := range s {
+			if m, ok := el.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (s *Service) findAvailableDatacenter(
@@ -970,6 +1621,7 @@ func (s *Service) findAvailableDatacenter(
 		return "", false
 	}
 
+	matchedAnyConfigRow := false
 	for _, displayDC := range targetDCs {
 		apiDC := catalog.NormalizeAPIDatacenter(displayDC)
 		for _, av := range availItems {
@@ -979,6 +1631,7 @@ func (s *Service) findAvailableDatacenter(
 			if wantSto != "" && av.Storage != "" && catalog.StandardizeConfig(av.Storage) != wantSto {
 				continue
 			}
+			matchedAnyConfigRow = true
 			for _, dc := range av.Datacenters {
 				if resolvedAPIDC, ok := matchesDC(dc.Datacenter, displayDC, apiDC); ok &&
 					dc.Availability != "" &&
@@ -990,8 +1643,8 @@ func (s *Service) findAvailableDatacenter(
 		}
 	}
 
-	// If strict memory/storage filtering found no match, retry without hardware filter if options didn't match formatting.
-	if wantMem != "" || wantSto != "" {
+	// If strict memory/storage filtering matched no availability row at all (e.g. generic mock row), retry without hardware filter.
+	if !matchedAnyConfigRow && (wantMem != "" || wantSto != "") {
 		for _, displayDC := range targetDCs {
 			apiDC := catalog.NormalizeAPIDatacenter(displayDC)
 			for _, av := range availItems {
@@ -1020,6 +1673,9 @@ func (s *Service) recordFailedPurchase(ctx context.Context, item store.QueueItem
 		PlanCode:     item.PlanCode,
 		Datacenter:   dc,
 		Options:      item.Options,
+		ConfigKey:    item.ConfigKey,
+		ConfigLabel:  item.ConfigLabel,
+		Quantity:     max(1, item.Quantity),
 		Status:       "failed",
 		ErrorMessage: errMsg,
 		AttemptCount: item.RetryCount,
@@ -1056,6 +1712,11 @@ func (s *Service) emitOrderNotification(
 			modelName = meta.Name
 		}
 	}
+	qty := max(1, item.Quantity)
+	displayPrice := priceText
+	if qty > 1 && displayPrice != "" && !strings.Contains(displayPrice, "x") {
+		displayPrice = fmt.Sprintf("%s (x%d)", displayPrice, qty)
+	}
 	data := map[string]any{
 		"preferTemplate": true,
 		"planCode":       item.PlanCode,
@@ -1063,7 +1724,10 @@ func (s *Service) emitOrderNotification(
 		"datacenter":     strings.ToUpper(dc),
 		"orderId":        orderID,
 		"orderUrl":       orderURL,
-		"price":          priceText,
+		"price":          displayPrice,
+		"quantity":       qty,
+		"configKey":      item.ConfigKey,
+		"configLabel":    item.ConfigLabel,
 		"autoPaid":       item.AutoPay,
 		"error":          errMsg,
 	}
@@ -1097,6 +1761,13 @@ func cleanStringList(in []string) []string {
 		}
 	}
 	return out
+}
+
+func nonEmptyStr(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return strings.TrimSpace(a)
+	}
+	return strings.TrimSpace(b)
 }
 
 func optionsFingerprint(opts []string) string {

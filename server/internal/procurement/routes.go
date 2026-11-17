@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -73,6 +74,10 @@ func (s *Service) HandleCreateQueue(w http.ResponseWriter, r *http.Request) {
 		PlanCode:                stringFromAny(raw["planCode"]),
 		Datacenters:             stringsFromAny(raw["datacenters"]),
 		Options:                 stringsFromAny(raw["options"]),
+		ConfigKey:               stringFromAny(raw["configKey"]),
+		ConfigLabel:             stringFromAny(raw["configLabel"]),
+		MaxMonthlyPrice:         floatFromAny(raw["maxMonthlyPrice"], 0),
+		Currency:                stringFromAny(raw["currency"]),
 		Quantity:                intFromAny(raw["quantity"], 1),
 		MaxRetryCount:           intFromAny(raw["maxRetryCount"], 50),
 		RetryInterval:           intFromAny(raw["retryInterval"], 30),
@@ -120,6 +125,18 @@ func (s *Service) HandleUpdateQueue(w http.ResponseWriter, r *http.Request) {
 	if v, ok := raw["options"]; ok {
 		req.Options = stringsFromAny(v)
 		req.HasOptions = true
+	}
+	if v, ok := raw["configKey"]; ok {
+		str := stringFromAny(v)
+		req.ConfigKey = &str
+	}
+	if v, ok := raw["configLabel"]; ok {
+		str := stringFromAny(v)
+		req.ConfigLabel = &str
+	}
+	if v, ok := raw["maxMonthlyPrice"]; ok {
+		f := floatFromAny(v, 0)
+		req.MaxMonthlyPrice = &f
 	}
 	if v, ok := raw["retryInterval"]; ok {
 		n := intFromAny(v, 0)
@@ -238,6 +255,12 @@ func (s *Service) HandleQuickOrder(w http.ResponseWriter, r *http.Request) {
 		PlanCode:                stringFromAny(raw["planCode"]),
 		Datacenter:              stringFromAny(raw["datacenter"]),
 		Options:                 stringsFromAny(raw["options"]),
+		ConfigKey:               stringFromAny(raw["configKey"]),
+		ConfigLabel:             stringFromAny(raw["configLabel"]),
+		Quantity:                intFromAny(raw["quantity"], 1),
+		MaxMonthlyPrice:         floatFromAny(raw["maxMonthlyPrice"], 0),
+		Currency:                stringFromAny(raw["currency"]),
+		Subsidiary:              stringFromAny(raw["subsidiary"]),
 		SkipPriceCheck:          boolFromAnyKeys(raw, "skipPriceCheck"),
 		SkipDuplicateCheck:      boolFromAnyKeys(raw, "skipDuplicateCheck"),
 		AutoPay:                 boolFromAnyKeys(raw, "auto_pay", "autoPay"),
@@ -248,10 +271,11 @@ func (s *Service) HandleQuickOrder(w http.ResponseWriter, r *http.Request) {
 
 	if !res.Success {
 		writeJSON(w, statusCode, map[string]any{
-			"success": false,
-			"code":    res.Code,
-			"error":   res.Error,
-			"message": res.Error,
+			"success":   false,
+			"code":      res.Code,
+			"errorCode": res.ErrorCode,
+			"error":     res.Error,
+			"message":   res.Error,
 		})
 		return
 	}
@@ -378,6 +402,44 @@ func intFromAny(v any, fallback int) int {
 		return int(t)
 	case float64:
 		return int(t)
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return int(i)
+		}
+		if f, err := t.Float64(); err == nil {
+			return int(f)
+		}
+		return fallback
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
+			return i
+		}
+		return fallback
+	default:
+		return fallback
+	}
+}
+
+func floatFromAny(v any, fallback float64) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+		return fallback
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return f
+		}
+		return fallback
 	default:
 		return fallback
 	}

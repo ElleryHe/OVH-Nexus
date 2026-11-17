@@ -56,14 +56,18 @@ var toolDefinitions = []ToolDefinition{
 	{
 		Name:        "catalog_availability",
 		Scope:       "read",
-		Description: "Query real-time global OVHcloud bare-metal server stock matrix and commercial specs (KS-A, RISE-1, SCALE, etc.) without requiring an API key.",
+		Description: "Query real-time global OVHcloud bare-metal server stock matrix, configuration keys (`configKey`), ex-VAT `estimatedMonthlyPrice`, and `listingState` ('listed', 'announced', 'presale') without requiring an API key. Includes catalog-announced models (e.g. Limited Edition SKUs with 0 datacenter availability rows).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"plan_code":      map[string]any{"type": "string", "description": "Optional exact or partial planCode / model name filter (e.g. '24ska01', 'KS-A', 'rise')."},
+				"plan_code":      map[string]any{"type": "string", "description": "Optional exact or partial planCode / model name filter (e.g. '24ska01', '27skle', 'KS-A', 'rise')."},
 				"datacenter":     map[string]any{"type": "string", "description": "Optional datacenter filter (e.g. 'gra', 'rbx', 'sbg', 'bhs', 'fra', 'vin')."},
 				"only_available": map[string]any{"type": "boolean", "description": "If true, return only configurations currently in stock."},
-				"presale_only":   map[string]any{"type": "boolean", "default": false, "description": "If true, only return presale / unlisted models that appear in datacenter availability feeds but are not yet in the public catalog."},
+				"listing_state":  map[string]any{"type": "string", "enum": []string{"all", "listed", "announced", "presale"}, "default": "all", "description": "Filter by listingState: 'all', 'listed' (orderable in catalog), 'announced' (in public catalog with 0 availability rows, not yet on sale), or 'presale' (in availability feed but not yet in public catalog)."},
+				"only_announced": map[string]any{"type": "boolean", "default": false, "description": "If true, only return 'announced' models (in public catalog with 0 availability rows, not yet on sale)."},
+				"only_presale":   map[string]any{"type": "boolean", "default": false, "description": "If true, only return 'presale' models that appear in datacenter availability feeds but are not yet in the public catalog."},
+				"presale_only":   map[string]any{"type": "boolean", "default": false, "description": "Alias for only_presale: if true, only return 'presale' / unlisted models."},
+				"mode":           map[string]any{"type": "string", "enum": []string{"summary", "compact", "full"}, "default": "summary", "description": "Output detail mode ('summary', 'compact', or 'full'). All modes include listingState, configKey, isDefault, estimatedMonthlyPrice, currency, and listedAt."},
 				"offset":         map[string]any{"type": "integer", "default": 0, "description": "Pagination offset (0-based) for browsing beyond the first page."},
 				"limit":          map[string]any{"type": "integer", "default": 50, "description": "Max plans to return (1-200, default 50)."},
 			},
@@ -73,12 +77,14 @@ var toolDefinitions = []ToolDefinition{
 	{
 		Name:        "catalog_sku_changes",
 		Scope:       "read",
-		Description: "List recent public OVHcloud shelf SKU additions and removals detected by the SKU Watcher.",
+		Description: "List recent public OVHcloud shelf SKU changes (added, saleStarted, replaced, removed), trackedSkus, and summary counts (totalSkus, listedSkus, announcedSkus, presaleSkus) detected by the SKU Watcher.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"limit":       map[string]any{"type": "integer", "description": "Maximum change events to return (1-50, default 20)."},
-				"change_type": map[string]any{"type": "string", "enum": []string{"ALL", "ADDED", "REMOVED"}, "description": "Filter by change type."},
+				"limit":         map[string]any{"type": "integer", "description": "Maximum change events to return (1-50, default 20)."},
+				"change_type":   map[string]any{"type": "string", "enum": []string{"ALL", "ADDED", "REMOVED", "REPLACED", "all", "added", "removed", "replaced"}, "description": "Filter by change type ('ALL', 'ADDED', 'REMOVED', 'REPLACED'). Note: 'ADDED' with saleStarted=true indicates an announced SKU that went on sale; 'REPLACED' indicates a same-product-line planCode replacement (with replacedFrom)."},
+				"type":          map[string]any{"type": "string", "enum": []string{"all", "added", "removed", "replaced", "ALL", "ADDED", "REMOVED", "REPLACED"}, "description": "Alias for change_type ('all', 'added', 'removed', 'replaced')."},
+				"listing_state": map[string]any{"type": "string", "enum": []string{"all", "listed", "announced", "presale"}, "default": "all", "description": "Filter changes and trackedSkus by listingState ('all', 'listed', 'announced', 'presale')."},
 			},
 			"additionalProperties": false,
 		},
@@ -643,7 +649,19 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 	planFilter := strings.TrimSpace(asString(args["plan_code"]))
 	dcFilter := strings.TrimSpace(asString(args["datacenter"]))
 	onlyAvail := asBool(args["only_available"])
-	presaleOnly := asBool(args["presale_only"])
+	presaleOnly := asBool(args["presale_only"]) || asBool(args["only_presale"])
+	onlyAnnounced := asBool(args["only_announced"]) || asBool(args["announced_only"])
+	listingState := strings.ToLower(strings.TrimSpace(asString(args["listing_state"])))
+	if listingState == "" || listingState == "all" {
+		if onlyAnnounced {
+			listingState = "announced"
+		} else if presaleOnly {
+			listingState = "presale"
+		} else {
+			listingState = "all"
+		}
+	}
+
 	offset := asInt(args["offset"], 0)
 	if offset < 0 {
 		offset = 0
@@ -656,7 +674,35 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 	}
 
 	if s.deps.Catalog != nil {
-		items, totalMatched, err := s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, presaleOnly, offset, limit)
+		var (
+			items        []CatalogEntry
+			totalMatched int
+			err          error
+		)
+		if filterReader, ok := s.deps.Catalog.(CatalogAvailabilityFilterReader); ok {
+			items, totalMatched, err = filterReader.QueryAvailabilityFiltered(ctx, planFilter, dcFilter, listingState, onlyAvail, presaleOnly, onlyAnnounced, offset, limit)
+		} else if listingState == "all" || listingState == "presale" {
+			items, totalMatched, err = s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, listingState == "presale", offset, limit)
+		} else {
+			allItems, _, qErr := s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, false, 0, 10000)
+			if qErr != nil {
+				return nil, "", qErr
+			}
+			var matched []CatalogEntry
+			for _, it := range allItems {
+				st := strings.ToLower(strings.TrimSpace(it.ListingState))
+				if st == "" {
+					st = "listed"
+				}
+				if st == listingState {
+					matched = append(matched, it)
+				}
+			}
+			totalMatched = len(matched)
+			off := min(offset, totalMatched)
+			end := min(off+limit, totalMatched)
+			items = matched[off:end]
+		}
 		if err != nil {
 			return nil, "", err
 		}
@@ -664,12 +710,28 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 			items = []CatalogEntry{}
 		}
 		for i := range items {
-			if strings.TrimSpace(items[i].ListingState) == "" {
+			st := strings.ToLower(strings.TrimSpace(items[i].ListingState))
+			switch st {
+			case "":
 				items[i].ListingState = "listed"
 				items[i].Orderable = true
-			} else if strings.EqualFold(items[i].ListingState, "presale") {
+			case "listed":
+				items[i].ListingState = "listed"
+				items[i].Orderable = true
+			case "presale":
 				items[i].ListingState = "presale"
 				items[i].Orderable = false
+			case "announced":
+				items[i].ListingState = "announced"
+				items[i].Orderable = false
+			default:
+				items[i].ListingState = st
+			}
+			if strings.TrimSpace(items[i].ConfigKey) == "" {
+				items[i].ConfigKey = "default"
+			}
+			if strings.TrimSpace(items[i].Currency) == "" {
+				items[i].Currency = "EUR"
 			}
 			if items[i].Generation == 0 {
 				items[i].Generation = catalog.InferPlanGeneration(items[i].PlanCode)
@@ -720,12 +782,12 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 		if planLow != "" && !strings.Contains(strings.ToLower(pcode), planLow) {
 			continue
 		}
-		listingState := strings.ToLower(strings.TrimSpace(asString(entry["listingState"])))
-		if listingState != "presale" {
-			listingState = "listed"
+		st := strings.ToLower(strings.TrimSpace(asString(entry["listingState"])))
+		if st != "presale" && st != "announced" {
+			st = "listed"
 		}
-		orderable := listingState != "presale"
-		if presaleOnly && (listingState != "presale" || orderable) {
+		orderable := st == "listed"
+		if listingState != "all" && st != listingState {
 			continue
 		}
 
@@ -761,11 +823,23 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 		}
 		rec, exists := grouped[pcode]
 		if !exists {
+			cfgKey := strings.TrimSpace(asString(entry["configKey"]))
+			if cfgKey == "" {
+				cfgKey = catalog.BuildConfigKey(asString(entry["memory"]), asString(entry["storage"]))
+			}
+			currency := strings.TrimSpace(asString(entry["currency"]))
+			if currency == "" {
+				currency = "EUR"
+			}
 			rec = &CatalogEntry{
 				PlanCode:             pcode,
 				ModelName:            pcode,
 				CPU:                  asString(entry["server"]),
-				ListingState:         listingState,
+				ConfigKey:            cfgKey,
+				IsDefault:            true,
+				Currency:             currency,
+				ListingState:         st,
+				ListedAt:             asString(entry["listedAt"]),
 				Orderable:            orderable,
 				Generation:           catalog.InferPlanGeneration(pcode),
 				AvailableDatacenters: []string{},
@@ -817,76 +891,271 @@ func (s *Service) toolCatalogSKUChanges(ctx context.Context, args map[string]any
 	} else if limit > 50 {
 		limit = 50
 	}
-	changeType := strings.ToUpper(strings.TrimSpace(asString(args["change_type"])))
+	changeType := strings.TrimSpace(asString(args["change_type"]))
+	if changeType == "" {
+		changeType = strings.TrimSpace(asString(args["type"]))
+	}
 	if changeType == "" {
 		changeType = "ALL"
 	}
+	changeType = strings.ToUpper(changeType)
 
-	if monReader, ok := s.deps.Monitor.(SKUChangesReader); ok && monReader != nil {
-		status, changes, err := monReader.GetSKUChanges(ctx, limit, changeType)
+	listingState := strings.ToLower(strings.TrimSpace(asString(args["listing_state"])))
+	if listingState == "" {
+		listingState = "all"
+	}
+
+	var (
+		status      map[string]any
+		changes     []map[string]any
+		trackedSkus []map[string]any
+		err         error
+	)
+
+	if monFilter, ok := s.deps.Monitor.(SKUChangesFilterReader); ok && monFilter != nil {
+		status, changes, trackedSkus, err = monFilter.GetSKUChangesFiltered(ctx, limit, changeType, listingState)
 		if err != nil {
 			return nil, "", err
 		}
-		if status == nil {
-			status = map[string]any{}
-		}
-		if changes == nil {
-			changes = []map[string]any{}
-		}
-		return map[string]any{
-			"status":  status,
-			"changes": changes,
-		}, fmt.Sprintf("Retrieved %d SKU watcher change event(s).", len(changes)), nil
-	}
-
-	if s.deps.Catalog != nil {
-		status, changes, err := s.deps.Catalog.GetSKUChanges(ctx, limit, changeType)
+	} else if monReader, ok := s.deps.Monitor.(SKUChangesReader); ok && monReader != nil {
+		status, changes, err = monReader.GetSKUChanges(ctx, limit, changeType)
 		if err != nil {
 			return nil, "", err
 		}
-		if status == nil {
-			status = map[string]any{}
+	} else if catFilter, ok := s.deps.Catalog.(SKUChangesFilterReader); ok && catFilter != nil {
+		status, changes, trackedSkus, err = catFilter.GetSKUChangesFiltered(ctx, limit, changeType, listingState)
+		if err != nil {
+			return nil, "", err
 		}
-		if changes == nil {
-			changes = []map[string]any{}
+	} else if s.deps.Catalog != nil {
+		status, changes, err = s.deps.Catalog.GetSKUChanges(ctx, limit, changeType)
+		if err != nil {
+			return nil, "", err
 		}
-		return map[string]any{
-			"status":  status,
-			"changes": changes,
-		}, fmt.Sprintf("Retrieved %d SKU watcher change event(s).", len(changes)), nil
+	} else if s.store != nil {
+		st, stErr := s.store.LoadSKUWatcherState(ctx)
+		if stErr != nil {
+			return nil, "", stErr
+		}
+		_ = json.Unmarshal(st.ChangesJSON, &changes)
+		status = map[string]any{
+			"initialized": st.Initialized,
+			"endpoint":    st.Endpoint,
+			"updatedAt":   st.UpdatedAt,
+		}
 	}
 
-	if s.store == nil {
-		return map[string]any{"status": map[string]any{}, "changes": []any{}}, "Retrieved 0 SKU watcher change event(s).", nil
+	if status == nil {
+		status = map[string]any{}
 	}
-	st, err := s.store.LoadSKUWatcherState(ctx)
-	if err != nil {
-		return nil, "", err
+
+	// If trackedSkus were not provided by the reader, load and enrich from SQLite store when available.
+	var storeSKUs map[string]map[string]any
+	if s.store != nil {
+		if st, stErr := s.store.LoadSKUWatcherState(ctx); stErr == nil && st != nil {
+			if len(st.SKUsJSON) > 0 {
+				_ = json.Unmarshal(st.SKUsJSON, &storeSKUs)
+			}
+			if len(changes) == 0 && len(st.ChangesJSON) > 2 {
+				var rawCh []map[string]any
+				if json.Unmarshal(st.ChangesJSON, &rawCh) == nil && len(rawCh) > 0 {
+					changes = rawCh
+				}
+			}
+		}
 	}
-	var allChanges []map[string]any
-	_ = json.Unmarshal(st.ChangesJSON, &allChanges)
-	filtered := make([]map[string]any, 0)
-	for _, ch := range allChanges {
+
+	matchChangeKind := func(kind string) bool {
+		switch changeType {
+		case "ALL":
+			return true
+		case "ADDED":
+			return kind == "ADDED" || kind == "CONFIG_ADDED"
+		case "REMOVED":
+			return kind == "REMOVED" || kind == "CONFIG_REMOVED"
+		case "REPLACED":
+			return kind == "REPLACED"
+		default:
+			return strings.EqualFold(kind, changeType)
+		}
+	}
+
+	normalizedChanges := make([]map[string]any, 0, len(changes))
+	for _, rawCh := range changes {
+		ch := make(map[string]any, len(rawCh)+6)
+		for k, v := range rawCh {
+			ch[k] = v
+		}
 		kind := strings.ToUpper(strings.TrimSpace(asString(ch["type"])))
 		if kind == "" {
 			kind = strings.ToUpper(strings.TrimSpace(asString(ch["changeType"])))
 		}
-		if changeType != "ALL" && !strings.EqualFold(kind, changeType) {
+		if !matchChangeKind(kind) {
 			continue
 		}
-		filtered = append(filtered, ch)
-		if len(filtered) >= limit {
+		ls := strings.ToLower(strings.TrimSpace(asString(ch["listingState"])))
+		if ls == "" {
+			ls = "listed"
+		}
+		if listingState != "all" && ls != listingState {
+			continue
+		}
+		ch["listingState"] = ls
+		ch["saleStarted"] = asBool(ch["saleStarted"])
+		ch["replacedFrom"] = strings.TrimSpace(asString(ch["replacedFrom"]))
+		if asString(ch["type"]) == "" && kind != "" {
+			ch["type"] = strings.ToLower(kind)
+		}
+		if asString(ch["changeType"]) == "" && kind != "" {
+			ch["changeType"] = kind
+		}
+		normalizedChanges = append(normalizedChanges, ch)
+		if len(normalizedChanges) >= limit {
 			break
 		}
 	}
+
+	listedCount := asInt(status["listedSkus"], -1)
+	announcedCount := asInt(status["announcedSkus"], -1)
+	presaleCount := asInt(status["presaleSkus"], -1)
+	totalSkus := asInt(status["totalSkus"], -1)
+
+	if trackedSkus == nil {
+		if rawTS, ok := status["trackedSkus"].([]map[string]any); ok {
+			trackedSkus = rawTS
+		} else if rawAny, ok := status["trackedSkus"].([]any); ok {
+			for _, it := range rawAny {
+				if m, ok := it.(map[string]any); ok {
+					trackedSkus = append(trackedSkus, m)
+				}
+			}
+		}
+	}
+
+	if len(trackedSkus) == 0 && len(storeSKUs) > 0 {
+		keys := make([]string, 0, len(storeSKUs))
+		for k := range storeSKUs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		lCnt, aCnt, pCnt := 0, 0, 0
+		for _, k := range keys {
+			entry := storeSKUs[k]
+			ls := strings.ToLower(strings.TrimSpace(asString(entry["listingState"])))
+			if ls == "" {
+				ls = "listed"
+			}
+			switch ls {
+			case "announced":
+				aCnt++
+			case "presale":
+				pCnt++
+			default:
+				ls = "listed"
+				lCnt++
+			}
+			cp := make(map[string]any, len(entry)+6)
+			for ek, ev := range entry {
+				cp[ek] = ev
+			}
+			pc := strings.TrimSpace(asString(cp["planCode"]))
+			if pc == "" {
+				pc = k
+			}
+			cp["key"] = k
+			cp["skuKey"] = k
+			cp["planCode"] = pc
+			cp["listingState"] = ls
+			cp["saleStarted"] = asBool(cp["saleStarted"])
+			cp["replacedFrom"] = strings.TrimSpace(asString(cp["replacedFrom"]))
+			trackedSkus = append(trackedSkus, cp)
+		}
+		if totalSkus < 0 {
+			totalSkus = len(storeSKUs)
+		}
+		if listedCount < 0 {
+			listedCount = lCnt
+		}
+		if announcedCount < 0 {
+			announcedCount = aCnt
+		}
+		if presaleCount < 0 {
+			presaleCount = pCnt
+		}
+	}
+
+	filteredTracked := make([]map[string]any, 0, len(trackedSkus))
+	lFromTracked, aFromTracked, pFromTracked := 0, 0, 0
+	for _, rawT := range trackedSkus {
+		tm := make(map[string]any, len(rawT)+4)
+		for k, v := range rawT {
+			tm[k] = v
+		}
+		ls := strings.ToLower(strings.TrimSpace(asString(tm["listingState"])))
+		if ls == "" {
+			ls = "listed"
+		}
+		switch ls {
+		case "announced":
+			aFromTracked++
+		case "presale":
+			pFromTracked++
+		default:
+			ls = "listed"
+			lFromTracked++
+		}
+		if listingState != "all" && ls != listingState {
+			continue
+		}
+		tm["listingState"] = ls
+		tm["saleStarted"] = asBool(tm["saleStarted"])
+		tm["replacedFrom"] = strings.TrimSpace(asString(tm["replacedFrom"]))
+		filteredTracked = append(filteredTracked, tm)
+	}
+
+	if listedCount < 0 {
+		listedCount = lFromTracked
+	}
+	if announcedCount < 0 {
+		announcedCount = aFromTracked
+	}
+	if presaleCount < 0 {
+		presaleCount = pFromTracked
+	}
+	if totalSkus < 0 {
+		totalSkus = listedCount + announcedCount + presaleCount
+	}
+
+	status["totalSkus"] = totalSkus
+	status["listedSkus"] = listedCount
+	status["announcedSkus"] = announcedCount
+	status["presaleSkus"] = presaleCount
+	status["listedCount"] = listedCount
+	status["announcedCount"] = announcedCount
+	if _, hasPC := status["presaleCount"]; !hasPC {
+		status["presaleCount"] = presaleCount
+	}
+	status["recentChanges"] = normalizedChanges
+	status["trackedSkus"] = filteredTracked
+
+	summaryCounts := map[string]any{
+		"totalSkus":     totalSkus,
+		"listedSkus":    listedCount,
+		"announcedSkus": announcedCount,
+		"presaleSkus":   presaleCount,
+	}
+
 	return map[string]any{
-		"status": map[string]any{
-			"initialized": st.Initialized,
-			"endpoint":    st.Endpoint,
-			"updatedAt":   st.UpdatedAt,
-		},
-		"changes": filtered,
-	}, fmt.Sprintf("Retrieved %d SKU watcher change event(s).", len(filtered)), nil
+		"status":        status,
+		"summary":       summaryCounts,
+		"totalSkus":     totalSkus,
+		"listedSkus":    listedCount,
+		"announcedSkus": announcedCount,
+		"presaleSkus":   presaleCount,
+		"changes":       normalizedChanges,
+		"recentChanges": normalizedChanges,
+		"trackedSkus":   filteredTracked,
+	}, fmt.Sprintf("Retrieved %d SKU watcher change event(s).", len(normalizedChanges)), nil
 }
 
 func (s *Service) toolBaremetalList(ctx context.Context, cfg *store.MCPConfig, args map[string]any) (map[string]any, string, error) {

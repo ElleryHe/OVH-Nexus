@@ -597,3 +597,204 @@ func TestPresaleSKUSynthesisInListServersAndConfigAvailabilities(t *testing.T) {
 		}
 	}
 }
+
+func TestRealPlansAliasExclusionAnnouncedSynthesisAndPlanConfigs(t *testing.T) {
+	svc, _, _, _ := newTestCatalog(t)
+	svc.SetListedAtResolver(func(planCode string) string {
+		if planCode == "27risele01-v1" {
+			return "2026-11-17T08:00:00Z"
+		}
+		return ""
+	})
+
+	vpsHitCount := 0
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24sys02-v3",
+						"invoiceName": "SYS-2 | Intel Xeon-D 2141I",
+						"product":     "24sys02-1g",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "SYS-2"}},
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 3999000000},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-2133-24sys02-1g", "addons": []string{"ram-32g-ecc-2133-24sys02-1g", "ram-64g-ecc-2133-24sys02-1g"}},
+							{"name": "storage", "default": "softraid-2x512nvme-24sys02-1g", "addons": []string{"softraid-2x512nvme-24sys02-1g", "softraid-2x2000sa-24sys02-1g"}},
+						},
+					},
+					{
+						"planCode":    "27risele01-v1",
+						"invoiceName": "RISE-LE-1 | AMD EPYC 4244P",
+						"product":     "27risele01-v1",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "RISE-LE-1"}},
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 4599000000},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-5200-27risele01-v1", "addons": []string{"ram-32g-ecc-5200-27risele01-v1"}},
+							{"name": "storage", "default": "softraid-2x512nvme-27risele01-v1", "addons": []string{"softraid-2x512nvme-27risele01-v1"}},
+						},
+					},
+					{
+						// Addon plan listed in cat.Plans without memory+storage families -> must NOT enter RealPlans
+						"planCode":    "ram-64g-ecc-2133-24sys02-1g",
+						"invoiceName": "64GB DDR4 ECC 2133MHz",
+						"product":     "ram-64g-ecc-2133",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 1200000000},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "Sub-Addon", "addons": []string{"dummy"}},
+						},
+					},
+				},
+				"addons": []map[string]any{
+					{
+						"planCode":    "ram-32g-ecc-2133-24sys02-1g",
+						"invoiceName": "32GB DDR4 ECC 2133MHz",
+						"product":     "ram-32g-ecc-2133",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 0},
+						},
+					},
+					{
+						"planCode":    "softraid-2x512nvme-24sys02-1g",
+						"invoiceName": "2x512GB NVMe",
+						"product":     "softraid-2x512nvme",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 0},
+						},
+					},
+					{
+						"planCode":    "softraid-2x2000sa-24sys02-1g",
+						"invoiceName": "2x2TB SATA",
+						"product":     "softraid-2x2000sa",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 500000000},
+						},
+					},
+				},
+			})
+		case "/order/catalog/public/baremetalServers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case "/order/catalog/public/vps":
+			vpsHitCount++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "vps-2025-model1",
+						"invoiceName": "VPS-1",
+						"product":     "vps-2025-model1",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 420000000},
+						},
+					},
+				},
+			})
+		case "/dedicated/server/datacenter/availabilities":
+			items := []map[string]any{
+				{
+					"fqn":      "24sys02-v3.ram-32g-ecc-2133.softraid-2x512nvme",
+					"planCode": "24sys02-v3",
+					"server":   "24sys02-1g",
+					"memory":   "ram-32g-ecc-2133",
+					"storage":  "softraid-2x512nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+					},
+				},
+				{
+					"fqn":      "24sys02-v3.ram-64g-ecc-2133.softraid-2x2000sa",
+					"planCode": "24sys02-v3",
+					"server":   "24sys02-1g",
+					"memory":   "ram-64g-ecc-2133",
+					"storage":  "softraid-2x2000sa",
+					"datacenters": []map[string]any{
+						{"datacenter": "rbx", "availability": "24H"},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(items)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+
+	// 1. Verify GetBaremetalDictionary skips VPS and populates RealPlans without alias pollution
+	bmDict, err := svc.GetBaremetalDictionary(context.Background(), "ovh-eu", "IE", true)
+	if err != nil {
+		t.Fatalf("GetBaremetalDictionary failed: %v", err)
+	}
+	if vpsHitCount != 0 {
+		t.Fatalf("expected GetBaremetalDictionary to skip VPS catalog, got %d VPS requests", vpsHitCount)
+	}
+	if len(bmDict.RealPlans) != 2 {
+		t.Fatalf("expected exactly 2 RealPlans (24sys02-v3, 27risele01-v1), got %d: %+v", len(bmDict.RealPlans), bmDict.RealPlans)
+	}
+	if !IsPlanListedInDict("24sys02-v3", bmDict) || !IsPlanListedInDict("27risele01-v1", bmDict) || !IsPlanListedInDict("27risele01-v1-sgp", bmDict) {
+		t.Fatalf("expected real planCodes and regional variants to be listed in RealPlans")
+	}
+	if IsPlanListedInDict("24sys02-1g", bmDict) || IsPlanListedInDict("24sys02", bmDict) || IsPlanListedInDict("27risele01", bmDict) || IsPlanListedInDict("vps-2025-model1", bmDict) {
+		t.Fatalf("expected product alias 24sys02-1g, version-stripped 24sys02/27risele01, and vps plan to NOT be in RealPlans")
+	}
+
+	// 2. Verify GetCatalogAvailabilities synthesizes announced 27risele01-v1 and computes config pricing
+	availItems, err := svc.GetCatalogAvailabilities(context.Background(), "ovh-eu", "IE", "")
+	if err != nil {
+		t.Fatalf("GetCatalogAvailabilities failed: %v", err)
+	}
+	if len(availItems) != 3 {
+		t.Fatalf("expected 3 AvailabilityItems (2 for 24sys02-v3 + 1 announced 27risele01-v1), got %d", len(availItems))
+	}
+	var foundAnnounced *AvailabilityItem
+	var foundUpgraded *AvailabilityItem
+	for i := range availItems {
+		it := &availItems[i]
+		if it.PlanCode == "27risele01-v1" {
+			foundAnnounced = it
+		}
+		if it.PlanCode == "24sys02-v3" && it.ConfigKey == "ram-64g-ecc-2133+softraid-2x2000sa" {
+			foundUpgraded = it
+		}
+	}
+	if foundAnnounced == nil || foundAnnounced.ListingState != "announced" || foundAnnounced.Price != 45.99 || foundAnnounced.ListedAt != "2026-11-17T08:00:00Z" || !foundAnnounced.IsDefault {
+		t.Fatalf("unexpected announced AvailabilityItem: %+v", foundAnnounced)
+	}
+	if foundUpgraded == nil || foundUpgraded.EstimatedMonthlyPrice != 56.99 || foundUpgraded.IsDefault {
+		t.Fatalf("expected upgraded config price 39.99 + 12.00 + 5.00 = 56.99, got %+v", foundUpgraded)
+	}
+
+	// 3. Verify GET /api/catalog/plans/{planCode}/configs via HTTP router
+	r := chi.NewRouter()
+	svc.MountRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/catalog/plans/24sys02-v3/configs?subsidiary=IE", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /catalog/plans/24sys02-v3/configs status=%d body=%s", w.Code, w.Body.String())
+	}
+	var cfgResp PlanConfigsResponse
+	if err := json.NewDecoder(w.Body).Decode(&cfgResp); err != nil {
+		t.Fatalf("failed to decode PlanConfigsResponse: %v", err)
+	}
+	if cfgResp.PlanCode != "24sys02-v3" || cfgResp.ListingState != "listed" || cfgResp.BasePrice != 39.99 || len(cfgResp.Configs) != 2 {
+		t.Fatalf("unexpected PlanConfigsResponse: %+v", cfgResp)
+	}
+	if !cfgResp.Configs[0].IsDefault || cfgResp.Configs[0].EstimatedMonthlyPrice != 39.99 {
+		t.Fatalf("expected first config to be default at 39.99, got %+v", cfgResp.Configs[0])
+	}
+	if cfgResp.Configs[1].EstimatedMonthlyPrice != 56.99 || cfgResp.Configs[1].InStockCount != 1 {
+		t.Fatalf("expected second config at 56.99 with inStockCount=1, got %+v", cfgResp.Configs[1])
+	}
+}
+

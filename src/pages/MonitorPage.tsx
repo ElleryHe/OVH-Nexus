@@ -1,32 +1,42 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { api } from '@/utils/apiClient';
 import { toast } from 'sonner';
-import { Bell, BellOff, Plus, Trash2, Settings, RefreshCw, History, ChevronUp, ExternalLink, Filter } from 'lucide-react';
+import {
+  Bell,
+  BellOff,
+  Plus,
+  Trash2,
+  Settings,
+  RefreshCw,
+  History,
+  ChevronUp,
+  ChevronDown,
+  ExternalLink,
+  Filter,
+  AlertTriangle,
+  Edit3,
+  Cpu,
+} from 'lucide-react';
 import { useAPI } from '@/context/APIContext';
 import { useLocale } from '@/context/LocaleContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/components/ToastContainer';
 import { DCLabel } from '@/components/DCLabel';
+import { QuickMonitorDialog } from '@/components/QuickMonitorDialog';
 import {
   useCatalogDictionary,
   resolvePlanDisplay,
   formatMemoryCode,
   formatStorageCode,
+  getCurrencySymbol,
 } from '@/utils/hardwareFormat';
-
-interface Subscription {
-  planCode: string;
-  serverName?: string;  // 服务器友好名称
-  datacenters: string[];
-  notifyAvailable: boolean;
-  notifyUnavailable: boolean;
-  autoOrder?: boolean;
-  autoOrderQuantity?: number;  // 自动下单数量，0或不设置表示遵循2分钟限制
-  lastStatus: Record<string, string>;
-  createdAt: string;
-}
+import type {
+  StockSubscription,
+  StockTarget,
+  SkuChangeRecord,
+} from '@/types';
 
 interface MonitorStatus {
   running: boolean;
@@ -41,12 +51,16 @@ interface HistoryEntry {
   status: string;
   changeType: string;
   oldStatus: string | null;
+  configKey?: string;
   config?: {
     memory: string;
     storage: string;
     display: string;
   };
 }
+
+const isStatusAvailable = (st?: string): boolean =>
+  Boolean(st && st !== 'unavailable' && st !== 'unknown');
 
 const MonitorPage = () => {
   const isMobile = useIsMobile();
@@ -57,57 +71,60 @@ const MonitorPage = () => {
   const catalogDict = useCatalogDictionary();
   const { isAuthenticated } = useAPI();
   const { showConfirm } = useToast();
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+
+  const [subscriptions, setSubscriptions] = useState<StockSubscription[]>([]);
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatus>({
     running: false,
     subscriptions_count: 0,
     known_servers_count: 0,
-    check_interval: 5
+    check_interval: 5,
   });
+  const [skuChanges, setSkuChanges] = useState<SkuChangeRecord[]>([]);
+  const [skuTotalIndexed, setSkuTotalIndexed] = useState<number>(0);
+  const [showSkuHistory, setShowSkuHistory] = useState<boolean>(false);
+  const [isCheckingSku, setIsCheckingSku] = useState<boolean>(false);
+
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
-  const [historyData, setHistoryData] = useState<Record<string, HistoryEntry[]>>({});
-  const prevSubscriptionsRef = useRef<Subscription[]>([]);
-  const currentSubscriptionsRef = useRef<Subscription[]>([]); // ✅ 保存当前订阅列表，用于在异步回调中检查订阅是否仍然存在
-  const loadingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
-  // 添加订阅表单
-  const [formData, setFormData] = useState({
-    planCode: '',
-    datacenters: '',
-    notifyAvailable: true,
-    notifyUnavailable: false,
-    autoOrder: false,
-    autoOrderQuantity: 0  // 自动下单数量，0表示不限制（遵循2分钟限制）
-  });
+  const [newPlanCodeInput, setNewPlanCodeInput] = useState('');
+  const [editingSub, setEditingSub] = useState<{
+    planCode: string;
+    serverName?: string;
+    subscription?: StockSubscription | null;
+  } | null>(null);
 
-  // 加载订阅列表（自动下单已统一由后端 monitor/stock.go 单点触发，前端不再重复调用 quick-order）
+  const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
+  const [historyData, setHistoryData] = useState<
+    Record<string, HistoryEntry[]>
+  >({});
+  const prevSubscriptionsRef = useRef<StockSubscription[]>([]);
+  const currentSubscriptionsRef = useRef<StockSubscription[]>([]);
+  const loadingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const loadSubscriptions = async (isRefresh = false) => {
     if (isRefresh) {
       setIsRefreshing(true);
     } else {
-      // 延迟显示加载状态，避免快速加载时的闪烁
       loadingTimeoutRef.current = setTimeout(() => {
         setIsLoading(true);
       }, 150);
     }
     try {
       const response = await api.get('/monitor/subscriptions');
-      const newData = response.data as Subscription[];
+      const newData = (
+        Array.isArray(response.data) ? response.data : []
+      ) as StockSubscription[];
 
       currentSubscriptionsRef.current = newData;
       setSubscriptions(newData);
       prevSubscriptionsRef.current = newData;
-      // 如果数据加载完成，清除延迟显示的加载状态
       if (loadingTimeoutRef.current) {
         clearTimeout(loadingTimeoutRef.current);
         loadingTimeoutRef.current = null;
       }
       setIsLoading(false);
-    } catch (error) {
-      console.error('加载订阅失败:', error);
+    } catch {
       if (loadingTimeoutRef.current) {
         clearTimeout(loadingTimeoutRef.current);
         loadingTimeoutRef.current = null;
@@ -121,124 +138,126 @@ const MonitorPage = () => {
     }
   };
 
-  // 加载监控状态
   const loadMonitorStatus = async () => {
     try {
       const response = await api.get('/monitor/status');
       setMonitorStatus(response.data);
-    } catch (error) {
-      console.error('加载监控状态失败:', error);
+    } catch {
+      // ignore
     }
   };
 
-  // 添加订阅
-  const handleAddSubscription = async (e: React.FormEvent) => {
+  const loadSkuChanges = useCallback(async () => {
+    try {
+      const res = await api.get('/sku/changes?limit=100');
+      if (res.data) {
+        setSkuChanges(res.data.changes || []);
+        setSkuTotalIndexed(res.data.status?.totalSkus || 0);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleManualSkuCheck = async () => {
+    setIsCheckingSku(true);
+    try {
+      const res = await api.post('/sku/check');
+      if (res.data) {
+        setSkuChanges(res.data.changes || []);
+        setSkuTotalIndexed(res.data.status?.totalSkus || 0);
+      }
+      toast.success('已同步最新货架 SKU 基线与变动');
+    } catch (err: any) {
+      toast.error(
+        '同步 SKU 变动失败: ' + (err.response?.data?.message || err.message)
+      );
+    } finally {
+      setIsCheckingSku(false);
+    }
+  };
+
+  const handleOpenAddModal = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!formData.planCode.trim()) {
-      toast.error('请输入服务器型号');
+    const code = newPlanCodeInput.trim();
+    if (!code) {
+      toast.error('请输入服务器型号 (planCode)');
       return;
     }
-    
-    try {
-      const datacenters = formData.datacenters
-        .split(',')
-        .map(dc => dc.trim())
-        .filter(dc => dc);
-      
-      await api.post('/monitor/subscriptions', {
-        planCode: formData.planCode.trim(),
-        datacenters: datacenters.length > 0 ? datacenters : [],
-        notifyAvailable: formData.notifyAvailable,
-        notifyUnavailable: formData.notifyUnavailable,
-        autoOrder: formData.autoOrder,
-        autoOrderQuantity: formData.autoOrder ? (formData.autoOrderQuantity > 0 ? formData.autoOrderQuantity : 0) : 0
-      });
-      
-      toast.success(`已订阅 ${formData.planCode}`);
-      setFormData({
-        planCode: '',
-        datacenters: '',
-        notifyAvailable: true,
-        notifyUnavailable: false,
-        autoOrder: false,
-        autoOrderQuantity: 0
-      });
-      setShowAddForm(false);
-      loadSubscriptions(true);
-      loadMonitorStatus();
-    } catch (error) {
-      toast.error('订阅失败');
-    }
+    const existing = subscriptions.find(
+      (s) => s.planCode.toLowerCase() === code.toLowerCase()
+    );
+    setShowAddForm(false);
+    setNewPlanCodeInput('');
+    setEditingSub({
+      planCode: code,
+      serverName: existing?.serverName,
+      subscription: existing || null,
+    });
   };
 
-  // 删除订阅
   const handleRemoveSubscription = async (planCode: string) => {
     const confirmed = await showConfirm({
       title: '取消订阅',
       message: `确定要取消订阅 ${planCode} 吗？`,
       confirmText: '确定',
-      cancelText: '取消'
+      cancelText: '取消',
     });
-    
-    if (!confirmed) {
-      return;
-    }
-    
+
+    if (!confirmed) return;
+
     try {
-      await api.delete(`/monitor/subscriptions/${planCode}`);
+      await api.delete(`/monitor/subscriptions/${encodeURIComponent(planCode)}`);
       toast.success(`已取消订阅 ${planCode}`);
-      // ✅ 先更新 prevSubscriptionsRef 和 currentSubscriptionsRef，移除被删除的订阅，避免重新加载时误判为状态变化
       const current = prevSubscriptionsRef.current || [];
-      prevSubscriptionsRef.current = current.filter(s => s.planCode !== planCode);
-      currentSubscriptionsRef.current = currentSubscriptionsRef.current.filter(s => s.planCode !== planCode);
+      prevSubscriptionsRef.current = current.filter(
+        (s) => s.planCode !== planCode
+      );
+      currentSubscriptionsRef.current =
+        currentSubscriptionsRef.current.filter((s) => s.planCode !== planCode);
       loadSubscriptions(true);
       loadMonitorStatus();
-    } catch (error) {
+    } catch {
       toast.error('取消订阅失败');
     }
   };
 
-  // 清空所有订阅
   const handleClearAll = async () => {
     const confirmed = await showConfirm({
       title: '清空所有订阅',
       message: '确定要清空所有订阅吗？此操作不可撤销。',
       confirmText: '确定清空',
-      cancelText: '取消'
+      cancelText: '取消',
     });
-    
-    if (!confirmed) {
-      return;
-    }
-    
+
+    if (!confirmed) return;
+
     try {
       const response = await api.delete('/monitor/subscriptions/clear');
       toast.success(`已清空 ${response.data.count} 个订阅`);
-      // ✅ 清空所有订阅时，也清空 ref，避免重新加载时误判为状态变化
       prevSubscriptionsRef.current = [];
       currentSubscriptionsRef.current = [];
       loadSubscriptions(true);
       loadMonitorStatus();
-    } catch (error) {
+    } catch {
       toast.error('清空订阅失败');
     }
   };
 
-  // 获取订阅历史记录
   const loadHistory = async (planCode: string) => {
     try {
-      const response = await api.get(`/monitor/subscriptions/${planCode}/history`);
-      setHistoryData(prev => ({
+      const response = await api.get(
+        `/monitor/subscriptions/${encodeURIComponent(planCode)}/history`
+      );
+      setHistoryData((prev) => ({
         ...prev,
-        [planCode]: response.data.history
+        [planCode]: response.data.history || [],
       }));
-    } catch (error) {
+    } catch {
       toast.error('加载历史记录失败');
     }
   };
 
-  // 切换历史记录展开/收起
   const toggleHistory = async (planCode: string) => {
     if (expandedHistory === planCode) {
       setExpandedHistory(null);
@@ -251,25 +270,81 @@ const MonitorPage = () => {
   };
 
   useEffect(() => {
+    loadSkuChanges();
     if (isAuthenticated) {
       loadSubscriptions();
       loadMonitorStatus();
-      
-      // 定时刷新状态
+
       const interval = setInterval(() => {
         loadMonitorStatus();
-      }, 30000); // 30秒刷新一次
-      
+        loadSubscriptions(true);
+      }, 30000);
+
       return () => {
         clearInterval(interval);
-        // 清理延迟加载的定时器
         if (loadingTimeoutRef.current) {
           clearTimeout(loadingTimeoutRef.current);
           loadingTimeoutRef.current = null;
         }
       };
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, loadSkuChanges]);
+
+  const renderSkuChangeBadge = (chg: SkuChangeRecord) => {
+    if (chg.type === 'replaced') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+          {t('sku.replaced', {
+            oldCode: chg.replacedFrom || 'old',
+            newCode: chg.planCode || chg.skuKey,
+          })}
+        </span>
+      );
+    }
+    if (chg.saleStarted) {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+          {t('sku.saleStarted')}
+        </span>
+      );
+    }
+    if (chg.listingState === 'announced') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+          {t('announced.skuAdded')}
+        </span>
+      );
+    }
+    if (
+      chg.type === 'presale' ||
+      (chg.type === 'added' && chg.listingState === 'presale')
+    ) {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/30">
+          {t('presale.skuAdded')}
+        </span>
+      );
+    }
+    if (chg.type === 'added' || chg.type === 'listed') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+          {t('sku.newListed')}
+        </span>
+      );
+    }
+    if (chg.type === 'removed') {
+      return (
+        <span className="px-2 py-0.5 rounded font-semibold bg-red-500/15 text-red-400 border border-red-500/30">
+          {t('sku.removedBadge')}
+        </span>
+      );
+    }
+    return (
+      <span className="px-2 py-0.5 rounded font-semibold bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
+        {t('sku.configChangedBadge')}
+      </span>
+    );
+  };
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -278,8 +353,16 @@ const MonitorPage = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <h1 className={`${isMobile ? 'text-2xl' : 'text-3xl'} font-bold mb-1 cyber-glow-text`}>服务器监控</h1>
-        <p className="text-cyber-muted text-sm mb-4 sm:mb-6">自动监控服务器可用性变化并推送通知</p>
+        <h1
+          className={`${
+            isMobile ? 'text-2xl' : 'text-3xl'
+          } font-bold mb-1 cyber-glow-text`}
+        >
+          独服库存与货架监控
+        </h1>
+        <p className="text-cyber-muted text-sm mb-4 sm:mb-6">
+          支持按配置（内存 + 硬盘）精确监控、最高月价保护上限自动下单与货架 SKU 变动追踪
+        </p>
       </motion.div>
 
       {/* 监控状态卡片 */}
@@ -296,7 +379,11 @@ const MonitorPage = () => {
               </div>
             )}
             <div>
-              <h3 className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold`}>监控状态</h3>
+              <h3
+                className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold`}
+              >
+                监控状态
+              </h3>
               <p className="text-xs sm:text-sm text-cyber-muted">
                 {monitorStatus.running ? (
                   <span className="text-green-400">● 运行中</span>
@@ -306,35 +393,138 @@ const MonitorPage = () => {
               </p>
             </div>
           </div>
-          
+
           <button
             onClick={() => {
               loadSubscriptions(true);
               loadMonitorStatus();
+              loadSkuChanges();
             }}
             disabled={isRefreshing}
             className="cyber-button text-xs sm:text-sm flex items-center gap-2"
           >
-            <RefreshCw size={isMobile ? 14 : 16} className={`flex-shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw
+              size={isMobile ? 14 : 16}
+              className={`flex-shrink-0 ${isRefreshing ? 'animate-spin' : ''}`}
+            />
             <span className="min-w-[2.5rem]">刷新</span>
           </button>
         </div>
 
-        {/* 统计信息 */}
         <div className="grid grid-cols-3 gap-2 sm:gap-4">
           <div className="bg-cyber-grid/10 p-2 sm:p-3 rounded border border-cyber-accent/20">
             <p className="text-[10px] sm:text-xs text-cyber-muted mb-1">订阅数</p>
-            <p className="text-lg sm:text-2xl font-bold text-cyber-accent">{monitorStatus.subscriptions_count}</p>
+            <p className="text-lg sm:text-2xl font-bold text-cyber-accent">
+              {monitorStatus.subscriptions_count}
+            </p>
           </div>
           <div className="bg-cyber-grid/10 p-2 sm:p-3 rounded border border-cyber-accent/20">
-            <p className="text-[10px] sm:text-xs text-cyber-muted mb-1">检查间隔</p>
-            <p className="text-lg sm:text-2xl font-bold text-cyber-accent">{monitorStatus.check_interval}s</p>
+            <p className="text-[10px] sm:text-xs text-cyber-muted mb-1">
+              检查间隔
+            </p>
+            <p className="text-lg sm:text-2xl font-bold text-cyber-accent">
+              {monitorStatus.check_interval}s
+            </p>
           </div>
           <div className="bg-cyber-grid/10 p-2 sm:p-3 rounded border border-cyber-accent/20">
-            <p className="text-[10px] sm:text-xs text-cyber-muted mb-1 truncate">已知服务器</p>
-            <p className="text-lg sm:text-2xl font-bold text-cyber-accent">{monitorStatus.known_servers_count}</p>
+            <p className="text-[10px] sm:text-xs text-cyber-muted mb-1 truncate">
+              已知服务器
+            </p>
+            <p className="text-lg sm:text-2xl font-bold text-cyber-accent">
+              {monitorStatus.known_servers_count}
+            </p>
           </div>
         </div>
+      </div>
+
+      {/* SKU 货架变动监控记录面板 */}
+      <div className="cyber-panel p-3.5 sm:p-4 border-cyber-accent/30">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSkuHistory((prev) => !prev)}
+            className="flex items-center gap-2 text-left font-semibold text-sm sm:text-base text-cyber-text hover:text-cyber-accent transition-colors"
+          >
+            <History className="w-4 h-4 text-cyber-accent" />
+            <span>货架 SKU 变动历史（上新 / 开售 / 换代 / 下架）</span>
+            <span className="px-2 py-0.5 text-xs rounded-full bg-cyber-accent/15 text-cyber-accent font-mono">
+              {skuChanges.length}
+            </span>
+            {skuTotalIndexed > 0 && (
+              <span className="text-xs text-cyber-muted font-normal hidden sm:inline">
+                （已收录 {skuTotalIndexed} 款）
+              </span>
+            )}
+            {showSkuHistory ? (
+              <ChevronUp className="w-4 h-4 text-cyber-muted" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-cyber-muted" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleManualSkuCheck}
+            disabled={isCheckingSku}
+            className="cyber-button text-xs py-1.5 px-3 flex items-center gap-1.5"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${isCheckingSku ? 'animate-spin' : ''}`}
+            />
+            <span>{isCheckingSku ? '检测中...' : '立即检测 SKU'}</span>
+          </button>
+        </div>
+
+        {showSkuHistory && (
+          <div className="mt-3 pt-3 border-t border-cyber-grid space-y-2 max-h-72 overflow-y-auto">
+            {skuChanges.length === 0 ? (
+              <p className="text-xs text-cyber-muted text-center py-4">
+                暂无 SKU 货架变动记录
+              </p>
+            ) : (
+              skuChanges.map((chg) => (
+                <div
+                  key={chg.id}
+                  className="p-2.5 rounded-lg border border-cyber-grid bg-cyber-bg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                >
+                  <div className="space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {renderSkuChangeBadge(chg)}
+                      <span className="font-bold text-cyber-text text-sm">
+                        {chg.name}
+                      </span>
+                      <span className="font-mono text-cyber-muted">
+                        (
+                        {chg.type === 'replaced' && chg.replacedFrom
+                          ? `${chg.replacedFrom} → ${chg.planCode || chg.skuKey}`
+                          : chg.planCode || chg.skuKey}
+                        )
+                      </span>
+                      {chg.cpuText && (
+                        <span className="text-cyber-muted">· {chg.cpuText}</span>
+                      )}
+                    </div>
+                    {(chg.memorySummary || chg.storageSummary) && (
+                      <div className="text-cyber-muted">
+                        {chg.memorySummary && (
+                          <span>内存: {chg.memorySummary} </span>
+                        )}
+                        {chg.storageSummary && (
+                          <span>· 存储: {chg.storageSummary}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex sm:flex-col items-end justify-between gap-1 text-right flex-shrink-0">
+                    <span className="text-cyber-muted font-mono text-[11px]">
+                      {new Date(chg.timestamp).toLocaleString('zh-CN')}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
 
       {/* 订阅列表 */}
@@ -342,13 +532,13 @@ const MonitorPage = () => {
         <div className="flex justify-between items-center mb-4">
           <h4 className="font-semibold flex items-center gap-2">
             <Settings size={18} />
-            订阅列表
+            配置级监控订阅列表
           </h4>
           <div className="flex gap-2">
             {subscriptions.length > 0 && (
               <button
                 onClick={handleClearAll}
-                className="cyber-button text-sm flex items-center gap-1.5 bg-red-900/30 border-red-700/40 text-red-300 hover:bg-red-800/40 hover:border-red-600/50 hover:text-red-200"
+                className="cyber-button text-sm flex items-center gap-1.5 bg-red-900/30 border-red-700/40 text-red-300 hover:bg-red-800/40"
               >
                 <Trash2 size={14} />
                 清空全部
@@ -356,7 +546,7 @@ const MonitorPage = () => {
             )}
             <button
               onClick={() => setShowAddForm(!showAddForm)}
-              className="cyber-button text-sm flex items-center gap-1.5 bg-cyber-accent/20 border-cyber-accent/40 text-cyber-accent hover:bg-cyber-accent/30 hover:border-cyber-accent/60 hover:text-cyber-accent"
+              className="cyber-button text-sm flex items-center gap-1.5 bg-cyber-accent/20 border-cyber-accent/40 text-cyber-accent hover:bg-cyber-accent/30"
             >
               <Plus size={14} />
               添加订阅
@@ -364,107 +554,41 @@ const MonitorPage = () => {
           </div>
         </div>
 
-        {/* 添加订阅表单 */}
+        {/* 快速输入型号并打开多目标配置弹窗 */}
         {showAddForm && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             className="mb-4 p-4 bg-cyber-grid/10 rounded border border-cyber-accent/20"
           >
-            <form onSubmit={handleAddSubscription} className="space-y-3">
-              <div>
-                <label className="block text-sm text-cyber-muted mb-1">服务器型号 *</label>
+            <form
+              onSubmit={handleOpenAddModal}
+              className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3"
+            >
+              <div className="flex-1">
+                <label className="block text-xs text-cyber-muted mb-1">
+                  输入服务器型号 (planCode)，下一步选择具体配置与最高月价上限 *
+                </label>
                 <input
                   type="text"
-                  value={formData.planCode}
-                  onChange={(e) => setFormData({...formData, planCode: e.target.value})}
-                  placeholder="例如: 24ska01"
-                  className="cyber-input w-full"
+                  value={newPlanCodeInput}
+                  onChange={(e) => setNewPlanCodeInput(e.target.value)}
+                  placeholder="例如: 24ska01 或 25rise01-v1"
+                  className="cyber-input w-full text-sm"
                   required
                 />
               </div>
-              <div>
-                <label className="block text-sm text-cyber-muted mb-1">
-                  数据中心（可选，多个用逗号分隔）
-                </label>
-                <input
-                  type="text"
-                  value={formData.datacenters}
-                  onChange={(e) => setFormData({...formData, datacenters: e.target.value})}
-                  placeholder="例如: gra,rbx,sbg 或留空监控所有"
-                  className="cyber-input w-full"
-                />
-              </div>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.notifyAvailable}
-                    onChange={(e) => setFormData({...formData, notifyAvailable: e.target.checked})}
-                    className="cyber-checkbox"
-                  />
-                  <span className="text-sm">有货时提醒</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.notifyUnavailable}
-                    onChange={(e) => setFormData({...formData, notifyUnavailable: e.target.checked})}
-                    className="cyber-checkbox"
-                  />
-                  <span className="text-sm">无货时提醒</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.autoOrder}
-                    onChange={(e) => setFormData({...formData, autoOrder: e.target.checked})}
-                    className="cyber-checkbox"
-                  />
-                  <span className="text-sm">有货自动下单</span>
-                </label>
-              </div>
-              {formData.autoOrder && (
-                <div>
-                  <label className="block text-sm text-cyber-muted mb-1">
-                    自动下单数量（每个机房）
-                    <span className="text-xs text-cyber-muted ml-2">
-                      （留空或0表示遵循2分钟限制，设置数量后不受限制）
-                    </span>
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={formData.autoOrderQuantity || ''}
-                    onChange={(e) => {
-                      const value = parseInt(e.target.value) || 0;
-                      setFormData({...formData, autoOrderQuantity: value >= 0 ? value : 0});
-                    }}
-                    placeholder="例如: 5（有货后立即下单5台，不受2分钟限制）"
-                    className="cyber-input w-full"
-                  />
-                  <p className="text-xs text-cyber-muted mt-1">
-                    💡 设置数量后，有货时会立即按数量下单，不受同机房2分钟限制
-                  </p>
-                  {formData.autoOrderQuantity > 0 && (
-                    <p className="text-xs text-yellow-500 mt-1 flex items-start">
-                      <span className="mr-1">⚠️</span>
-                      <span>如设置了自动下单数量，请不要清理抢购队列和抢购历史记录，避免重复下单</span>
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="flex gap-3">
-                <button 
-                  type="submit" 
-                  className="cyber-button flex-1 px-4 py-2.5 bg-cyber-accent/20 border-cyber-accent/40 text-cyber-accent hover:bg-cyber-accent/30 hover:border-cyber-accent/60 hover:text-cyber-accent"
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  className="cyber-button px-4 py-2 text-xs font-semibold bg-cyber-accent text-white border-cyber-accent"
                 >
-                  确认添加
+                  配置监控目标 →
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowAddForm(false)}
-                  className="cyber-button flex-1 px-4 py-2.5"
+                  className="cyber-button px-4 py-2 text-xs"
                 >
                   取消
                 </button>
@@ -473,12 +597,13 @@ const MonitorPage = () => {
           </motion.div>
         )}
 
-        {/* 订阅列表 */}
         {filterPlanCode && (
           <div className="mb-3 px-3 py-2 rounded-md border border-cyber-accent/40 bg-cyber-accent/10 flex items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2 text-cyber-accent font-medium">
               <Filter size={14} />
-              <span>{t('monitor.filterPlanCodeBanner', { planCode: filterPlanCode })}</span>
+              <span>
+                {t('monitor.filterPlanCodeBanner', { planCode: filterPlanCode })}
+              </span>
             </div>
             <button
               type="button"
@@ -494,213 +619,424 @@ const MonitorPage = () => {
         )}
 
         {(() => {
-          // 在加载期间，如果有之前的数据，显示之前的数据；否则显示当前数据
-          const baseSubscriptions = (isLoading && prevSubscriptionsRef.current.length > 0) 
-            ? prevSubscriptionsRef.current 
-            : subscriptions;
+          const baseSubscriptions =
+            isLoading && prevSubscriptionsRef.current.length > 0
+              ? prevSubscriptionsRef.current
+              : subscriptions;
           const displaySubscriptions = filterPlanCode
             ? baseSubscriptions.filter(
                 (s) => s.planCode.toLowerCase() === filterPlanCode.toLowerCase()
               )
             : baseSubscriptions;
-          
+
           if (displaySubscriptions.length === 0) {
             return (
               <div className="text-center text-cyber-muted py-12">
                 <Bell size={48} className="mx-auto mb-4 opacity-30" />
-                <p>暂无订阅</p>
-                <p className="text-sm mt-2">点击"添加订阅"按钮开始监控服务器</p>
+                <p>暂无监控订阅</p>
+                <p className="text-sm mt-2">
+                  点击右上角「添加订阅」或在「实时库存矩阵 / 服务器目录」中点击「快速监控」
+                </p>
               </div>
             );
           }
-          
+
           return (
             <div className="space-y-3">
               {displaySubscriptions.map((sub) => {
-                const planMeta = resolvePlanDisplay(sub.planCode, '', locale, catalogDict);
+                const planMeta = resolvePlanDisplay(
+                  sub.planCode,
+                  '',
+                  locale,
+                  catalogDict
+                );
                 const isHighlighted =
                   filterPlanCode &&
                   sub.planCode.toLowerCase() === filterPlanCode.toLowerCase();
+
+                // Normalize targets (fallback to 1 synthesized target if legacy subscription has no targets array)
+                const effectiveTargets: StockTarget[] =
+                  Array.isArray(sub.targets) && sub.targets.length > 0
+                    ? sub.targets
+                    : [
+                        {
+                          id: 'legacy-1',
+                          configKey: '',
+                          options: [],
+                          label: '',
+                          datacenters: sub.datacenters || [],
+                          notifyAvailable: sub.notifyAvailable,
+                          notifyUnavailable: sub.notifyUnavailable,
+                          autoOrder: Boolean(sub.autoOrder),
+                          quantity: sub.autoOrderQuantity || 1,
+                          currency: planMeta.currency || 'EUR',
+                          lastStatus: sub.lastStatus || {},
+                        },
+                      ];
+
+                const anyTargetAutoOrder =
+                  Boolean(sub.autoOrder) ||
+                  effectiveTargets.some((tItem) => tItem.autoOrder);
+
                 return (
-              <motion.div
-                key={sub.planCode}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`bg-cyber-grid/10 rounded border transition-colors overflow-hidden ${
-                  isHighlighted
-                    ? 'border-cyber-accent/60 ring-2 ring-cyber-accent/30 bg-cyber-accent/5'
-                    : 'border-cyber-accent/20 hover:border-cyber-accent/40'
-                }`}
-              >
-                 <div className="flex justify-between items-start p-3">
-                   <div className="flex-1">
-                     <div className="flex flex-wrap items-center gap-2 mb-1">
-                       <p className="font-bold text-cyber-accent text-base">
-                         {sub.serverName || planMeta.name}
-                       </p>
-                       {planMeta.regionLabel && (
-                         <span className="px-1.5 py-0.5 text-[11px] rounded bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
-                           {planMeta.regionLabel}
-                         </span>
-                       )}
-                       <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/40 text-cyber-muted">
-                         SKU: {sub.planCode}
-                       </span>
-                       {planMeta.cpuText && !sub.serverName?.includes(planMeta.cpuText) && (
-                         <span className="text-xs text-cyber-muted">
-                           · {planMeta.cpuText}
-                         </span>
-                       )}
-                     </div>
-                     <div className="text-xs text-cyber-muted flex flex-wrap items-center gap-1.5 mt-1">
-                       {sub.datacenters.length > 0 ? (
-                         <>
-                           <span>监控数据中心:</span>
-                           {sub.datacenters.map((dc) => (
-                             <span
-                               key={dc}
-                               className="px-1.5 py-0.5 rounded bg-cyber-surface border border-cyber-grid text-cyber-text text-[11px] font-medium"
-                             >
-                               <DCLabel code={dc} mode="compact" />
-                             </span>
-                           ))}
-                         </>
-                       ) : (
-                         <span>监控所有数据中心</span>
-                       )}
-                     </div>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      {sub.notifyAvailable && (
-                        <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded">
-                          有货提醒
-                        </span>
-                      )}
-                      {sub.notifyUnavailable && (
-                        <span className="text-xs px-2 py-0.5 bg-orange-500/20 text-orange-400 rounded">
-                          无货提醒
-                        </span>
-                      )}
-                      {sub.autoOrder && (
-                        <>
-                          <span className="text-xs px-2 py-0.5 bg-cyber-accent/20 text-cyber-accent rounded">
-                            自动下单{sub.autoOrderQuantity && sub.autoOrderQuantity > 0 ? ` (${sub.autoOrderQuantity}台/机房)` : ''}
+                  <motion.div
+                    key={sub.planCode}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`bg-cyber-grid/10 rounded-lg border transition-colors overflow-hidden ${
+                      isHighlighted
+                        ? 'border-cyber-accent/60 ring-2 ring-cyber-accent/30 bg-cyber-accent/5'
+                        : 'border-cyber-accent/20 hover:border-cyber-accent/40'
+                    }`}
+                  >
+                    {/* Legacy Auto-Order Paused Warning Banner */}
+                    {sub.needsConfigSelection && (
+                      <div className="px-3.5 py-2.5 bg-amber-500/15 border-b border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-200">
+                        <div className="flex items-start sm:items-center gap-2">
+                          <AlertTriangle
+                            size={15}
+                            className="text-amber-400 flex-shrink-0 mt-0.5 sm:mt-0"
+                          />
+                          <span className="font-medium">
+                            {t('monitor.legacyAutoOrderPausedBanner')}
                           </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditingSub({
+                              planCode: sub.planCode,
+                              serverName: sub.serverName || planMeta.name,
+                              subscription: sub,
+                            })
+                          }
+                          className="px-2.5 py-1 rounded bg-amber-500/25 hover:bg-amber-500/35 text-amber-200 border border-amber-400/50 font-semibold flex items-center gap-1 self-start sm:self-auto whitespace-nowrap"
+                        >
+                          <Edit3 size={12} />
+                          <span>{t('monitor.selectConfigAction')}</span>
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="p-3.5 space-y-3">
+                      {/* Card Header */}
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-bold text-cyber-accent text-base">
+                              {sub.serverName || planMeta.name}
+                            </p>
+                            {planMeta.regionLabel && (
+                              <span className="px-1.5 py-0.5 text-[11px] rounded bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
+                                {planMeta.regionLabel}
+                              </span>
+                            )}
+                            <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/40 text-cyber-muted">
+                              SKU: {sub.planCode}
+                            </span>
+                            <span className="px-2 py-0.5 text-[11px] rounded-full bg-cyber-accent/15 text-cyber-accent font-medium">
+                              {t('monitor.targetCountBadge', {
+                                count: effectiveTargets.length,
+                              })}
+                            </span>
+                            {planMeta.cpuText &&
+                              !sub.serverName?.includes(planMeta.cpuText) && (
+                                <span className="text-xs text-cyber-muted">
+                                  · {planMeta.cpuText}
+                                </span>
+                              )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {anyTargetAutoOrder && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                navigate(
+                                  `/queue?planCode=${encodeURIComponent(
+                                    sub.planCode
+                                  )}`
+                                )
+                              }
+                              className="text-xs px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 transition-colors inline-flex items-center gap-1"
+                            >
+                              <span>{t('monitor.viewQueueTasks')}</span>
+                              <ExternalLink size={11} />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => navigate(`/queue?planCode=${encodeURIComponent(sub.planCode)}`)}
-                            className="text-xs px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 transition-colors inline-flex items-center gap-1"
+                            onClick={() =>
+                              setEditingSub({
+                                planCode: sub.planCode,
+                                serverName: sub.serverName || planMeta.name,
+                                subscription: sub,
+                              })
+                            }
+                            className="px-2.5 py-1 text-xs font-medium text-cyber-accent bg-cyber-accent/10 hover:bg-cyber-accent/20 border border-cyber-accent/30 rounded transition-colors flex items-center gap-1"
+                            title={t('monitor.editSubscription')}
                           >
-                            <span>{t('monitor.viewQueueTasks')}</span>
-                            <ExternalLink size={11} />
+                            <Edit3 size={13} />
+                            <span className="hidden sm:inline">
+                              {t('monitor.editSubscription')}
+                            </span>
                           </button>
-                        </>
-                      )}
-                    </div>
-                    {sub.autoOrder && sub.autoOrderQuantity && sub.autoOrderQuantity > 0 && (
-                      <p className="text-xs text-yellow-500 mt-2 flex items-start">
-                        <span className="mr-1">⚠️</span>
-                        <span>如设置了自动下单数量，请不要清理抢购队列和抢购历史记录，避免重复下单</span>
-                      </p>
-                    )}
-                  </div>
-                  
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => toggleHistory(sub.planCode)}
-                      className="p-2 text-cyber-accent hover:bg-cyber-accent/10 rounded transition-colors"
-                      title="查看历史记录"
-                    >
-                      {expandedHistory === sub.planCode ? <ChevronUp size={16} /> : <History size={16} />}
-                    </button>
-                    <button
-                      onClick={() => handleRemoveSubscription(sub.planCode)}
-                      className="p-2 text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                      title="删除订阅"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </div>
-
-                {/* 历史记录展开区域 */}
-                {expandedHistory === sub.planCode && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="border-t border-cyber-accent/20 bg-cyber-grid/5"
-                  >
-                    <div className="p-3">
-                      <div className="flex items-center gap-2 mb-3">
-                        <History size={14} className="text-cyber-accent" />
-                        <span className="text-sm font-medium text-cyber-accent">变化历史</span>
+                          <button
+                            onClick={() => toggleHistory(sub.planCode)}
+                            className="p-1.5 text-cyber-accent hover:bg-cyber-accent/10 rounded transition-colors"
+                            title="查看历史记录"
+                          >
+                            {expandedHistory === sub.planCode ? (
+                              <ChevronUp size={16} />
+                            ) : (
+                              <History size={16} />
+                            )}
+                          </button>
+                          <button
+                            onClick={() =>
+                              handleRemoveSubscription(sub.planCode)
+                            }
+                            className="p-1.5 text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                            title="删除订阅"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
                       </div>
-                      
-                      {historyData[sub.planCode]?.length > 0 ? (
-                        <div className="space-y-2 max-h-64 overflow-y-auto">
-                          {historyData[sub.planCode].map((entry, index) => (
+
+                      {/* Per-Target List */}
+                      <div className="space-y-2">
+                        {effectiveTargets.map((target, idx) => {
+                          const symbol = getCurrencySymbol(
+                            target.currency || planMeta.currency
+                          );
+                          const statusSource =
+                            target.lastStatus &&
+                            Object.keys(target.lastStatus).length > 0
+                              ? target.lastStatus
+                              : sub.lastStatus || {};
+                          const dcList =
+                            target.datacenters && target.datacenters.length > 0
+                              ? target.datacenters
+                              : Object.keys(statusSource);
+
+                          return (
                             <div
-                              key={index}
-                              className="flex items-start gap-3 p-2 bg-cyber-grid/10 rounded text-xs"
+                              key={target.id || idx}
+                              className="p-2.5 rounded-md border border-cyber-grid/70 bg-cyber-bg/40 space-y-2 text-xs"
                             >
-                              <div className="flex-shrink-0 mt-1">
-                                {entry.changeType === 'available' ? (
-                                  <div className="w-2 h-2 bg-green-400 rounded-full"></div>
-                                ) : (
-                                  <div className="w-2 h-2 bg-red-400 rounded-full"></div>
-                                )}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium text-cyber-accent">
-                                    <DCLabel code={entry.datacenter} mode="full" />
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="px-1.5 py-0.5 rounded bg-cyber-grid/50 text-cyber-muted font-mono text-[10px]">
+                                    #{idx + 1}
                                   </span>
-                                  <span className={`px-1.5 py-0.5 rounded ${
-                                    entry.changeType === 'available' 
-                                      ? 'bg-green-500/20 text-green-400' 
-                                      : 'bg-red-500/20 text-red-400'
-                                  }`}>
-                                    {entry.changeType === 'available' ? '有货' : '无货'}
+                                  <Cpu
+                                    size={13}
+                                    className="text-cyber-accent flex-shrink-0"
+                                  />
+                                  <span className="font-semibold text-cyber-text">
+                                    {target.configKey
+                                      ? target.label || target.configKey
+                                      : t('quickMonitor.anyConfigNotifyOnly')}
                                   </span>
-                                </div>
-                                {entry.config && (
-                                  <div className="text-xs text-cyber-muted mt-1">
-                                    <span className="inline-block px-2 py-0.5 bg-cyber-accent/10 rounded mr-1">
-                                      {entry.config.memory || entry.config.storage
-                                        ? `${formatMemoryCode(entry.config.memory, locale)} + ${formatStorageCode(entry.config.storage, locale, false)}`
-                                        : entry.config.display}
+                                  {target.configKey && (
+                                    <span className="text-[11px] font-mono text-cyber-muted">
+                                      ({target.configKey})
                                     </span>
-                                  </div>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {target.notifyAvailable && (
+                                    <span className="px-2 py-0.5 bg-green-500/15 text-green-400 border border-green-500/30 rounded text-[11px]">
+                                      有货提醒
+                                    </span>
+                                  )}
+                                  {target.notifyUnavailable && (
+                                    <span className="px-2 py-0.5 bg-orange-500/15 text-orange-400 border border-orange-500/30 rounded text-[11px]">
+                                      无货提醒
+                                    </span>
+                                  )}
+                                  {target.autoOrder && (
+                                    <span className="px-2 py-0.5 bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40 rounded text-[11px] font-semibold">
+                                      {t('monitor.autoOrderQtyBadge', {
+                                        qty: target.quantity || 1,
+                                      })}
+                                    </span>
+                                  )}
+                                  {typeof target.maxMonthlyPrice === 'number' &&
+                                    target.maxMonthlyPrice > 0 && (
+                                      <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 rounded text-[11px] font-mono">
+                                        {t('monitor.priceCapBadge', {
+                                          price: `${symbol}${target.maxMonthlyPrice.toFixed(
+                                            2
+                                          )}`,
+                                        })}
+                                      </span>
+                                    )}
+                                </div>
+                              </div>
+
+                              {/* Per-DC Status Badges */}
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-[11px] text-cyber-muted">
+                                  {target.datacenters &&
+                                  target.datacenters.length > 0
+                                    ? '监控机房:'
+                                    : '全机房监控:'}
+                                </span>
+                                {dcList.length > 0 ? (
+                                  dcList.map((dc) => {
+                                    const st = statusSource[dc.toLowerCase()] || statusSource[dc];
+                                    const inStock = isStatusAvailable(st);
+                                    return (
+                                      <span
+                                        key={dc}
+                                        className={`px-1.5 py-0.5 rounded border text-[11px] font-medium inline-flex items-center gap-1 ${
+                                          inStock
+                                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                                            : st === 'unavailable'
+                                            ? 'bg-red-500/10 border-red-500/25 text-red-300/80'
+                                            : 'bg-cyber-surface border-cyber-grid text-cyber-text'
+                                        }`}
+                                      >
+                                        <DCLabel code={dc} mode="compact" />
+                                        {st && (
+                                          <span className="text-[10px] font-mono opacity-90">
+                                            ({inStock ? st : '无'})
+                                          </span>
+                                        )}
+                                      </span>
+                                    );
+                                  })
+                                ) : (
+                                  <span className="text-[11px] text-cyber-muted">
+                                    全部数据中心（等待首轮检测）
+                                  </span>
                                 )}
-                                <p className="text-cyber-muted mt-1 text-xs">
-                                  {new Date(entry.timestamp).toLocaleString('zh-CN', {
-                                    year: 'numeric',
-                                    month: '2-digit',
-                                    day: '2-digit',
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                    second: '2-digit'
-                                  })}
-                                </p>
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-cyber-muted text-center py-4">
-                          暂无历史记录
-                        </p>
-                      )}
+                          );
+                        })}
+                      </div>
                     </div>
+
+                    {/* 历史记录展开区域 */}
+                    {expandedHistory === sub.planCode && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="border-t border-cyber-accent/20 bg-cyber-grid/5"
+                      >
+                        <div className="p-3">
+                          <div className="flex items-center gap-2 mb-3">
+                            <History size={14} className="text-cyber-accent" />
+                            <span className="text-sm font-medium text-cyber-accent">
+                              变化历史
+                            </span>
+                          </div>
+
+                          {historyData[sub.planCode]?.length > 0 ? (
+                            <div className="space-y-2 max-h-64 overflow-y-auto">
+                              {historyData[sub.planCode].map((entry, index) => (
+                                <div
+                                  key={index}
+                                  className="flex items-start gap-3 p-2 bg-cyber-grid/10 rounded text-xs"
+                                >
+                                  <div className="flex-shrink-0 mt-1">
+                                    {entry.changeType === 'available' ? (
+                                      <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                                    ) : (
+                                      <div className="w-2 h-2 bg-red-400 rounded-full"></div>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-medium text-cyber-accent">
+                                        <DCLabel
+                                          code={entry.datacenter}
+                                          mode="full"
+                                        />
+                                      </span>
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded ${
+                                          entry.changeType === 'available'
+                                            ? 'bg-green-500/20 text-green-400'
+                                            : 'bg-red-500/20 text-red-400'
+                                        }`}
+                                      >
+                                        {entry.changeType === 'available'
+                                          ? '有货'
+                                          : '无货'}
+                                      </span>
+                                    </div>
+                                    {(entry.config || entry.configKey) && (
+                                      <div className="text-xs text-cyber-muted mt-1">
+                                        <span className="inline-block px-2 py-0.5 bg-cyber-accent/10 rounded mr-1">
+                                          {entry.config &&
+                                          (entry.config.memory ||
+                                            entry.config.storage)
+                                            ? `${formatMemoryCode(
+                                                entry.config.memory,
+                                                locale
+                                              )} + ${formatStorageCode(
+                                                entry.config.storage,
+                                                locale,
+                                                false
+                                              )}`
+                                            : entry.config?.display ||
+                                              entry.configKey}
+                                        </span>
+                                      </div>
+                                    )}
+                                    <p className="text-cyber-muted mt-1 text-xs">
+                                      {new Date(entry.timestamp).toLocaleString(
+                                        'zh-CN',
+                                        {
+                                          year: 'numeric',
+                                          month: '2-digit',
+                                          day: '2-digit',
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                          second: '2-digit',
+                                        }
+                                      )}
+                                    </p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-cyber-muted text-center py-4">
+                              暂无历史记录
+                            </p>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
                   </motion.div>
-                )}
-              </motion.div>
                 );
               })}
             </div>
           );
         })()}
       </div>
+
+      <QuickMonitorDialog
+        open={Boolean(editingSub)}
+        onOpenChange={(open) => {
+          if (!open) setEditingSub(null);
+        }}
+        planCode={editingSub?.planCode || ''}
+        serverName={editingSub?.serverName}
+        existingSubscription={editingSub?.subscription}
+        onSuccess={() => {
+          loadSubscriptions(true);
+          loadMonitorStatus();
+        }}
+      />
     </div>
   );
 };

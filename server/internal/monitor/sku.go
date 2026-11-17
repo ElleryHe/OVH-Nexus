@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ovh-nexus/server/internal/catalog"
@@ -19,11 +21,174 @@ import (
 	"ovh-nexus/server/internal/store"
 )
 
-const skuMaxChanges = 200
+const (
+	skuMaxChanges            = 200
+	defaultSKUIntervalSec    = 120
+	minSKUIntervalSec        = 60
+	legacySKUIntervalSec     = 600
+	defaultSKUFastRecheckDur = 20 * time.Second
+)
+
+var reAliasPortSuffix = regexp.MustCompile(`(?i)-\d+g$`)
+
+type skuFastRecheckState struct {
+	timer          *time.Timer
+	pending        bool
+	delayOverride  time.Duration
+	listedAtByCode map[string]string
+}
+
+var (
+	skuFastRecheckMu     sync.Mutex
+	skuFastRecheckStates = make(map[*Service]*skuFastRecheckState)
+)
+
+func getSKUFastRecheckState(s *Service) *skuFastRecheckState {
+	skuFastRecheckMu.Lock()
+	defer skuFastRecheckMu.Unlock()
+	st, ok := skuFastRecheckStates[s]
+	if !ok {
+		st = &skuFastRecheckState{
+			listedAtByCode: make(map[string]string),
+		}
+		skuFastRecheckStates[s] = st
+	}
+	return st
+}
+
+// SetSKUFastRecheckDelay overrides the 20s missing-SKU confirmation delay (intended for tests).
+func (s *Service) SetSKUFastRecheckDelay(d time.Duration) {
+	skuFastRecheckMu.Lock()
+	defer skuFastRecheckMu.Unlock()
+	st, ok := skuFastRecheckStates[s]
+	if !ok {
+		st = &skuFastRecheckState{
+			listedAtByCode: make(map[string]string),
+		}
+		skuFastRecheckStates[s] = st
+	}
+	st.delayOverride = d
+}
+
+func (s *Service) scheduleSKUFastRecheck() {
+	skuFastRecheckMu.Lock()
+	st, ok := skuFastRecheckStates[s]
+	if !ok {
+		st = &skuFastRecheckState{
+			listedAtByCode: make(map[string]string),
+		}
+		skuFastRecheckStates[s] = st
+	}
+	delay := defaultSKUFastRecheckDur
+	hasOverride := st.delayOverride > 0
+	if hasOverride {
+		delay = st.delayOverride
+	}
+	if !s.skuRunning.Load() && !hasOverride {
+		skuFastRecheckMu.Unlock()
+		return
+	}
+	if st.pending {
+		skuFastRecheckMu.Unlock()
+		return
+	}
+	st.pending = true
+	st.timer = time.AfterFunc(delay, func() {
+		skuFastRecheckMu.Lock()
+		st.pending = false
+		st.timer = nil
+		skuFastRecheckMu.Unlock()
+
+		if !s.skuRunning.Load() && !hasOverride {
+			return
+		}
+		ctx := s.getRootCtx()
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+		_, _ = s.checkSKUOnce(ctx, false, true)
+	})
+	skuFastRecheckMu.Unlock()
+}
+
+func (s *Service) cancelSKUFastRecheck() {
+	skuFastRecheckMu.Lock()
+	if st, ok := skuFastRecheckStates[s]; ok {
+		if st.timer != nil {
+			st.timer.Stop()
+			st.timer = nil
+		}
+		st.pending = false
+	}
+	skuFastRecheckMu.Unlock()
+}
+
+func (s *Service) ensureCatalogListedAtResolver() {
+	if s.catalog == nil {
+		return
+	}
+	s.catalog.SetListedAtResolver(s.ResolveSKUListedAt)
+}
+
+// ResolveSKUListedAt returns the recorded listedAt timestamp for a planCode if known.
+func (s *Service) ResolveSKUListedAt(planCode string) string {
+	pc := strings.TrimSpace(planCode)
+	if pc == "" {
+		return ""
+	}
+	skuFastRecheckMu.Lock()
+	st := skuFastRecheckStates[s]
+	if st != nil && len(st.listedAtByCode) > 0 {
+		if ts := st.listedAtByCode[strings.ToLower(pc)]; ts != "" {
+			skuFastRecheckMu.Unlock()
+			return ts
+		}
+		if base, _ := catalog.ParsePlanRegion(pc); base != "" {
+			if ts := st.listedAtByCode[strings.ToLower(base)]; ts != "" {
+				skuFastRecheckMu.Unlock()
+				return ts
+			}
+		}
+	}
+	skuFastRecheckMu.Unlock()
+	return ""
+}
+
+func (s *Service) updateCachedListedAtMap(skus map[string]TrackedSKU) {
+	m := make(map[string]string, len(skus)*2)
+	for _, entry := range skus {
+		if entry.ListedAt == "" {
+			continue
+		}
+		if entry.PlanCode != "" {
+			m[strings.ToLower(entry.PlanCode)] = entry.ListedAt
+			if base, _ := catalog.ParsePlanRegion(entry.PlanCode); base != "" {
+				m[strings.ToLower(base)] = entry.ListedAt
+			}
+		}
+		if entry.Key != "" {
+			m[strings.ToLower(entry.Key)] = entry.ListedAt
+		}
+		for _, pc := range entry.PlanCodes {
+			if pc != "" {
+				m[strings.ToLower(pc)] = entry.ListedAt
+			}
+		}
+	}
+	skuFastRecheckMu.Lock()
+	st, ok := skuFastRecheckStates[s]
+	if !ok {
+		st = &skuFastRecheckState{}
+		skuFastRecheckStates[s] = st
+	}
+	st.listedAtByCode = m
+	skuFastRecheckMu.Unlock()
+}
 
 // TrackedSKU captures the baseline state of a dedicated server SKU in the public catalog.
 type TrackedSKU struct {
 	Key            string   `json:"key"`
+	SKUKey         string   `json:"skuKey,omitempty"`
 	PlanCode       string   `json:"planCode"`
 	PlanCodes      []string `json:"planCodes,omitempty"`
 	Name           string   `json:"name"`
@@ -31,8 +196,11 @@ type TrackedSKU struct {
 	Price          *float64 `json:"price,omitempty"`
 	Currency       string   `json:"currency,omitempty"`
 	FirstSeen      string   `json:"firstSeen"`
+	FirstSeenAt    string   `json:"firstSeenAt,omitempty"`
 	Baseline       bool     `json:"baseline,omitempty"`
 	ListingState   string   `json:"listingState,omitempty"`
+	SaleStarted    bool     `json:"saleStarted,omitempty"`
+	ReplacedFrom   string   `json:"replacedFrom,omitempty"`
 	PresaleSince   string   `json:"presaleSince,omitempty"`
 	ListedAt       string   `json:"listedAt,omitempty"`
 	Generation     int      `json:"generation,omitempty"`
@@ -43,11 +211,16 @@ type TrackedSKU struct {
 	Configs        []string `json:"configs,omitempty"`
 }
 
-// SKUChangeRecord represents an added, removed, or hardware-config-modified SKU change event.
+// SKUSnapshotEntry aliases TrackedSKU.
+type SKUSnapshotEntry = TrackedSKU
+
+// SKUChangeRecord represents an added, removed, replaced, or hardware-config-modified SKU change event.
 type SKUChangeRecord struct {
 	ID             string   `json:"id"`
 	Type           string   `json:"type"`
 	ListingState   string   `json:"listingState,omitempty"`
+	SaleStarted    bool     `json:"saleStarted,omitempty"`
+	ReplacedFrom   string   `json:"replacedFrom,omitempty"`
 	Generation     int      `json:"generation,omitempty"`
 	SKUKey         string   `json:"skuKey"`
 	PlanCode       string   `json:"planCode"`
@@ -69,6 +242,9 @@ type SKUChangeRecord struct {
 	Removed        []string `json:"removed,omitempty"`
 }
 
+// SKUHistoryEntry aliases SKUChangeRecord.
+type SKUHistoryEntry = SKUChangeRecord
+
 // SKUWatcherStatus matches SkuWatcherStatus in NotificationCenterPage.tsx and OVHAvailabilityPage.tsx.
 type SKUWatcherStatus struct {
 	Running            bool                    `json:"running"`
@@ -85,21 +261,25 @@ type SKUWatcherStatus struct {
 	RecentChanges      []SKUChangeRecord       `json:"recentChanges"`
 	RecentFirstSeen    map[string]string       `json:"recentFirstSeen"`
 	PresaleSKUs        map[string]string       `json:"presaleSkus,omitempty"`
+	AnnouncedSKUs      map[string]string       `json:"announcedSkus,omitempty"`
 	Rules              store.NotificationRules `json:"rules"`
 }
 
 // SKUCheckResult summarizes the outcome of a single SKU Watcher execution cycle.
 type SKUCheckResult struct {
-	Status        string            `json:"status"`
-	Endpoint      string            `json:"endpoint"`
-	TotalSKUs     int               `json:"totalSkus"`
-	TrackedCount  int               `json:"trackedCount"`
-	AddedCount    int               `json:"addedCount"`
-	RemovedCount  int               `json:"removedCount"`
-	ConfigChanges int               `json:"configChanges"`
-	Added         []SKUChangeRecord `json:"added"`
-	Removed       []SKUChangeRecord `json:"removed"`
-	Changes       []SKUChangeRecord `json:"changes,omitempty"`
+	Status           string            `json:"status"`
+	Endpoint         string            `json:"endpoint"`
+	TotalSKUs        int               `json:"totalSkus"`
+	TrackedCount     int               `json:"trackedCount"`
+	AddedCount       int               `json:"addedCount"`
+	RemovedCount     int               `json:"removedCount"`
+	ReplacedCount    int               `json:"replacedCount,omitempty"`
+	SaleStartedCount int               `json:"saleStartedCount,omitempty"`
+	ConfigChanges    int               `json:"configChanges"`
+	Added            []SKUChangeRecord `json:"added"`
+	Removed          []SKUChangeRecord `json:"removed"`
+	Replaced         []SKUChangeRecord `json:"replaced,omitempty"`
+	Changes          []SKUChangeRecord `json:"changes,omitempty"`
 }
 
 type skuAvailSummary struct {
@@ -111,6 +291,8 @@ type skuAvailSummary struct {
 
 // StartSKUWatcher runs the periodic Public SKU Watcher loop using configured NotificationRules.
 func (s *Service) StartSKUWatcher(ctx context.Context) {
+	s.ensureCatalogListedAtResolver()
+
 	s.skuMu.Lock()
 	defer s.skuMu.Unlock()
 
@@ -148,8 +330,9 @@ func (s *Service) StartSKUWatcher(ctx context.Context) {
 	}()
 }
 
-// StopSKUWatcher stops the SKU Watcher loop.
+// StopSKUWatcher stops the SKU Watcher loop and cancels any pending fast recheck timer.
 func (s *Service) StopSKUWatcher() {
+	s.cancelSKUFastRecheck()
 	s.skuMu.Lock()
 	defer s.skuMu.Unlock()
 	if s.skuCancel != nil {
@@ -169,16 +352,38 @@ func (s *Service) setSKUError(err error) {
 	}
 }
 
-// CheckSKUOnce inspects OVH public catalogs and detects newly added, removed, or reconfigured SKUs.
+func (s *Service) loadAndMigrateSKUSettings(ctx context.Context) (*store.NotificationSettings, error) {
+	if s.store == nil {
+		return nil, errors.New("sku watcher store is unavailable")
+	}
+	settings, err := s.store.GetNotificationSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if settings != nil && (settings.Rules.SKUInterval == legacySKUIntervalSec || settings.Rules.SKUInterval < minSKUIntervalSec) {
+		settings.Rules.SKUInterval = defaultSKUIntervalSec
+		if saved, saveErr := s.store.SaveNotificationSettings(ctx, *settings); saveErr == nil && saved != nil {
+			settings = saved
+		}
+	}
+	return settings, nil
+}
+
+// CheckSKUOnce inspects OVH public catalogs and detects newly added, removed, replaced, or reconfigured SKUs.
 func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResult, error) {
+	return s.checkSKUOnce(ctx, manual, false)
+}
+
+func (s *Service) checkSKUOnce(ctx context.Context, manual, fastRecheck bool) (*SKUCheckResult, error) {
 	if s.store == nil || s.catalog == nil {
 		return nil, errors.New("sku watcher store or catalog service is unavailable")
 	}
+	s.ensureCatalogListedAtResolver()
 
 	s.skuCheckMu.Lock()
 	defer s.skuCheckMu.Unlock()
 
-	settings, err := s.store.GetNotificationSettings(ctx)
+	settings, err := s.loadAndMigrateSKUSettings(ctx)
 	if err != nil {
 		s.setSKUError(err)
 		return nil, err
@@ -198,10 +403,10 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 	}
 
 	intervalSec := rules.SKUInterval
-	if intervalSec < 60 {
-		intervalSec = 60
+	if intervalSec < minSKUIntervalSec {
+		intervalSec = defaultSKUIntervalSec
 	}
-	if !manual && !s.skuLastRun.IsZero() && time.Since(s.skuLastRun) < time.Duration(intervalSec)*time.Second {
+	if !manual && !fastRecheck && !s.skuLastRun.IsZero() && time.Since(s.skuLastRun) < time.Duration(intervalSec)*time.Second {
 		return &SKUCheckResult{
 			Status:  "cooldown",
 			Added:   []SKUChangeRecord{},
@@ -210,8 +415,8 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 	}
 
 	ep, zn := s.resolveEndpointAndZone(ctx, "")
-	dict, err := s.catalog.GetDictionary(ctx, ep, zn, true)
-	if err != nil || dict == nil || len(dict.Plans) == 0 {
+	dict, err := s.catalog.GetBaremetalDictionary(ctx, ep, zn, true)
+	if err != nil || dict == nil || (len(dict.RealPlans) == 0 && len(dict.Plans) == 0) {
 		if err != nil {
 			s.setSKUError(err)
 			return nil, fmt.Errorf("fetch public catalog dictionary: %w", err)
@@ -255,6 +460,10 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 	var history []SKUChangeRecord
 	_ = json.Unmarshal(state.ChangesJSON, &history)
 
+	if len(prevSKUs) > 0 && len(dict.RealPlans) > 0 {
+		pruneAndMigratePrevSKUs(prevSKUs, missingCounts, currSKUs, dict, availItems, rules)
+	}
+
 	nowUTC := time.Now().UTC().Format(time.RFC3339Nano)
 	s.skuLastRun = time.Now()
 	s.setSKUError(nil)
@@ -268,11 +477,15 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 			if entry.ListingState == "presale" {
 				entry.PresaleSince = nowUTC
 			} else {
-				entry.ListingState = "listed"
 				entry.PresaleSince = ""
+				if entry.ListingState != "announced" {
+					entry.ListingState = "listed"
+				}
 			}
 			currSKUs[k] = entry
 		}
+		s.cancelSKUFastRecheck()
+		s.updateCachedListedAtMap(currSKUs)
 		if err := s.saveSKUState(ctx, true, ep, currSKUs, map[string]int{}, history); err != nil {
 			s.setSKUError(err)
 			return nil, err
@@ -317,10 +530,11 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 	}
 
 	nextSKUs := make(map[string]TrackedSKU, len(currSKUs)+missingFromCurr)
-	newChanges := make([]SKUChangeRecord, 0)
 	addedRecords := make([]SKUChangeRecord, 0)
+	saleStartedRecords := make([]SKUChangeRecord, 0)
+	replacedRecords := make([]SKUChangeRecord, 0)
 	removedRecords := make([]SKUChangeRecord, 0)
-	configChangesCount := 0
+	configRecords := make([]SKUChangeRecord, 0)
 
 	for k, curr := range currSKUs {
 		delete(missingCounts, k)
@@ -330,11 +544,16 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 			curr.Baseline = false
 			curr.FirstSeen = nowUTC
 			details := fmt.Sprintf("New SKU detected: %s (%s)", curr.Name, curr.PlanCode)
-			if curr.ListingState == "presale" {
+			switch curr.ListingState {
+			case "presale":
 				curr.PresaleSince = nowUTC
 				curr.ListedAt = ""
 				details = fmt.Sprintf("New presale SKU detected: %s (%s)", curr.Name, curr.PlanCode)
-			} else {
+			case "announced":
+				curr.PresaleSince = ""
+				curr.ListedAt = ""
+				details = fmt.Sprintf("New announced SKU detected: %s (%s)", curr.Name, curr.PlanCode)
+			default:
 				curr.ListingState = "listed"
 				curr.ListedAt = nowUTC
 			}
@@ -360,7 +579,6 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 				Details:        details,
 			}
 			addedRecords = append(addedRecords, rec)
-			newChanges = append(newChanges, rec)
 			continue
 		}
 
@@ -372,8 +590,39 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 		}
 		curr.PresaleSince = prev.PresaleSince
 		curr.ListedAt = prev.ListedAt
+		curr.SaleStarted = prev.SaleStarted
+		curr.ReplacedFrom = prev.ReplacedFrom
 
-		if prev.ListingState == "presale" && curr.ListingState == "listed" {
+		if prev.ListingState == "announced" && curr.ListingState == "listed" {
+			curr.Baseline = false
+			curr.ListingState = "listed"
+			curr.ListedAt = nowUTC
+			curr.SaleStarted = true
+			rec := SKUChangeRecord{
+				ID:             newShortID(),
+				Type:           "added",
+				ListingState:   "listed",
+				SaleStarted:    true,
+				Generation:     curr.Generation,
+				SKUKey:         skuKey,
+				PlanCode:       curr.PlanCode,
+				PlanCodes:      append([]string(nil), curr.PlanCodes...),
+				Name:           curr.Name,
+				Range:          curr.Range,
+				Endpoint:       ep,
+				Timestamp:      nowUTC,
+				Price:          curr.Price,
+				Currency:       curr.Currency,
+				CPUText:        curr.CPUText,
+				MemorySummary:  curr.MemorySummary,
+				StorageSummary: curr.StorageSummary,
+				StockState:     curr.StockState,
+				Details:        fmt.Sprintf("Announced SKU sale started: %s (%s)", curr.Name, curr.PlanCode),
+			}
+			saleStartedRecords = append(saleStartedRecords, rec)
+		} else if prev.ListingState == "presale" && curr.ListingState == "listed" {
+			curr.Baseline = false
+			curr.ListingState = "listed"
 			curr.ListedAt = nowUTC
 			curr.PresaleSince = nonEmpty(prev.PresaleSince, prev.FirstSeen)
 			rec := SKUChangeRecord{
@@ -397,9 +646,13 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 				Details:        fmt.Sprintf("Presale SKU officially listed: %s (%s)", curr.Name, curr.PlanCode),
 			}
 			addedRecords = append(addedRecords, rec)
-			newChanges = append(newChanges, rec)
 		} else if curr.ListingState == "presale" && curr.PresaleSince == "" {
 			curr.PresaleSince = nonEmpty(prev.PresaleSince, curr.FirstSeen)
+		} else if prev.ListingState == "listed" && curr.ListingState == "announced" {
+			// Legacy baseline entries lacked "announced"; allow baseline entries without ListedAt to settle into "announced" silently.
+			if !prev.Baseline && prev.ListedAt != "" && len(prev.Configs) > 0 {
+				curr.ListingState = "listed"
+			}
 		}
 
 		if rules.SKUTrackConfigs && len(prev.Configs) > 0 && len(curr.Configs) > 0 {
@@ -409,7 +662,6 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 				removedCfgs = nil
 			}
 			if len(addedCfgs) > 0 || len(removedCfgs) > 0 {
-				configChangesCount++
 				var detailParts []string
 				if len(addedCfgs) > 0 {
 					detailParts = append(detailParts, "+"+strings.Join(addedCfgs, ", "))
@@ -417,9 +669,10 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 				if len(removedCfgs) > 0 {
 					detailParts = append(detailParts, "-"+strings.Join(removedCfgs, ", "))
 				}
-				newChanges = append(newChanges, SKUChangeRecord{
+				configRecords = append(configRecords, SKUChangeRecord{
 					ID:             newShortID(),
 					Type:           "config_changed",
+					ListingState:   curr.ListingState,
 					SKUKey:         skuKey,
 					PlanCode:       curr.PlanCode,
 					PlanCodes:      append([]string(nil), curr.PlanCodes...),
@@ -438,7 +691,7 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 					Details:        fmt.Sprintf("Updated configs for %s: %s", curr.PlanCode, strings.Join(detailParts, " | ")),
 				})
 			}
-		} else if len(curr.Configs) == 0 && len(prev.Configs) > 0 {
+		} else if len(curr.Configs) == 0 && len(prev.Configs) > 0 && curr.ListingState != "announced" {
 			curr.Configs = prev.Configs
 			if curr.MemorySummary == "" {
 				curr.MemorySummary = prev.MemorySummary
@@ -454,17 +707,70 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 		nextSKUs[k] = curr
 	}
 
-	// Anti-false-positive Rule 3: removal requires 2 consecutive missing checks.
+	// Process missing SKUs:
+	// 1. If a missing SKU matches a newly-added SKU's product line (Name + CPUText/Range) in the same cycle,
+	//    pair them into a single "replaced" record (e.g. 24sys022 -> 24sys02-v3).
+	// 2. Otherwise, require 2 consecutive missing checks (scheduling a fast 20s recheck on MissCount == 1).
 	for k, prev := range prevSKUs {
 		if _, present := currSKUs[k]; present {
 			continue
 		}
+
+		matchedAddedIdx := -1
+		for idx, addedRec := range addedRecords {
+			if addedRec.SaleStarted {
+				continue
+			}
+			if isReplacedProductLineMatch(addedRec, prev) {
+				matchedAddedIdx = idx
+				break
+			}
+		}
+
+		if matchedAddedIdx >= 0 {
+			delete(missingCounts, k)
+			addedRec := addedRecords[matchedAddedIdx]
+			addedRecords = append(addedRecords[:matchedAddedIdx], addedRecords[matchedAddedIdx+1:]...)
+
+			addedKey := strings.ToLower(nonEmpty(addedRec.SKUKey, addedRec.PlanCode))
+			if tracked, ok := nextSKUs[addedKey]; ok {
+				tracked.ReplacedFrom = prev.PlanCode
+				nextSKUs[addedKey] = tracked
+			}
+
+			repRec := SKUChangeRecord{
+				ID:             newShortID(),
+				Type:           "replaced",
+				ListingState:   addedRec.ListingState,
+				ReplacedFrom:   prev.PlanCode,
+				Generation:     addedRec.Generation,
+				SKUKey:         addedRec.SKUKey,
+				PlanCode:       addedRec.PlanCode,
+				PlanCodes:      addedRec.PlanCodes,
+				Name:           addedRec.Name,
+				Range:          nonEmpty(addedRec.Range, prev.Range),
+				Endpoint:       ep,
+				Timestamp:      nowUTC,
+				Price:          addedRec.Price,
+				Currency:       addedRec.Currency,
+				CPUText:        nonEmpty(addedRec.CPUText, prev.CPUText),
+				MemorySummary:  addedRec.MemorySummary,
+				StorageSummary: addedRec.StorageSummary,
+				StockState:     addedRec.StockState,
+				Details:        fmt.Sprintf("SKU planCode updated: %s (%s -> %s)", addedRec.Name, prev.PlanCode, addedRec.PlanCode),
+			}
+			replacedRecords = append(replacedRecords, repRec)
+			continue
+		}
+
 		missingCounts[k]++
 		if missingCounts[k] >= 2 {
 			delete(missingCounts, k)
 			rec := SKUChangeRecord{
 				ID:             newShortID(),
 				Type:           "removed",
+				ListingState:   prev.ListingState,
+				Generation:     prev.Generation,
 				SKUKey:         nonEmpty(prev.Key, prev.PlanCode),
 				PlanCode:       prev.PlanCode,
 				PlanCodes:      append([]string(nil), prev.PlanCodes...),
@@ -481,12 +787,28 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 				Details:        fmt.Sprintf("SKU removed from catalog: %s (%s)", prev.Name, prev.PlanCode),
 			}
 			removedRecords = append(removedRecords, rec)
-			newChanges = append(newChanges, rec)
 		} else {
-			// Retain until confirmed missing a second consecutive cycle.
+			// Retain until confirmed missing on the 20s fast recheck (or next cycle).
 			nextSKUs[k] = prev
 		}
 	}
+
+	if len(missingCounts) > 0 {
+		s.scheduleSKUFastRecheck()
+	} else {
+		s.cancelSKUFastRecheck()
+	}
+
+	allAddedRecords := make([]SKUChangeRecord, 0, len(addedRecords)+len(saleStartedRecords))
+	allAddedRecords = append(allAddedRecords, addedRecords...)
+	allAddedRecords = append(allAddedRecords, saleStartedRecords...)
+
+	newChanges := make([]SKUChangeRecord, 0, len(allAddedRecords)+len(replacedRecords)+len(removedRecords)+len(configRecords))
+	newChanges = append(newChanges, addedRecords...)
+	newChanges = append(newChanges, saleStartedRecords...)
+	newChanges = append(newChanges, replacedRecords...)
+	newChanges = append(newChanges, removedRecords...)
+	newChanges = append(newChanges, configRecords...)
 
 	if len(newChanges) > 0 {
 		combined := make([]SKUChangeRecord, 0, min(skuMaxChanges, len(newChanges)+len(history)))
@@ -498,52 +820,358 @@ func (s *Service) CheckSKUOnce(ctx context.Context, manual bool) (*SKUCheckResul
 		history = combined
 	}
 
+	s.updateCachedListedAtMap(nextSKUs)
 	if err := s.saveSKUState(ctx, true, ep, nextSKUs, missingCounts, history); err != nil {
 		s.setSKUError(err)
 		return nil, err
 	}
 
+	configChangesCount := len(configRecords)
 	if len(newChanges) > 0 {
 		if s.log != nil {
 			s.log.Info(logger.SourceSKUWatcher, "Detected public catalog SKU changes",
 				"endpoint", ep,
 				"added", len(addedRecords),
+				"saleStarted", len(saleStartedRecords),
+				"replaced", len(replacedRecords),
 				"removed", len(removedRecords),
 				"configChanges", configChangesCount,
 			)
 		}
 		if s.notify != nil {
-			var lines []string
-			for i, ch := range newChanges {
-				if i >= 12 {
-					lines = append(lines, fmt.Sprintf("...and %d more changes", len(newChanges)-12))
-					break
-				}
-				lines = append(lines, "- "+ch.Details)
-			}
+			detailsText := FormatSKUChangesNotification(newChanges, locale)
 			_ = s.notify.EmitEvent(ctx, notify.EventSKUChanged, "", "", nil, notify.WithTemplateData(map[string]any{
-				"preferTemplate": true,
-				"endpoint":       ep,
-				"addedCount":     len(addedRecords),
-				"removedCount":   len(removedRecords),
-				"changedCount":   configChangesCount,
-				"details":        strings.Join(lines, "\n"),
+				"preferTemplate":   true,
+				"endpoint":         ep,
+				"addedCount":       len(allAddedRecords),
+				"newCount":         len(addedRecords),
+				"saleStartedCount": len(saleStartedRecords),
+				"replacedCount":    len(replacedRecords),
+				"removedCount":     len(removedRecords),
+				"changedCount":     configChangesCount,
+				"details":          detailsText,
 			}))
 		}
 	}
 
 	return &SKUCheckResult{
-		Status:        "ok",
-		Endpoint:      ep,
-		TotalSKUs:     len(nextSKUs),
-		TrackedCount:  len(nextSKUs),
-		AddedCount:    len(addedRecords),
-		RemovedCount:  len(removedRecords),
-		ConfigChanges: configChangesCount,
-		Added:         addedRecords,
-		Removed:       removedRecords,
-		Changes:       newChanges,
+		Status:           "ok",
+		Endpoint:         ep,
+		TotalSKUs:        len(nextSKUs),
+		TrackedCount:     len(nextSKUs),
+		AddedCount:       len(allAddedRecords),
+		RemovedCount:     len(removedRecords),
+		ReplacedCount:    len(replacedRecords),
+		SaleStartedCount: len(saleStartedRecords),
+		ConfigChanges:    configChangesCount,
+		Added:            allAddedRecords,
+		Removed:          removedRecords,
+		Replaced:         replacedRecords,
+		Changes:          newChanges,
 	}, nil
+}
+
+// FormatSKUChangesNotification formats SKU change records grouped by section
+// (🆕 New, 🚀 Sale Started, 🔄 Replaced (planCode updated), ➖ Discontinued)
+// and grouped under each item's product line (Name | CPUText).
+func FormatSKUChangesNotification(changes []SKUChangeRecord, locale string) string {
+	var (
+		newItems         []SKUChangeRecord
+		saleStartedItems []SKUChangeRecord
+		replacedItems    []SKUChangeRecord
+		removedItems     []SKUChangeRecord
+		configItems      []SKUChangeRecord
+	)
+	for _, ch := range changes {
+		switch ch.Type {
+		case "added":
+			if ch.SaleStarted {
+				saleStartedItems = append(saleStartedItems, ch)
+			} else {
+				newItems = append(newItems, ch)
+			}
+		case "replaced":
+			replacedItems = append(replacedItems, ch)
+		case "removed":
+			removedItems = append(removedItems, ch)
+		case "config_changed":
+			configItems = append(configItems, ch)
+		}
+	}
+
+	type sectionSpec struct {
+		header string
+		items  []SKUChangeRecord
+		format func(SKUChangeRecord) string
+	}
+
+	priceSuffix := func(ch SKUChangeRecord) string {
+		if ch.Price == nil || *ch.Price <= 0 {
+			return ""
+		}
+		curr := nonEmpty(ch.Currency, "EUR")
+		return fmt.Sprintf(" (%.2f %s)", *ch.Price, curr)
+	}
+
+	loc := notify.NormalizeLocale(locale)
+	hdrNew := "🆕 New"
+	hdrSale := "🚀 Sale Started"
+	hdrReplaced := "🔄 Replaced (planCode updated)"
+	hdrRemoved := "➖ Discontinued"
+	hdrConfig := "⚙️ Configurations Updated"
+	switch loc {
+	case notify.LocaleZHCN:
+		hdrNew = "🆕 新增 (New)"
+		hdrSale = "🚀 开售 (Sale Started)"
+		hdrReplaced = "🔄 换代 (Replaced: planCode updated)"
+		hdrRemoved = "➖ 下架 (Discontinued)"
+		hdrConfig = "⚙️ 配置更新 (Config Updated)"
+	case notify.LocaleFR:
+		hdrNew = "🆕 Nouveau (New)"
+		hdrSale = "🚀 Ouverture des ventes (Sale Started)"
+		hdrReplaced = "🔄 Remplacé (Replaced: planCode updated)"
+		hdrRemoved = "➖ Retiré (Discontinued)"
+		hdrConfig = "⚙️ Configurations mises à jour"
+	}
+
+	sections := []sectionSpec{
+		{
+			header: hdrNew,
+			items:  newItems,
+			format: func(ch SKUChangeRecord) string {
+				stateTag := ""
+				if ch.ListingState == "announced" || ch.ListingState == "presale" {
+					stateTag = fmt.Sprintf(" [%s]", ch.ListingState)
+				}
+				return fmt.Sprintf("  • %s%s%s", ch.PlanCode, stateTag, priceSuffix(ch))
+			},
+		},
+		{
+			header: hdrSale,
+			items:  saleStartedItems,
+			format: func(ch SKUChangeRecord) string {
+				return fmt.Sprintf("  • %s%s", ch.PlanCode, priceSuffix(ch))
+			},
+		},
+		{
+			header: hdrReplaced,
+			items:  replacedItems,
+			format: func(ch SKUChangeRecord) string {
+				return fmt.Sprintf("  • %s → %s%s", ch.ReplacedFrom, ch.PlanCode, priceSuffix(ch))
+			},
+		},
+		{
+			header: hdrRemoved,
+			items:  removedItems,
+			format: func(ch SKUChangeRecord) string {
+				return fmt.Sprintf("  • %s%s", ch.PlanCode, priceSuffix(ch))
+			},
+		},
+		{
+			header: hdrConfig,
+			items:  configItems,
+			format: func(ch SKUChangeRecord) string {
+				return fmt.Sprintf("  • %s", nonEmpty(ch.Details, ch.PlanCode))
+			},
+		},
+	}
+
+	var blocks []string
+	for _, sec := range sections {
+		if len(sec.items) == 0 {
+			continue
+		}
+		var sb strings.Builder
+		sb.WriteString(sec.header)
+
+		var lineOrder []string
+		grouped := make(map[string][]SKUChangeRecord)
+		for _, item := range sec.items {
+			pl := formatProductLineHeader(item.Name, item.CPUText, item.PlanCode)
+			if _, exists := grouped[pl]; !exists {
+				lineOrder = append(lineOrder, pl)
+			}
+			grouped[pl] = append(grouped[pl], item)
+		}
+		for _, pl := range lineOrder {
+			sb.WriteString("\n")
+			sb.WriteString(pl)
+			for _, item := range grouped[pl] {
+				sb.WriteString("\n")
+				sb.WriteString(sec.format(item))
+			}
+		}
+		blocks = append(blocks, sb.String())
+	}
+
+	return strings.Join(blocks, "\n\n")
+}
+
+func formatProductLineHeader(name, cpuText, fallbackCode string) string {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		n = fallbackCode
+	}
+	cpu := strings.TrimSpace(cpuText)
+	if cpu != "" && cpu != "-" && !strings.Contains(n, "|") {
+		return fmt.Sprintf("%s | %s", n, cpu)
+	}
+	return n
+}
+
+func normalizeProductLineName(name string) string {
+	n := strings.TrimSpace(name)
+	if idx := strings.Index(n, "|"); idx >= 0 {
+		n = strings.TrimSpace(n[:idx])
+	}
+	return strings.ToUpper(n)
+}
+
+func normalizeCPUTextForMatch(cpu string) string {
+	c := strings.TrimSpace(cpu)
+	if idx := strings.Index(c, "·"); idx >= 0 {
+		c = strings.TrimSpace(c[:idx])
+	}
+	return strings.ToUpper(strings.Join(strings.Fields(c), " "))
+}
+
+func isReplacedProductLineMatch(added SKUChangeRecord, removed TrackedSKU) bool {
+	if strings.EqualFold(added.PlanCode, removed.PlanCode) {
+		return false
+	}
+	addName := normalizeProductLineName(added.Name)
+	remName := normalizeProductLineName(removed.Name)
+	if addName == "" || remName == "" || addName != remName {
+		return false
+	}
+	if added.Range != "" && removed.Range != "" && !strings.EqualFold(added.Range, removed.Range) {
+		return false
+	}
+	addCPU := normalizeCPUTextForMatch(added.CPUText)
+	remCPU := normalizeCPUTextForMatch(removed.CPUText)
+	if addCPU != "" && remCPU != "" && addCPU != remCPU {
+		return false
+	}
+	return true
+}
+
+func pruneAndMigratePrevSKUs(
+	prevSKUs map[string]TrackedSKU,
+	missingCounts map[string]int,
+	currSKUs map[string]TrackedSKU,
+	dict *catalog.CatalogDictionary,
+	availItems []catalog.RawAvailabilityItem,
+	rules store.NotificationRules,
+) {
+	if dict == nil || len(dict.RealPlans) == 0 {
+		return
+	}
+	availCodes := make(map[string]bool, len(availItems))
+	for _, it := range availItems {
+		pc := strings.ToLower(strings.TrimSpace(it.PlanCode))
+		if pc != "" {
+			availCodes[pc] = true
+			if base, _ := catalog.ParsePlanRegion(pc); base != "" {
+				availCodes[strings.ToLower(base)] = true
+			}
+		}
+	}
+
+	realLower := make(map[string]string, len(dict.RealPlans)*2)
+	strippedVerToRealKey := make(map[string]string, len(dict.RealPlans))
+	for pc := range dict.RealPlans {
+		low := strings.ToLower(pc)
+		realLower[low] = pc
+		base, _ := catalog.ParsePlanRegion(pc)
+		lowBase := strings.ToLower(base)
+		realLower[lowBase] = base
+		noVer := strings.ToLower(catalog.StripPlanVersion(pc))
+		if noVer != "" && noVer != lowBase {
+			targetKey := low
+			if rules.SKUMergeRegional && lowBase != "" {
+				targetKey = lowBase
+			}
+			strippedVerToRealKey[noVer] = targetKey
+		}
+	}
+
+	type migration struct {
+		oldKey string
+		newKey string
+		entry  TrackedSKU
+	}
+	var migrations []migration
+	var toDelete []string
+
+	for k, prev := range prevSKUs {
+		if _, inCurr := currSKUs[k]; inCurr {
+			continue
+		}
+		lowKey := strings.ToLower(strings.TrimSpace(k))
+		lowPC := strings.ToLower(strings.TrimSpace(prev.PlanCode))
+
+		// 1. Check if prev's PlanCodes contain an exact real planCode now keyed under its full versioned name in currSKUs.
+		migratedViaPlanCodes := false
+		for _, pc := range prev.PlanCodes {
+			candKey := strings.ToLower(strings.TrimSpace(pc))
+			if rules.SKUMergeRegional {
+				if b, _ := catalog.ParsePlanRegion(pc); b != "" {
+					candKey = strings.ToLower(b)
+				}
+			}
+			if candKey != "" && candKey != k {
+				if currEntry, ok := currSKUs[candKey]; ok {
+					cp := prev
+					cp.Key = candKey
+					cp.PlanCode = currEntry.PlanCode
+					migrations = append(migrations, migration{oldKey: k, newKey: candKey, entry: cp})
+					migratedViaPlanCodes = true
+					break
+				}
+			}
+		}
+		if migratedViaPlanCodes {
+			continue
+		}
+
+		// 2. If neither in RealPlans nor in availCodes, check if it is an alias (in dict.Plans, port alias like -1g, or stripped -vN prefix).
+		inReal := realLower[lowKey] != "" || realLower[lowPC] != ""
+		inAvail := availCodes[lowKey] || availCodes[lowPC]
+		if !inReal && !inAvail {
+			_, inDictPlansKey := dict.Plans[k]
+			_, inDictPlansPC := dict.Plans[prev.PlanCode]
+			_, inDictPlansLow := dict.Plans[lowKey]
+			targetRealKey := strippedVerToRealKey[lowKey]
+			if targetRealKey == "" {
+				targetRealKey = strippedVerToRealKey[lowPC]
+			}
+			isPortAlias := reAliasPortSuffix.MatchString(lowKey) || reAliasPortSuffix.MatchString(lowPC)
+			if inDictPlansKey || inDictPlansPC || inDictPlansLow || targetRealKey != "" || isPortAlias {
+				if targetRealKey != "" {
+					if currEntry, ok := currSKUs[targetRealKey]; ok {
+						cp := prev
+						cp.Key = targetRealKey
+						cp.PlanCode = currEntry.PlanCode
+						migrations = append(migrations, migration{oldKey: k, newKey: targetRealKey, entry: cp})
+						continue
+					}
+				}
+				toDelete = append(toDelete, k)
+			}
+		}
+	}
+
+	for _, m := range migrations {
+		delete(prevSKUs, m.oldKey)
+		delete(missingCounts, m.oldKey)
+		if _, exists := prevSKUs[m.newKey]; !exists {
+			prevSKUs[m.newKey] = m.entry
+		}
+	}
+	for _, k := range toDelete {
+		delete(prevSKUs, k)
+		delete(missingCounts, k)
+	}
 }
 
 func (s *Service) saveSKUState(
@@ -587,8 +1215,26 @@ func collectCatalogSKUs(
 		}
 	}
 
+	availCodes := make(map[string]bool, len(availItems))
+	availBaseCodes := make(map[string]bool, len(availItems))
+	for _, it := range availItems {
+		pc := strings.TrimSpace(it.PlanCode)
+		if pc == "" || catalog.IsNonServerAddonCode(pc) {
+			continue
+		}
+		availCodes[strings.ToLower(pc)] = true
+		if base, _ := catalog.ParsePlanRegion(pc); base != "" {
+			availBaseCodes[strings.ToLower(base)] = true
+		}
+	}
+
+	sourcePlans := dict.RealPlans
+	if len(sourcePlans) == 0 {
+		sourcePlans = dict.Plans
+	}
+
 	out := make(map[string]TrackedSKU)
-	for planCode, entry := range dict.Plans {
+	for planCode, entry := range sourcePlans {
 		if strings.EqualFold(entry.CatalogSource, "vps") {
 			continue
 		}
@@ -628,6 +1274,12 @@ func collectCatalogSKUs(
 			stockState = sum.stockState
 		}
 
+		hasAvail := availCodes[strings.ToLower(planCode)] || (rules.SKUMergeRegional && availBaseCodes[strings.ToLower(displayCode)])
+		listingState := "announced"
+		if hasAvail {
+			listingState = "listed"
+		}
+
 		existing, ok := out[key]
 		if !ok {
 			out[key] = TrackedSKU{
@@ -638,7 +1290,7 @@ func collectCatalogSKUs(
 				Range:          rng,
 				Price:          entry.Price,
 				Currency:       nonEmpty(entry.Currency, dict.Currency),
-				ListingState:   "listed",
+				ListingState:   listingState,
 				Generation:     catalog.InferPlanGeneration(displayCode),
 				CPUText:        cpuText,
 				MemorySummary:  memSum,
@@ -649,7 +1301,11 @@ func collectCatalogSKUs(
 			continue
 		}
 
-		existing.ListingState = "listed"
+		if existing.ListingState == "listed" || listingState == "listed" {
+			existing.ListingState = "listed"
+		} else {
+			existing.ListingState = "announced"
+		}
 		if existing.Generation == 0 {
 			existing.Generation = catalog.InferPlanGeneration(displayCode)
 		}
@@ -687,7 +1343,7 @@ func collectCatalogSKUs(
 		out[key] = existing
 	}
 
-	// Include availability-only SKUs not yet present in the public catalog as presale SKUs.
+	// Include availability-only SKUs not yet present in dict.RealPlans as presale SKUs.
 	for _, it := range availItems {
 		planCode := strings.TrimSpace(it.PlanCode)
 		if planCode == "" || catalog.IsNonServerAddonCode(planCode) {
@@ -778,24 +1434,60 @@ func collectCatalogSKUs(
 	return out
 }
 
-// normalizeLoadedSKUs applies a one-time migration guard for legacy v1.3.0 baseline snapshots
-// where Initialized == true and all entries lack Baseline/ListedAt and share the exact same FirstSeen timestamp.
+// normalizeLoadedSKUs applies migration guards for legacy snapshots and backfills ListedAt
+// for non-baseline SKUs whose FirstSeen differs from the baseline timestamp.
 func normalizeLoadedSKUs(skus map[string]TrackedSKU, initialized bool) {
 	if len(skus) == 0 {
 		return
 	}
+
+	// Normalize legacy field aliases (skuKey -> Key, firstSeenAt -> FirstSeen) first.
+	for k, entry := range skus {
+		if entry.Key == "" {
+			entry.Key = nonEmpty(entry.SKUKey, k)
+		}
+		entry.SKUKey = ""
+		if entry.FirstSeen == "" && entry.FirstSeenAt != "" {
+			entry.FirstSeen = entry.FirstSeenAt
+		}
+		entry.FirstSeenAt = ""
+		if entry.PlanCode == "" {
+			if len(entry.PlanCodes) > 0 && entry.PlanCodes[0] != "" {
+				entry.PlanCode = entry.PlanCodes[0]
+			} else {
+				entry.PlanCode = entry.Key
+			}
+		}
+		skus[k] = entry
+	}
+
 	allUnmigratedSameTS := initialized
 	var sharedFirstSeen string
+	tsCounts := make(map[string]int)
+	var baselineTS string
 	for _, entry := range skus {
+		if entry.FirstSeen != "" {
+			tsCounts[entry.FirstSeen]++
+		}
+		if entry.Baseline && entry.FirstSeen != "" && baselineTS == "" {
+			baselineTS = entry.FirstSeen
+		}
 		if entry.Baseline || entry.ListedAt != "" || entry.PresaleSince != "" || entry.FirstSeen == "" {
 			allUnmigratedSameTS = false
-			break
 		}
 		if sharedFirstSeen == "" {
 			sharedFirstSeen = entry.FirstSeen
 		} else if entry.FirstSeen != sharedFirstSeen {
 			allUnmigratedSameTS = false
-			break
+		}
+	}
+	if baselineTS == "" && len(skus) >= 3 {
+		maxCnt := 0
+		for ts, cnt := range tsCounts {
+			if cnt > maxCnt && cnt >= 2 {
+				maxCnt = cnt
+				baselineTS = ts
+			}
 		}
 	}
 
@@ -806,6 +1498,12 @@ func normalizeLoadedSKUs(skus map[string]TrackedSKU, initialized bool) {
 		}
 		if entry.ListingState == "" {
 			entry.ListingState = "listed"
+		}
+		if entry.ListingState == "listed" && entry.ListedAt == "" && entry.FirstSeen != "" {
+			if !entry.Baseline || (baselineTS != "" && entry.FirstSeen != baselineTS) {
+				entry.Baseline = false
+				entry.ListedAt = entry.FirstSeen
+			}
 		}
 		if entry.Generation == 0 {
 			entry.Generation = catalog.InferPlanGeneration(entry.PlanCode)
@@ -936,11 +1634,12 @@ func (s *Service) GetSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStatus
 }
 
 func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStatus, []SKUChangeRecord, error) {
+	s.ensureCatalogListedAtResolver()
 	state, err := s.store.LoadSKUWatcherState(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	settings, _ := s.store.GetNotificationSettings(ctx)
+	settings, _ := s.loadAndMigrateSKUSettings(ctx)
 	var rules store.NotificationRules
 	if settings != nil {
 		rules = settings.Rules
@@ -949,6 +1648,7 @@ func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStat
 	skus := make(map[string]TrackedSKU)
 	_ = json.Unmarshal(state.SKUsJSON, &skus)
 	normalizeLoadedSKUs(skus, state.Initialized)
+	s.updateCachedListedAtMap(skus)
 	var changes []SKUChangeRecord
 	_ = json.Unmarshal(state.ChangesJSON, &changes)
 	if changes == nil {
@@ -981,19 +1681,27 @@ func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStat
 	cutoff := time.Now().Add(-7 * 24 * time.Hour)
 	recentFirstSeen := make(map[string]string)
 	presaleSKUs := make(map[string]string)
+	announcedSKUs := make(map[string]string)
 	for _, entry := range skus {
 		if entry.ListingState == "presale" {
 			recordPlanCodeTimestamp(presaleSKUs, entry, nonEmpty(entry.PresaleSince, entry.FirstSeen))
 			continue
 		}
-		if entry.ListedAt == "" {
+		if entry.ListingState == "announced" {
+			recordPlanCodeTimestamp(announcedSKUs, entry, entry.FirstSeen)
+		}
+		listedTS := entry.ListedAt
+		if listedTS == "" && !entry.Baseline && entry.FirstSeen != "" {
+			listedTS = entry.FirstSeen
+		}
+		if listedTS == "" {
 			continue
 		}
-		ts, parseErr := time.Parse(time.RFC3339Nano, entry.ListedAt)
+		ts, parseErr := time.Parse(time.RFC3339Nano, listedTS)
 		if parseErr != nil || !ts.After(cutoff) {
 			continue
 		}
-		recordPlanCodeTimestamp(recentFirstSeen, entry, entry.ListedAt)
+		recordPlanCodeTimestamp(recentFirstSeen, entry, listedTS)
 	}
 
 	recentChanges := changes
@@ -1029,6 +1737,7 @@ func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStat
 		RecentChanges:      recentChanges,
 		RecentFirstSeen:    recentFirstSeen,
 		PresaleSKUs:        presaleSKUs,
+		AnnouncedSKUs:      announcedSKUs,
 		Rules:              rules,
 	}
 	return status, changes, nil

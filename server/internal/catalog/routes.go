@@ -18,26 +18,31 @@ func (s *Service) MountRoutes(r chi.Router) {
 	r.Get("/servers", s.HandleListServers)
 	r.Post("/servers/refresh", s.HandleRefreshServers)
 	r.Post("/servers/{planCode}/price", s.HandleGetServerPrice)
+	r.Get("/servers/{planCode}/configs", s.HandleGetPlanConfigs)
 
 	r.Get("/availability", s.HandleGetGlobalAvailability)
 	r.Get("/availability/{planCode}", s.HandleGetPlanAvailability)
 	r.Post("/availability/{planCode}", s.HandleGetPlanAvailability)
 
 	r.Get("/catalog/dictionary", s.HandleGetDictionary)
+	r.Get("/catalog/plans", s.HandleListServers)
+	r.Get("/catalog/plans/{planCode}/configs", s.HandleGetPlanConfigs)
+	r.Get("/catalog/availability", s.HandleGetGlobalAvailability)
 	r.Get("/cache/info", s.HandleGetCacheInfo)
 	r.Post("/cache/clear", s.HandleClearCache)
 }
 
-// HandleListServers handles GET /api/servers.
+// HandleListServers handles GET /api/servers and GET /api/catalog/plans.
 func (s *Service) HandleListServers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	force := parseBoolQuery(q.Get("force")) || parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("forceRefresh"))
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
+	zone := nonEmpty(q.Get("subsidiary"), q.Get("zone"))
 
 	resp, err := s.ListServers(r.Context(), ListServersOptions{
 		AccountID:    accountID,
 		Endpoint:     q.Get("endpoint"),
-		Zone:         q.Get("zone"),
+		Zone:         zone,
 		ForceRefresh: force,
 	})
 	if err != nil {
@@ -49,6 +54,32 @@ func (s *Service) HandleListServers(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.CacheInfo.UsingExpiredCache {
 		w.Header().Set("X-Cache-Warning", fmt.Sprintf("Using expired cache (%d minutes old)", resp.CacheInfo.CacheAgeMinutes))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetPlanConfigs handles GET /api/catalog/plans/{planCode}/configs.
+func (s *Service) HandleGetPlanConfigs(w http.ResponseWriter, r *http.Request) {
+	planCode := strings.TrimSpace(chi.URLParam(r, "planCode"))
+	if planCode == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "Missing planCode",
+			"message": "planCode path parameter is required",
+		})
+		return
+	}
+	q := r.URL.Query()
+	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
+	zone := nonEmpty(q.Get("subsidiary"), nonEmpty(q.Get("ovhSubsidiary"), q.Get("zone")))
+	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), zone)
+
+	resp, err := s.GetPlanConfigs(r.Context(), ep, zn, planCode)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":   "Plan configs query failed",
+			"message": err.Error(),
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -95,12 +126,13 @@ func (s *Service) HandleGetServerPrice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// HandleGetGlobalAvailability handles GET /api/availability.
+// HandleGetGlobalAvailability handles GET /api/availability and GET /api/catalog/availability.
 func (s *Service) HandleGetGlobalAvailability(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
-	ep, _ := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), q.Get("zone"))
-	items, err := s.GetRawAvailabilities(r.Context(), ep, q.Get("planCode"))
+	zone := nonEmpty(q.Get("subsidiary"), nonEmpty(q.Get("ovhSubsidiary"), q.Get("zone")))
+	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), zone)
+	items, err := s.GetCatalogAvailabilities(r.Context(), ep, zn, q.Get("planCode"))
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error":   "Availability query failed",

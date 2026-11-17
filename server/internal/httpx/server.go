@@ -25,7 +25,7 @@ import (
 )
 
 // Version identifies the OVH Nexus Go backend release version.
-const Version = "1.3.1"
+const Version = "1.3.2"
 
 // Services holds all wired OVH Nexus domain services and shared infrastructure.
 type Services struct {
@@ -108,6 +108,8 @@ func WireServices(ctx context.Context, cfg *config.Config, v *vault.Vault, st *s
 	catSvc := catalog.NewService(st, logHub, ovhPool, cfg.DataDir)
 	procSvc := procurement.NewService(st, logHub, ovhPool, catSvc, notifyDisp)
 	monSvc := monitor.NewService(st, logHub, ovhPool, catSvc, procSvc, notifyDisp)
+	catSvc.SetListedAtResolver(monSvc.ResolveSKUListedAt)
+	_, _, _ = monSvc.GetSKUStatusAndChanges(ctx)
 	fleetSvc := fleet.NewService(cfg, st, ovhPool, authSvc, logHub)
 
 	fleetSvc.SetOnAccountDeleted(func(accountID string) {

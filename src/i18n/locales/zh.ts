@@ -1,0 +1,65 @@
+export const zhV132Translations: Record<string, string> = {
+  // Listing states & filter tabs (v1.3.2)
+  'listing.filter.all': '全部',
+  'listing.filter.listed': '在售',
+  'listing.filter.announced': '已公布未开售',
+  'listing.filter.presale': '预售 / 待上架',
+  'listing.filter.new': '新上架',
+  'listed.badge': '在售',
+  'announced.badge': '已公布未开售',
+  'announced.noStockFeedHint':
+    '公开目录已公布配置与定价，暂未开放实时库存接口（开售时将自动推送开售通知）。',
+  'announced.skuAdded': '📢 已公布未开售',
+
+  // SKU Change badges & timeline (v1.3.2)
+  'sku.saleStarted': '🚀 开售',
+  'sku.replaced': '🔄 换代: {oldCode} → {newCode}',
+  'sku.removedBadge': '📤 已下架',
+  'sku.configChangedBadge': '🔧 配置更新',
+
+  // Compact Availability Matrix (v1.3.2)
+  'availability.allConfigs': '全部配置 ({count})',
+  'availability.inStockDcCount': '{count} 机房有货',
+  'availability.multiConfigBadge': '{count}配',
+  'availability.fromPrice': '{price}/月起',
+  'availability.perMonth': '/月',
+  'availability.configSelectorLabel': '配置:',
+  'availability.bestStatusTooltip': '{dc} 有货配置: {configs}',
+
+  // Compact Collapsible Server Catalog Cards (v1.3.2)
+  'catalog.fromPrice': '{price}/月起',
+  'catalog.defaultConfigBadge': '标配',
+  'catalog.unifiedConfigsTitle': '硬件配置列表（内存 + 硬盘）',
+  'catalog.showAllInventory': '显示全部库存（含无货）',
+  'catalog.advancedOptions': '高级选项（带宽 / vRack 内网）',
+  'catalog.expandCard': '展开配置',
+  'catalog.collapseCard': '收起',
+  'catalog.noInStockConfigsNotice':
+    '当前所有机房均无现货（仅显示标配）；可勾选「显示全部库存（含无货）」查看完整配置与机房。',
+  'catalog.inStockDcsCount': '{count} 机房有货',
+  'catalog.outOfStockBadge': '无货',
+  'catalog.addToQueue': '抢购',
+
+  // Multi-Target Config-Level QuickMonitorDialog & MonitorPage (v1.3.2)
+  'quickMonitor.targetsSectionTitle': '按配置精确监控目标',
+  'quickMonitor.addTargetButton': '+ 添加配置监控目标',
+  'quickMonitor.removeTargetButton': '移除目标',
+  'quickMonitor.targetTitle': '监控目标 #{index}',
+  'quickMonitor.configSelectLabel': '硬件配置（内存 + 硬盘）',
+  'quickMonitor.anyConfigNotifyOnly': '任意配置（仅通知）',
+  'quickMonitor.autoOrderConfigRequiredWarning':
+    '开启自动下单必须选择具体配置，以避免未知订单金额',
+  'quickMonitor.maxMonthlyPriceLabel': '最高月价保护上限（不含税）',
+  'quickMonitor.maxMonthlyPriceHint':
+    '真正下单前按购物车实时不含税月维护费比对，超过上限拒绝下单并告警；一次性安装费不计入月价上限。',
+  'quickMonitor.quantityLabel': '下单数量',
+  'monitor.legacyAutoOrderPausedBanner':
+    '旧版自动下单已暂停：请点击编辑选择具体配置与最高月价后重新开启自动下单',
+  'monitor.selectConfigAction': '选择配置',
+  'monitor.editSubscription': '编辑配置目标',
+  'monitor.targetCountBadge': '{count} 个目标',
+  'monitor.priceCapBadge': '上限 {price}/月 (不含税)',
+  'monitor.autoOrderQtyBadge': '自动下单 ×{qty}',
+};
+
+export default zhV132Translations;

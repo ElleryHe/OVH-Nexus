@@ -432,3 +432,50 @@ func TestDefaultPlainSMTPDelivery(t *testing.T) {
 		t.Fatalf("missing multipart/alternative in SMTP payload")
 	}
 }
+
+func TestSKUIntervalLegacyMigrationAndSKUChangedTemplate(t *testing.T) {
+	disp, st, _ := newTestDispatcher(t)
+
+	// Store legacy 600s interval and verify GetPublicState migrates and persists 120s
+	if _, err := st.SaveNotificationSettings(context.Background(), store.NotificationSettings{
+		Locale: "en",
+		Rules: store.NotificationRules{
+			SKUEnabled:       true,
+			SKUInterval:      600,
+			SKUTrackConfigs:  true,
+			SKUMergeRegional: true,
+			ExpiryDays:       7,
+		},
+	}); err != nil {
+		t.Fatalf("SaveNotificationSettings failed: %v", err)
+	}
+
+	state, err := disp.GetPublicState(context.Background())
+	if err != nil {
+		t.Fatalf("GetPublicState failed: %v", err)
+	}
+	if state.Rules.SKUInterval != 120 {
+		t.Fatalf("expected legacy SKUInterval 600 to migrate to 120, got %d", state.Rules.SKUInterval)
+	}
+
+	persisted, err := st.GetNotificationSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetNotificationSettings failed: %v", err)
+	}
+	if persisted.Rules.SKUInterval != 120 {
+		t.Fatalf("expected migrated SKUInterval 120 to be persisted in store, got %d", persisted.Rules.SKUInterval)
+	}
+
+	rn := RenderNotification(LocaleEN, EventSKUChanged, "", "🚀 Sale Started\n  SYS-2 | Intel Xeon-D 2141I\n    • 24sys02-v3 [listed] — 39.99 EUR", nil, "", map[string]any{
+		"endpoint":         "ovh-eu",
+		"addedCount":       "1",
+		"saleStartedCount": "1",
+		"replacedCount":    "1",
+		"removedCount":     "0",
+		"changedCount":     "0",
+	}, time.Now())
+	if !strings.Contains(rn.TelegramText, "1 sale started") || !strings.Contains(rn.TelegramText, "1 replaced") || !strings.Contains(rn.TelegramText, "🚀 Sale Started") {
+		t.Fatalf("unexpected EventSKUChanged TelegramText:\n%s", rn.TelegramText)
+	}
+}
+

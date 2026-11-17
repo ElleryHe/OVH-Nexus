@@ -32,21 +32,29 @@ export interface PlanDisplayInfo {
   addonPrices?: Record<string, number>;
 }
 
+export interface CatalogPlanDictEntry {
+  name: string;
+  product?: string;
+  range?: string;
+  cpu?: CpuInfo | null;
+  price?: number | null;
+  currency?: string;
+  addonPrices?: Record<string, number>;
+  catalogSource?: string;
+  defaultSpecs?: {
+    memory?: string;
+    storage?: string;
+    bandwidth?: string;
+    vrack?: string;
+  };
+}
+
 export interface CatalogDictionary {
   updatedAt: number;
   currency?: string;
-  plans: Record<
-    string,
-    {
-      name: string;
-      product?: string;
-      range?: string;
-      cpu?: CpuInfo | null;
-      price?: number | null;
-      currency?: string;
-      addonPrices?: Record<string, number>;
-    }
-  >;
+  plans: Record<string, CatalogPlanDictEntry>;
+  realPlans?: Record<string, CatalogPlanDictEntry>;
+  addonPrices?: Record<string, number>;
   options: Record<string, any>;
 }
 
@@ -292,15 +300,23 @@ export function resolvePlanDisplay(
     .toLowerCase()
     .replace(/^(\d{2}[a-z]+\d{2})\d$/, "$1");
 
+  const realPlans = activeDict?.realPlans || {};
   const plans = activeDict?.plans || {};
   const match =
+    realPlans[planCode] ||
     plans[planCode] ||
-    (serverCode ? plans[serverCode] : undefined) ||
+    (serverCode ? realPlans[serverCode] || plans[serverCode] : undefined) ||
+    realPlans[baseCode] ||
     plans[baseCode] ||
+    realPlans[cleanBase] ||
     plans[cleanBase];
 
   if (match) {
     const cpu = match.cpu || null;
+    const mergedAddonPrices = {
+      ...(activeDict?.addonPrices || {}),
+      ...(match.addonPrices || {}),
+    };
     return {
       planCode,
       baseCode: baseCode || planCode,
@@ -312,7 +328,7 @@ export function resolvePlanDisplay(
       regionLabel: region ? region[locale] || region.en : "",
       basePrice: typeof match.price === "number" ? match.price : null,
       currency: match.currency || activeDict?.currency || "EUR",
-      addonPrices: match.addonPrices || {},
+      addonPrices: mergedAddonPrices,
     };
   }
 
@@ -328,6 +344,33 @@ const CURRENCY_SYMBOL_MAP: Record<string, string> = {
   SGD: "S$",
   INR: "₹",
 };
+
+export function getCurrencySymbol(currency?: string): string {
+  const code = (currency || "EUR").toUpperCase();
+  return CURRENCY_SYMBOL_MAP[code] || `${code} `;
+}
+
+export function buildConfigKey(memory?: string, storage?: string): string {
+  const m = (memory || "").trim();
+  const s = (storage || "").trim();
+  if (m && s) return `${m}+${s}`;
+  if (m) return m;
+  if (s) return s;
+  return "default";
+}
+
+export function formatConfigLabel(
+  memory?: string,
+  storage?: string,
+  locale: SupportedLocale = "zh-CN"
+): string {
+  const memText = memory ? formatMemoryCode(memory, locale) || memory : "";
+  const stoText = storage ? formatStorageCode(storage, locale, false) || storage : "";
+  if (memText && stoText) return `${memText} + ${stoText}`;
+  if (memText) return memText;
+  if (stoText) return stoText;
+  return locale === "zh-CN" ? "默认配置" : locale === "fr" ? "Configuration par défaut" : "Default Configuration";
+}
 
 export function resolveConfigPrice(
   planMeta: PlanDisplayInfo,

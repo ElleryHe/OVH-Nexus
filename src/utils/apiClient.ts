@@ -10,6 +10,7 @@
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
 import { API_URL, API_TIMEOUT } from '@/config/constants';
+import type { PlanConfigsResponse } from '@/types';
 import { toast } from 'sonner';
 
 const LEGACY_KEY_STORAGE = 'api_secret_key';
@@ -220,4 +221,15 @@ export const api = {
     apiClient.delete<T>(url, config),
   patch: <T = any>(url: string, data?: any, config?: AxiosRequestConfig) =>
     apiClient.patch<T>(url, data, config),
+  /**
+   * Fetch configuration-level options, pricing, and datacenter stock for a server plan.
+   * Calls GET /api/catalog/plans/${encodeURIComponent(planCode)}/configs
+   */
+  getPlanConfigs: (planCode: string, subsidiary?: string) =>
+    apiClient.get<PlanConfigsResponse>(
+      `/catalog/plans/${encodeURIComponent(planCode)}/configs`,
+      {
+        params: subsidiary ? { subsidiary } : undefined,
+      }
+    ),
 };
