@@ -112,7 +112,7 @@ const Sidebar = ({ onToggle }: SidebarProps) => {
       {/* Brand Header */}
       <div className="p-4 border-b border-cyber-grid flex items-center justify-between">
         <Link to="/" className="flex items-center space-x-3 group">
-          <NexusLogo size={38} className="shadow-sm transition-transform duration-200 group-hover:scale-105" />
+          <NexusLogo size={38} className="transition-transform duration-200 group-hover:scale-105" />
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-bold tracking-tight text-cyber-text">{t('brand.name')}</h1>

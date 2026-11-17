@@ -164,7 +164,7 @@ const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
         >
           <div className="flex flex-col items-center text-center space-y-2">
             <div className="mb-1">
-              <NexusLogo size={52} className="shadow-md" />
+              <NexusLogo size={56} />
             </div>
             <h1 className="text-2xl font-bold tracking-tight text-cyber-text">
               {t('brand.name')}

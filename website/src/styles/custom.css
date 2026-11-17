@@ -30,8 +30,7 @@
 }
 
 .hero > img {
-  border-radius: 20px;
-  box-shadow: 0 12px 32px rgba(0, 80, 215, 0.22);
+  filter: drop-shadow(0 12px 28px rgba(0, 80, 215, 0.35));
 }
 
 .sl-markdown-content table {

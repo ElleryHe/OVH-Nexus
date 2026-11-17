@@ -1,7 +1,7 @@
 # OVH Nexus (Français)
 
 <p align="center">
-  <img src="../public/favicon.svg" width="72" height="72" alt="OVH Nexus Logo" />
+  <img src="../public/logo.png" width="76" height="76" alt="OVH Nexus Logo" />
 </p>
 
 <p align="center">
