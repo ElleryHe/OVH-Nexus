@@ -9,6 +9,41 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.3.2] - 2026-11-17
+
+### Added
+- **Announced Server Listing State (`listingState: "announced"`) & Sale Started Alerts**:
+  - Identifies bare-metal models already published with pricing in OVHcloud public catalogs (`eco` / `baremetalServers`) prior to live availability feed activation (such as `KS-LE`, `RISE-LE`, and `SYS-LE` Limited Edition series), exposing **Announced** badges and filters in both the Live Availability Matrix (`/availability`) and Server Catalog (`/servers`).
+  - Automatically emits `saleStarted: true` SKU transition records and **Sale Started** notifications when an `announced` model first enters the live datacenter availability feed.
+- **SKU Version Refresh (`replaced`) Detection & Product-Line Grouped Notifications**:
+  - Detects same-cycle `planCode` version refreshes within the same product line (`Name + CPU`, e.g., `24sys022 -> 24sys02-v3`) as a single `replaced` (`replacedFrom`) timeline event instead of separate add/remove entries, and groups `sku.changed` notifications by **New**, **Sale Started**, **Replaced**, and **Discontinued** sections under each product line.
+  - Extended MCP `catalog_availability` and `catalog_sku_changes` tools with unified `listingState` (`listed` / `announced` / `presale`), `saleStarted`, and `replacedFrom` fields.
+- **Per-Plan Configuration Endpoint (`GET /api/catalog/plans/{planCode}/configs`)**:
+  - Returns merged default and live-availability configurations for any `planCode`, including `configKey` (`memory+storage`), localized specs, addon `options`, `isDefault` markers, ex-VAT `estimatedMonthlyPrice` (`basePrice` + memory/storage addon surcharges), currency, and per-datacenter stock status.
+- **Multi-Target Configuration-Level Stock Monitor (`targets[]`) & Live Price Cap Guard**:
+  - Upgraded stock monitor subscriptions (`StockSubscription.targets[]`) so each target independently binds a specific hardware configuration (`configKey` + addon `options`, or `Any Configuration` for notify-only rules), datacenter filter, notification switches, `autoOrder` toggle, order `quantity`, and ex-VAT `maxMonthlyPrice` protection cap.
+  - Before automated checkout, live cart quotes are verified against `maxMonthlyPrice` (ex-VAT recurring monthly fee, excluding one-time setup fee), rejecting orders that exceed the configured cap (`PRICE_ABOVE_LIMIT`) with a warning log and `order.failed` notification.
+
+### Changed
+- **Compact Real-Time Availability Matrix (`/availability`)**:
+  - Consolidated rows to **1 row per `planCode`** (keeping distinct regional variants such as `-sgp`, `-syd`, and `-mum` on separate rows) with an inline configuration selector switching between `All Configurations` (best stock across configurations) and any specific configuration's ex-VAT monthly price and per-datacenter availability.
+- **Compact Collapsible Server Catalog Cards (`/servers`)**:
+  - Redesigned the Server Catalog into a compact 3–4 column desktop grid with cards collapsed by default (showing model, CPU, 1-line default spec summary, starting monthly price, and compact datacenter pills).
+  - Merged separate default and optional configuration blocks inside expanded cards into a single unified configuration selector (defaulting to in-stock configurations and datacenters with a **Show all inventory (including out-of-stock)** toggle and a collapsible **Advanced Options** section), passing the selected configuration directly into **Add to Queue** and **Quick Monitor**.
+- **Faster Bare-Metal SKU Watcher & 20s Confirmation Recheck**:
+  - Reduced the default SKU watcher interval from `600s` to `120s` (automatically migrating legacy `600s` default configs), isolated bare-metal SKU checks (`GetBaremetalDictionary`) from the VPS catalog, and added a dedicated ~20-second confirmation recheck when a SKU first goes missing before marking it as discontinued.
+- **Safe Legacy Auto-Order Migration (`needsConfigSelection`)**:
+  - Existing stock subscriptions are automatically migrated to configuration targets on startup; legacy subscriptions that had `autoOrder` enabled without an explicit configuration are safely paused with `needsConfigSelection: true` and surfaced with a prominent warning banner in `/monitor` until a specific configuration and price cap are selected.
+
+### Fixed
+- **Catalog Dictionary Alias Pollution & Presale Detection Accuracy**:
+  - Separated exact catalog `planCode` entries (`RealPlans`) from `baseCode` and `product` metadata lookup aliases in `CatalogDictionary`, silently pruning historical alias pollution (such as `24sys02-1g` or stripped version prefixes) from SKU state and restoring accurate `presale` vs `listed` vs `announced` classification.
+  - Backfilled missing `listedAt` timestamps from `firstSeen` for post-baseline SKU entries.
+- **Strict Stock-Monitor Procurement Configuration & Quantity Enforcement**:
+  - Removed the unsafe fallback that automatically selected the first available configuration when `options` were omitted during `stock-monitor` procurement (`CONFIG_REQUIRED_FOR_AUTO_ORDER`), and enforced the target's configured `quantity` during cart creation.
+
+---
+
 ## [1.3.1] - 2026-11-17
 
 ### Added

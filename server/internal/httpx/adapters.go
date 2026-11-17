@@ -41,6 +41,15 @@ func (a *catalogAdapter) QueryAvailability(
 	onlyAvailable, presaleOnly bool,
 	offset, limit int,
 ) ([]mcp.CatalogEntry, int, error) {
+	return a.QueryAvailabilityFiltered(ctx, planFilter, dcFilter, "all", onlyAvailable, presaleOnly, false, offset, limit)
+}
+
+func (a *catalogAdapter) QueryAvailabilityFiltered(
+	ctx context.Context,
+	planFilter, dcFilter, listingStateFilter string,
+	onlyAvailable, presaleOnly, onlyAnnounced bool,
+	offset, limit int,
+) ([]mcp.CatalogEntry, int, error) {
 	if a.cat == nil {
 		return nil, 0, errors.New("catalog service is not configured")
 	}
@@ -53,13 +62,24 @@ func (a *catalogAdapter) QueryAvailability(
 		limit = 200
 	}
 
+	stateFilter := strings.ToLower(strings.TrimSpace(listingStateFilter))
+	if stateFilter == "" || stateFilter == "all" {
+		if onlyAnnounced {
+			stateFilter = "announced"
+		} else if presaleOnly {
+			stateFilter = "presale"
+		} else {
+			stateFilter = "all"
+		}
+	}
+
 	ep, zn := a.resolveEndpointAndZone(ctx)
-	rawItems, err := a.cat.GetRawAvailabilities(ctx, ep, "")
+	availItems, err := a.cat.GetCatalogAvailabilities(ctx, ep, zn, "")
 	if err != nil {
 		return nil, 0, err
 	}
 	dict, _ := a.cat.GetDictionary(ctx, ep, zn, false)
-	hasDict := dict != nil && len(dict.Plans) > 0
+	hasRealPlans := dict != nil && len(dict.RealPlans) > 0
 
 	planLow := strings.ToLower(strings.TrimSpace(planFilter))
 	dcLow := strings.ToLower(strings.TrimSpace(dcFilter))
@@ -71,7 +91,7 @@ func (a *catalogAdapter) QueryAvailability(
 	grouped := make(map[string]*mcp.CatalogEntry)
 	order := make([]string, 0)
 
-	for _, item := range rawItems {
+	for _, item := range availItems {
 		pcode := strings.TrimSpace(item.PlanCode)
 		if pcode == "" || catalog.IsNonServerAddonCode(pcode) {
 			continue
@@ -81,14 +101,16 @@ func (a *catalogAdapter) QueryAvailability(
 			continue
 		}
 
-		isListed := !hasDict || catalog.IsPlanListedInDict(pcode, dict)
-		listingState := "listed"
-		orderable := true
-		if !isListed {
-			listingState = "presale"
-			orderable = false
+		listingState := strings.ToLower(strings.TrimSpace(item.ListingState))
+		if listingState == "" {
+			if !hasRealPlans || catalog.IsPlanListedInDict(pcode, dict) {
+				listingState = "listed"
+			} else {
+				listingState = "presale"
+			}
 		}
-		if presaleOnly && (listingState != "presale" || orderable) {
+		orderable := listingState == "listed"
+		if stateFilter != "all" && listingState != stateFilter {
 			continue
 		}
 
@@ -130,6 +152,25 @@ func (a *catalogAdapter) QueryAvailability(
 			continue
 		}
 
+		cfgKey := strings.TrimSpace(item.ConfigKey)
+		if cfgKey == "" {
+			cfgKey = catalog.BuildConfigKey(item.Memory, item.Storage)
+		}
+		currency := strings.TrimSpace(item.Currency)
+		if currency == "" {
+			if meta.Currency != "" {
+				currency = meta.Currency
+			} else if dict != nil && dict.Currency != "" {
+				currency = dict.Currency
+			} else {
+				currency = "EUR"
+			}
+		}
+		listedAt := strings.TrimSpace(item.ListedAt)
+		if listedAt == "" && a.mon != nil {
+			listedAt = a.mon.ResolveSKUListedAt(pcode)
+		}
+
 		rec, exists := grouped[pcode]
 		if !exists {
 			modelName := meta.Name
@@ -140,22 +181,48 @@ func (a *catalogAdapter) QueryAvailability(
 			if cpuStr == "" || cpuStr == "-" {
 				cpuStr = item.Server
 			}
-			gen := meta.Generation
+			gen := item.Generation
+			if gen == 0 {
+				gen = meta.Generation
+			}
 			if gen == 0 {
 				gen = catalog.InferPlanGeneration(pcode)
 			}
 			rec = &mcp.CatalogEntry{
-				PlanCode:             pcode,
-				ModelName:            modelName,
-				Range:                meta.Range,
-				CPU:                  cpuStr,
-				ListingState:         listingState,
-				Orderable:            orderable,
-				Generation:           gen,
-				AvailableDatacenters: []string{},
+				PlanCode:              pcode,
+				ModelName:             modelName,
+				Range:                 meta.Range,
+				CPU:                   cpuStr,
+				ConfigKey:             cfgKey,
+				Options:               item.Options,
+				IsDefault:             item.IsDefault,
+				EstimatedMonthlyPrice: item.EstimatedMonthlyPrice,
+				Currency:              currency,
+				ListingState:          listingState,
+				ListedAt:              listedAt,
+				Orderable:             orderable,
+				Generation:            gen,
+				AvailableDatacenters:  []string{},
 			}
 			grouped[pcode] = rec
 			order = append(order, pcode)
+		} else {
+			if !rec.IsDefault && item.IsDefault {
+				rec.ConfigKey = cfgKey
+				rec.Options = item.Options
+				rec.IsDefault = true
+				if item.EstimatedMonthlyPrice > 0 {
+					rec.EstimatedMonthlyPrice = item.EstimatedMonthlyPrice
+				}
+				if currency != "" {
+					rec.Currency = currency
+				}
+			} else if rec.EstimatedMonthlyPrice == 0 && item.EstimatedMonthlyPrice > 0 {
+				rec.EstimatedMonthlyPrice = item.EstimatedMonthlyPrice
+			}
+			if rec.ListedAt == "" && listedAt != "" {
+				rec.ListedAt = listedAt
+			}
 		}
 		rec.MatchingConfigurations++
 		for _, tag := range inStock {
@@ -195,6 +262,14 @@ func (a *catalogAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 		store: a.store,
 		cat:   a.cat,
 	}).GetSKUChanges(ctx, limit, changeType)
+}
+
+func (a *catalogAdapter) GetSKUChangesFiltered(ctx context.Context, limit int, changeType, listingState string) (map[string]any, []map[string]any, []map[string]any, error) {
+	return (&monitorAdapter{
+		mon:   a.mon,
+		store: a.store,
+		cat:   a.cat,
+	}).GetSKUChangesFiltered(ctx, limit, changeType, listingState)
 }
 
 type procurementAdapter struct {
@@ -256,6 +331,15 @@ type monitorAdapter struct {
 }
 
 func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error) {
+	status, changes, _, err := a.GetSKUChangesFiltered(ctx, limit, changeType, "all")
+	return status, changes, err
+}
+
+func (a *monitorAdapter) GetSKUChangesFiltered(
+	ctx context.Context,
+	limit int,
+	changeType, listingStateFilter string,
+) (map[string]any, []map[string]any, []map[string]any, error) {
 	if limit < 1 {
 		limit = 20
 	} else if limit > 50 {
@@ -266,15 +350,105 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 	if filter == "" {
 		filter = "ALL"
 	}
+	stateFilter := strings.ToLower(strings.TrimSpace(listingStateFilter))
+	if stateFilter == "" {
+		stateFilter = "all"
+	}
+
+	var rawSKUs map[string]monitor.TrackedSKU
+	if a.store != nil {
+		if st, err := a.store.LoadSKUWatcherState(ctx); err == nil && st != nil && len(st.SKUsJSON) > 0 {
+			_ = json.Unmarshal(st.SKUsJSON, &rawSKUs)
+		}
+	}
+
+	listedCount := 0
+	announcedCount := 0
+	presaleCount := 0
+	skuKeys := make([]string, 0, len(rawSKUs))
+	for k := range rawSKUs {
+		skuKeys = append(skuKeys, k)
+	}
+	slices.Sort(skuKeys)
+
+	trackedSkus := make([]map[string]any, 0, len(skuKeys))
+	for _, k := range skuKeys {
+		entry := rawSKUs[k]
+		ls := strings.ToLower(strings.TrimSpace(entry.ListingState))
+		if ls == "" {
+			ls = "listed"
+		}
+		switch ls {
+		case "announced":
+			announcedCount++
+		case "presale":
+			presaleCount++
+		default:
+			ls = "listed"
+			listedCount++
+		}
+		if stateFilter != "all" && ls != stateFilter {
+			continue
+		}
+
+		tm := structToMap(entry)
+		skuKey := strings.TrimSpace(entry.Key)
+		if skuKey == "" {
+			skuKey = strings.TrimSpace(entry.SKUKey)
+		}
+		if skuKey == "" {
+			skuKey = nonEmptyStr(entry.PlanCode, k)
+		}
+		modelName := strings.TrimSpace(entry.Name)
+		if modelName == "" {
+			modelName = nonEmptyStr(entry.PlanCode, skuKey)
+		}
+		gen := entry.Generation
+		if gen == 0 {
+			gen = catalog.InferPlanGeneration(entry.PlanCode)
+		}
+		tm["key"] = skuKey
+		tm["skuKey"] = skuKey
+		tm["planCode"] = nonEmptyStr(entry.PlanCode, skuKey)
+		tm["name"] = modelName
+		tm["modelName"] = modelName
+		tm["range"] = entry.Range
+		tm["listingState"] = ls
+		tm["saleStarted"] = entry.SaleStarted
+		tm["replacedFrom"] = entry.ReplacedFrom
+		if gen > 0 {
+			tm["generation"] = gen
+		}
+		trackedSkus = append(trackedSkus, tm)
+	}
+
+	matchChangeKind := func(kind string) bool {
+		switch filter {
+		case "ALL":
+			return true
+		case "ADDED":
+			return kind == "ADDED" || kind == "CONFIG_ADDED"
+		case "REMOVED":
+			return kind == "REMOVED" || kind == "CONFIG_REMOVED"
+		case "REPLACED":
+			return kind == "REPLACED"
+		default:
+			return kind == filter
+		}
+	}
 
 	if a.mon != nil {
 		skuStatus, allChanges, err := a.mon.GetSKUStatusAndChanges(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		presaleSkus := skuStatus.PresaleSKUs
-		if presaleSkus == nil {
-			presaleSkus = map[string]string{}
+		presaleMap := skuStatus.PresaleSKUs
+		if presaleMap == nil {
+			presaleMap = map[string]string{}
+		}
+		announcedMap := skuStatus.AnnouncedSKUs
+		if announcedMap == nil {
+			announcedMap = map[string]string{}
 		}
 		recentFirstSeen := skuStatus.RecentFirstSeen
 		if recentFirstSeen == nil {
@@ -284,20 +458,15 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 		filtered := make([]map[string]any, 0, min(limit, len(allChanges)))
 		for _, rec := range allChanges {
 			kind := strings.ToUpper(strings.TrimSpace(rec.Type))
-			switch filter {
-			case "ALL":
-			case "ADDED":
-				if kind != "ADDED" && kind != "CONFIG_ADDED" {
-					continue
-				}
-			case "REMOVED":
-				if kind != "REMOVED" && kind != "CONFIG_REMOVED" {
-					continue
-				}
-			default:
-				if kind != filter {
-					continue
-				}
+			if !matchChangeKind(kind) {
+				continue
+			}
+			listingState := strings.ToLower(strings.TrimSpace(rec.ListingState))
+			if listingState == "" {
+				listingState = "listed"
+			}
+			if stateFilter != "all" && listingState != stateFilter {
+				continue
 			}
 
 			ch := structToMap(rec)
@@ -308,10 +477,6 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 			modelName := strings.TrimSpace(rec.Name)
 			if modelName == "" {
 				modelName = rec.PlanCode
-			}
-			listingState := strings.TrimSpace(rec.ListingState)
-			if listingState == "" {
-				listingState = "listed"
 			}
 			gen := rec.Generation
 			if gen == 0 {
@@ -326,6 +491,8 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 			ch["type"] = rec.Type
 			ch["changeType"] = kind
 			ch["listingState"] = listingState
+			ch["saleStarted"] = rec.SaleStarted
+			ch["replacedFrom"] = rec.ReplacedFrom
 			if gen > 0 {
 				ch["generation"] = gen
 			}
@@ -338,32 +505,51 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 			}
 		}
 
+		totalSKUs := skuStatus.TotalSKUs
+		if totalSKUs == 0 && len(rawSKUs) > 0 {
+			totalSKUs = len(rawSKUs)
+		}
+		if len(rawSKUs) == 0 && totalSKUs > 0 {
+			announcedCount = len(announcedMap)
+			presaleCount = len(presaleMap)
+			listedCount = max(0, totalSKUs-announcedCount-presaleCount)
+		}
+		presaleLegacyCount := max(presaleCount, len(presaleMap))
+
 		status := map[string]any{
 			"running":            skuStatus.Running,
 			"initialized":        skuStatus.Initialized,
 			"endpoint":           skuStatus.Endpoint,
-			"totalSkus":          skuStatus.TotalSKUs,
+			"totalSkus":          totalSKUs,
+			"listedSkus":         listedCount,
+			"announcedSkus":      announcedCount,
+			"presaleSkus":        presaleCount,
 			"skuCount":           skuStatus.SKUCount,
 			"totalTracked":       skuStatus.TotalTracked,
-			"presaleCount":       len(presaleSkus),
-			"presaleSkus":        presaleSkus,
+			"listedCount":        listedCount,
+			"announcedCount":     announcedCount,
+			"presaleCount":       presaleLegacyCount,
+			"presaleSkuMap":      presaleMap,
+			"announcedSkuMap":    announcedMap,
 			"lastCheckTime":      skuStatus.LastCheckTime,
 			"lastCheck":          skuStatus.LastCheck,
 			"lastError":          skuStatus.LastError,
 			"updatedAt":          skuStatus.UpdatedAt,
 			"recentChangesCount": skuStatus.RecentChangesCount,
+			"recentChanges":      filtered,
+			"trackedSkus":        trackedSkus,
 			"recentFirstSeen":    recentFirstSeen,
 			"total":              len(allChanges),
 		}
-		return status, filtered, nil
+		return status, filtered, trackedSkus, nil
 	}
 
 	if a.store == nil {
-		return map[string]any{}, []map[string]any{}, nil
+		return map[string]any{}, []map[string]any{}, []map[string]any{}, nil
 	}
 	st, err := a.store.LoadSKUWatcherState(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var rawChanges []map[string]any
@@ -375,20 +561,22 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 		if kind == "" {
 			kind = strings.ToUpper(strings.TrimSpace(stringVal(ch["changeType"])))
 		}
-		switch filter {
-		case "ALL":
-		case "ADDED":
-			if kind != "ADDED" && kind != "CONFIG_ADDED" {
-				continue
-			}
-		case "REMOVED":
-			if kind != "REMOVED" && kind != "CONFIG_REMOVED" {
-				continue
-			}
-		default:
-			if kind != filter {
-				continue
-			}
+		if !matchChangeKind(kind) {
+			continue
+		}
+		ls := strings.ToLower(strings.TrimSpace(stringVal(ch["listingState"])))
+		if ls == "" {
+			ls = "listed"
+		}
+		if stateFilter != "all" && ls != stateFilter {
+			continue
+		}
+		ch["listingState"] = ls
+		if _, ok := ch["saleStarted"]; !ok {
+			ch["saleStarted"] = false
+		}
+		if _, ok := ch["replacedFrom"]; !ok {
+			ch["replacedFrom"] = ""
 		}
 		filtered = append(filtered, ch)
 		if len(filtered) >= limit {
@@ -396,13 +584,30 @@ func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeTyp
 		}
 	}
 
+	totalSKUs := len(rawSKUs)
 	status := map[string]any{
-		"initialized": st.Initialized,
-		"endpoint":    st.Endpoint,
-		"updatedAt":   st.UpdatedAt,
-		"total":       len(rawChanges),
+		"initialized":    st.Initialized,
+		"endpoint":       st.Endpoint,
+		"updatedAt":      st.UpdatedAt,
+		"totalSkus":      totalSKUs,
+		"listedSkus":     listedCount,
+		"announcedSkus":  announcedCount,
+		"presaleSkus":    presaleCount,
+		"listedCount":    listedCount,
+		"announcedCount": announcedCount,
+		"presaleCount":   presaleCount,
+		"recentChanges":  filtered,
+		"trackedSkus":    trackedSkus,
+		"total":          len(rawChanges),
 	}
-	return status, filtered, nil
+	return status, filtered, trackedSkus, nil
+}
+
+func nonEmptyStr(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 func (a *monitorAdapter) AddStockSubscription(

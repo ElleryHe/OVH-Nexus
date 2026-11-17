@@ -30,7 +30,13 @@ type CatalogEntry struct {
 	ModelName              string   `json:"modelName"`
 	Range                  string   `json:"range"`
 	CPU                    string   `json:"cpu"`
+	ConfigKey              string   `json:"configKey"`
+	Options                []string `json:"options,omitempty"`
+	IsDefault              bool     `json:"isDefault"`
+	EstimatedMonthlyPrice  float64  `json:"estimatedMonthlyPrice"`
+	Currency               string   `json:"currency"`
 	ListingState           string   `json:"listingState"`
+	ListedAt               string   `json:"listedAt,omitempty"`
 	Orderable              bool     `json:"orderable"`
 	Generation             int      `json:"generation,omitempty"`
 	AvailableDatacenters   []string `json:"availableDatacenters"`
@@ -44,10 +50,22 @@ type CatalogReader interface {
 	GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error)
 }
 
+// CatalogAvailabilityFilterReader is an optional extension of CatalogReader that supports
+// filtering by listingState ("all" | "listed" | "announced" | "presale") and onlyAnnounced.
+type CatalogAvailabilityFilterReader interface {
+	QueryAvailabilityFiltered(ctx context.Context, planFilter, dcFilter, listingState string, onlyAvailable, presaleOnly, onlyAnnounced bool, offset, limit int) ([]CatalogEntry, int, error)
+}
+
 // SKUChangesReader is an optional interface that MonitorClient implementations (such as httpx monitorAdapter)
 // can satisfy to serve real-time SKU Watcher status and change events directly from monitor.Service.
 type SKUChangesReader interface {
 	GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error)
+}
+
+// SKUChangesFilterReader is an optional extension of SKUChangesReader / CatalogReader that supports
+// filtering by listingState ("all" | "listed" | "announced" | "presale") and returning trackedSkus.
+type SKUChangesFilterReader interface {
+	GetSKUChangesFiltered(ctx context.Context, limit int, changeType, listingState string) (map[string]any, []map[string]any, []map[string]any, error)
 }
 
 // OrderQuoteResult holds exact cart price breakdown for a configuration.

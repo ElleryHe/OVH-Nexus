@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { api } from '@/utils/apiClient';
+import { enV132Translations } from '@/i18n/locales/en';
+import { frV132Translations } from '@/i18n/locales/fr';
+import { zhV132Translations } from '@/i18n/locales/zh';
 
 export type Locale = 'en' | 'fr' | 'zh-CN';
 export type SupportedLocale = Locale;
@@ -227,6 +230,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'mcp.snippet.modeEntryOnly': 'Server Entry Only (Merge into existing config)',
     'mcp.snippet.modeFullFile': 'Full Config File',
     'mcp.snippet.mergeHint': 'Tip: When pasting this entry into an existing `mcpServers` object, make sure the closing brace `}` of the previous server entry has a trailing comma `,` to avoid JSON syntax errors.',
+    ...enV132Translations,
   },
   fr: {
     // Brand
@@ -448,6 +452,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'mcp.snippet.modeEntryOnly': 'Entrée serveur seule (Fusionner dans une config existante)',
     'mcp.snippet.modeFullFile': 'Fichier JSON complet',
     'mcp.snippet.mergeHint': 'Astuce : Si vous collez cette entrée dans un objet `mcpServers` existant, assurez-vous que l’accolade fermante `}` de l’entrée précédente est suivie d’une virgule `,` pour éviter toute erreur de syntaxe JSON.',
+    ...frV132Translations,
   },
   'zh-CN': {
     // Brand
@@ -669,6 +674,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'mcp.snippet.modeEntryOnly': '仅服务器条目（合并到已有配置）',
     'mcp.snippet.modeFullFile': '完整配置文件',
     'mcp.snippet.mergeHint': '提示：若将条目粘贴到已有的 `mcpServers` 对象中，请确保前一个服务器条目的右花括号 `}` 后带有英文逗号 `,`，否则会导致 JSON 解析报错。',
+    ...zhV132Translations,
   },
 };
 

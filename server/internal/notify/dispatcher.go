@@ -210,6 +210,12 @@ func (d *Dispatcher) GetPublicState(ctx context.Context) (*PublicState, error) {
 	if err != nil {
 		return nil, err
 	}
+	if settings.Rules.SKUInterval == 600 || settings.Rules.SKUInterval < 60 {
+		settings.Rules.SKUInterval = 120
+		if saved, saveErr := d.store.SaveNotificationSettings(ctx, *settings); saveErr == nil && saved != nil {
+			settings = saved
+		}
+	}
 	channels, err := d.store.ListChannels(ctx)
 	if err != nil {
 		return nil, err
@@ -461,8 +467,8 @@ func normalizeIncomingChannels(in []store.NotificationChannel) []store.Notificat
 }
 
 func normalizeRules(r store.NotificationRules) store.NotificationRules {
-	if r.SKUInterval < 60 {
-		r.SKUInterval = 600
+	if r.SKUInterval < 60 || r.SKUInterval == 600 {
+		r.SKUInterval = 120
 	}
 	if r.ExpiryDays < 1 {
 		r.ExpiryDays = 7

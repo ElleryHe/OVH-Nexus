@@ -104,11 +104,18 @@ func (m *mockOVHClient) DeleteWithContext(_ context.Context, path string, resTyp
 }
 
 type mockCatalog struct {
-	mu      sync.Mutex
-	entries []CatalogEntry
+	mu          sync.Mutex
+	entries     []CatalogEntry
+	skuStatus   map[string]any
+	skuChanges  []map[string]any
+	trackedSkus []map[string]any
 }
 
-func (m *mockCatalog) QueryAvailability(_ context.Context, planFilter, dcFilter string, onlyAvailable, presaleOnly bool, offset, limit int) ([]CatalogEntry, int, error) {
+func (m *mockCatalog) QueryAvailability(ctx context.Context, planFilter, dcFilter string, onlyAvailable, presaleOnly bool, offset, limit int) ([]CatalogEntry, int, error) {
+	return m.QueryAvailabilityFiltered(ctx, planFilter, dcFilter, "all", onlyAvailable, presaleOnly, false, offset, limit)
+}
+
+func (m *mockCatalog) QueryAvailabilityFiltered(_ context.Context, planFilter, dcFilter, listingStateFilter string, onlyAvailable, presaleOnly, onlyAnnounced bool, offset, limit int) ([]CatalogEntry, int, error) {
 	m.mu.Lock()
 	base := m.entries
 	m.mu.Unlock()
@@ -119,6 +126,10 @@ func (m *mockCatalog) QueryAvailability(_ context.Context, planFilter, dcFilter 
 				ModelName:              "KS-A (Kimsufi)",
 				Range:                  "kimsufi",
 				CPU:                    "Intel Xeon E3-1245v2",
+				ConfigKey:              "ram-32g-ecc-1333+softraid-2x2000sa",
+				IsDefault:              true,
+				EstimatedMonthlyPrice:  14.99,
+				Currency:               "EUR",
 				ListingState:           "listed",
 				Orderable:              true,
 				Generation:             2024,
@@ -128,16 +139,27 @@ func (m *mockCatalog) QueryAvailability(_ context.Context, planFilter, dcFilter 
 		}
 	}
 
+	stateFilter := strings.ToLower(strings.TrimSpace(listingStateFilter))
+	if stateFilter == "" || stateFilter == "all" {
+		if onlyAnnounced {
+			stateFilter = "announced"
+		} else if presaleOnly {
+			stateFilter = "presale"
+		} else {
+			stateFilter = "all"
+		}
+	}
+
 	planLow := strings.ToLower(strings.TrimSpace(planFilter))
 	dcLow := strings.ToLower(strings.TrimSpace(dcFilter))
 
 	var matched []CatalogEntry
 	for _, e := range base {
-		state := e.ListingState
+		state := strings.ToLower(strings.TrimSpace(e.ListingState))
 		if state == "" {
 			state = "listed"
 		}
-		if presaleOnly && state != "presale" {
+		if stateFilter != "all" && state != stateFilter {
 			continue
 		}
 		if planLow != "" && !strings.Contains(strings.ToLower(e.PlanCode), planLow) && !strings.Contains(strings.ToLower(e.ModelName), planLow) {
@@ -182,10 +204,24 @@ func (m *mockCatalog) ResolveModelName(_ context.Context, planCode string) (stri
 	return planCode, nil
 }
 
-func (m *mockCatalog) GetSKUChanges(_ context.Context, _ int, _ string) (map[string]any, []map[string]any, error) {
-	return map[string]any{"total": 1}, []map[string]any{
-		{"planCode": "24ska01", "changeType": "ADDED", "timestamp": "2026-11-16T08:00:00Z"},
-	}, nil
+func (m *mockCatalog) GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error) {
+	status, changes, _, err := m.GetSKUChangesFiltered(ctx, limit, changeType, "all")
+	return status, changes, err
+}
+
+func (m *mockCatalog) GetSKUChangesFiltered(_ context.Context, _ int, _ string, _ string) (map[string]any, []map[string]any, []map[string]any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.skuStatus != nil || m.skuChanges != nil || m.trackedSkus != nil {
+		st := map[string]any{}
+		for k, v := range m.skuStatus {
+			st[k] = v
+		}
+		return st, m.skuChanges, m.trackedSkus, nil
+	}
+	return map[string]any{"total": 1, "totalSkus": 1, "listedSkus": 1, "announcedSkus": 0, "presaleSkus": 0}, []map[string]any{
+		{"planCode": "24ska01", "type": "added", "changeType": "ADDED", "listingState": "listed", "saleStarted": false, "replacedFrom": "", "timestamp": "2026-11-16T08:00:00Z"},
+	}, nil, nil
 }
 
 type mockProcurement struct {
@@ -701,7 +737,7 @@ func TestMCPStreamableHTTPProtocolAndAudit(t *testing.T) {
 		t.Fatalf("expected negotiated protocolVersion 2024-11-05, got %v", initRes["protocolVersion"])
 	}
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.1" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.2" {
 		t.Fatalf("unexpected serverInfo: %+v", srvInfo)
 	}
 
@@ -1399,5 +1435,268 @@ func TestMCPCatalogAvailabilityPaginationPresaleAndProcurementSource(t *testing.
 	qEntry := qList[0].(map[string]any)
 	if qEntry["source"] != "stock-monitor" || qEntry["sourceRef"] != "27ska01" {
 		t.Fatalf("expected source='stock-monitor' and sourceRef='27ska01' in procurement_status queue item, got %+v", qEntry)
+	}
+}
+
+func TestMCPCatalogV132AnnouncedPricingAndSKUChanges(t *testing.T) {
+	env := setupMCPTest(t)
+
+	rec := doHTTP(t, env.router, http.MethodPut, "/api/mcp/settings", map[string]any{
+		"enabled": true,
+		"scopes":  map[string]any{"read": true},
+	}, nil)
+	token := decodeJSONMap(t, rec)["data"].(map[string]any)["revealedToken"].(string)
+
+	// 1. Verify tool schemas document announced, saleStarted, replaced, configKey, and estimatedMonthlyPrice
+	_, listRPC := mcpCall(t, env, token, 1, "tools/list", nil)
+	tools := listRPC["result"].(map[string]any)["tools"].([]any)
+	var availTool, skuTool map[string]any
+	for _, rawTool := range tools {
+		tm := rawTool.(map[string]any)
+		switch tm["name"] {
+		case "catalog_availability":
+			availTool = tm
+		case "catalog_sku_changes":
+			skuTool = tm
+		}
+	}
+	if availTool == nil || skuTool == nil {
+		t.Fatalf("missing catalog_availability or catalog_sku_changes in tools/list")
+	}
+	availProps := availTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if availProps["listing_state"] == nil || availProps["only_announced"] == nil || availProps["only_presale"] == nil {
+		t.Fatalf("expected listing_state, only_announced, and only_presale in catalog_availability schema: %+v", availProps)
+	}
+	availDesc := availTool["description"].(string)
+	for _, kw := range []string{"configKey", "estimatedMonthlyPrice", "announced"} {
+		if !strings.Contains(availDesc, kw) {
+			t.Fatalf("expected %q in catalog_availability description: %s", kw, availDesc)
+		}
+	}
+	skuProps := skuTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if skuProps["listing_state"] == nil || skuProps["type"] == nil {
+		t.Fatalf("expected listing_state and type in catalog_sku_changes schema: %+v", skuProps)
+	}
+	skuDesc := skuTool["description"].(string)
+	for _, kw := range []string{"saleStarted", "replaced", "announcedSkus"} {
+		if !strings.Contains(skuDesc, kw) {
+			t.Fatalf("expected %q in catalog_sku_changes description: %s", kw, skuDesc)
+		}
+	}
+
+	// 2. Seed 14 Limited Edition announced models + listed + presale entries
+	var entries []CatalogEntry
+	entries = append(entries,
+		CatalogEntry{
+			PlanCode:               "24sys02-v3",
+			ModelName:              "SYS-2",
+			Range:                  "SYS",
+			CPU:                    "Intel Xeon-E 2136",
+			ConfigKey:              "ram-32g-ecc-2133+softraid-2x512nvme",
+			IsDefault:              true,
+			EstimatedMonthlyPrice:  39.99,
+			Currency:               "EUR",
+			ListingState:           "listed",
+			ListedAt:               "2026-11-17T08:00:00Z",
+			Orderable:              true,
+			Generation:             2024,
+			AvailableDatacenters:   []string{"GRA (1H-high)"},
+			MatchingConfigurations: 2,
+		},
+		CatalogEntry{
+			PlanCode:               "27ska01",
+			ModelName:              "KS-A (2027)",
+			Range:                  "KS",
+			CPU:                    "AMD EPYC 4244P",
+			ConfigKey:              "ram-64g-ecc-5200+softraid-2x960nvme",
+			IsDefault:              true,
+			EstimatedMonthlyPrice:  24.99,
+			Currency:               "EUR",
+			ListingState:           "presale",
+			Orderable:              false,
+			Generation:             2027,
+			AvailableDatacenters:   []string{},
+			MatchingConfigurations: 1,
+		},
+	)
+	for i := 1; i <= 14; i++ {
+		code := fmt.Sprintf("27skle%02d-v1", i)
+		entries = append(entries, CatalogEntry{
+			PlanCode:               code,
+			ModelName:              fmt.Sprintf("KS-LE-%d", i),
+			Range:                  "KS",
+			CPU:                    "Intel Xeon E-2386G",
+			ConfigKey:              "ram-32g-ecc-3200+softraid-2x960nvme",
+			IsDefault:              true,
+			EstimatedMonthlyPrice:  29.99,
+			Currency:               "EUR",
+			ListingState:           "announced",
+			ListedAt:               "2026-11-17T09:00:00Z",
+			Orderable:              false,
+			Generation:             2027,
+			AvailableDatacenters:   []string{},
+			MatchingConfigurations: 1,
+		})
+	}
+	env.catalog.mu.Lock()
+	env.catalog.entries = entries
+	env.catalog.mu.Unlock()
+
+	// Query by only_announced=true -> returns all 14 announced LE models with configKey, isDefault, estimatedMonthlyPrice, currency, listedAt
+	annRes, isErr, rawAnn := mcpCallTool(t, env, token, "catalog_availability", map[string]any{
+		"only_announced": true,
+	})
+	if isErr {
+		t.Fatalf("catalog_availability only_announced failed: %s", rawAnn)
+	}
+	if int(annRes["totalMatched"].(float64)) != 14 || int(annRes["returned"].(float64)) != 14 {
+		t.Fatalf("expected 14 announced LE models for only_announced=true, got %+v", annRes)
+	}
+	firstAnn := annRes["items"].([]any)[0].(map[string]any)
+	if firstAnn["listingState"] != "announced" ||
+		firstAnn["orderable"] != false ||
+		firstAnn["configKey"] != "ram-32g-ecc-3200+softraid-2x960nvme" ||
+		firstAnn["isDefault"] != true ||
+		firstAnn["estimatedMonthlyPrice"].(float64) != 29.99 ||
+		firstAnn["currency"] != "EUR" ||
+		firstAnn["listedAt"] != "2026-11-17T09:00:00Z" {
+		t.Fatalf("unexpected announced item fields: %+v", firstAnn)
+	}
+
+	// Query by plan_code="27skle" -> returns all 14 announced LE models
+	skleRes, isErr, rawSkle := mcpCallTool(t, env, token, "catalog_availability", map[string]any{
+		"plan_code": "27skle",
+		"mode":      "compact",
+	})
+	if isErr || int(skleRes["totalMatched"].(float64)) != 14 {
+		t.Fatalf("expected 14 announced LE models for plan_code=27skle, got isErr=%v %s", isErr, rawSkle)
+	}
+
+	// Query by listing_state="listed" -> returns only 1 listed model
+	listedRes, isErr, rawListed := mcpCallTool(t, env, token, "catalog_availability", map[string]any{
+		"listing_state": "listed",
+	})
+	if isErr || int(listedRes["totalMatched"].(float64)) != 1 {
+		t.Fatalf("expected 1 listed model for listing_state=listed, got isErr=%v %s", isErr, rawListed)
+	}
+
+	// 3. Verify catalog_sku_changes with announcedSkus summary counts, saleStarted, replacedFrom, listing_state filter, and type="replaced"
+	env.catalog.mu.Lock()
+	env.catalog.skuStatus = map[string]any{
+		"initialized":   true,
+		"endpoint":      "ovh-eu",
+		"totalSkus":     16,
+		"listedSkus":    1,
+		"announcedSkus": 14,
+		"presaleSkus":   1,
+	}
+	env.catalog.skuChanges = []map[string]any{
+		{
+			"planCode":     "27skle01-v1",
+			"name":         "KS-LE-1",
+			"type":         "added",
+			"changeType":   "ADDED",
+			"listingState": "listed",
+			"saleStarted":  true,
+			"replacedFrom": "",
+			"timestamp":    "2026-11-17T10:00:00Z",
+		},
+		{
+			"planCode":     "24sys02-v3",
+			"name":         "SYS-2",
+			"type":         "replaced",
+			"changeType":   "REPLACED",
+			"listingState": "listed",
+			"saleStarted":  false,
+			"replacedFrom": "24sys022",
+			"timestamp":    "2026-11-17T09:30:00Z",
+		},
+		{
+			"planCode":     "27skle02-v1",
+			"name":         "KS-LE-2",
+			"type":         "added",
+			"changeType":   "ADDED",
+			"listingState": "announced",
+			"saleStarted":  false,
+			"replacedFrom": "",
+			"timestamp":    "2026-11-17T09:00:00Z",
+		},
+	}
+	env.catalog.trackedSkus = []map[string]any{
+		{
+			"planCode":     "24sys02-v3",
+			"name":         "SYS-2",
+			"listingState": "listed",
+			"saleStarted":  false,
+			"replacedFrom": "24sys022",
+		},
+		{
+			"planCode":     "27skle01-v1",
+			"name":         "KS-LE-1",
+			"listingState": "listed",
+			"saleStarted":  true,
+			"replacedFrom": "",
+		},
+		{
+			"planCode":     "27skle02-v1",
+			"name":         "KS-LE-2",
+			"listingState": "announced",
+			"saleStarted":  false,
+			"replacedFrom": "",
+		},
+	}
+	env.catalog.mu.Unlock()
+
+	skuAll, isErr, rawSKUAll := mcpCallTool(t, env, token, "catalog_sku_changes", map[string]any{})
+	if isErr {
+		t.Fatalf("catalog_sku_changes failed: %s", rawSKUAll)
+	}
+	if int(skuAll["totalSkus"].(float64)) != 16 ||
+		int(skuAll["listedSkus"].(float64)) != 1 ||
+		int(skuAll["announcedSkus"].(float64)) != 14 ||
+		int(skuAll["presaleSkus"].(float64)) != 1 {
+		t.Fatalf("unexpected summary counts on catalog_sku_changes: %+v", skuAll)
+	}
+	recentCh := skuAll["recentChanges"].([]any)
+	if len(recentCh) != 3 {
+		t.Fatalf("expected 3 recentChanges, got %d", len(recentCh))
+	}
+	if recentCh[0].(map[string]any)["saleStarted"] != true {
+		t.Fatalf("expected saleStarted=true on first change: %+v", recentCh[0])
+	}
+	if recentCh[1].(map[string]any)["replacedFrom"] != "24sys022" {
+		t.Fatalf("expected replacedFrom='24sys022' on second change: %+v", recentCh[1])
+	}
+	trackedList := skuAll["trackedSkus"].([]any)
+	if len(trackedList) != 3 || trackedList[0].(map[string]any)["replacedFrom"] != "24sys022" || trackedList[1].(map[string]any)["saleStarted"] != true {
+		t.Fatalf("unexpected trackedSkus in catalog_sku_changes: %+v", trackedList)
+	}
+
+	// Filter by type="replaced"
+	skuReplaced, isErr, rawSKUReplaced := mcpCallTool(t, env, token, "catalog_sku_changes", map[string]any{
+		"type": "replaced",
+	})
+	if isErr {
+		t.Fatalf("catalog_sku_changes type=replaced failed: %s", rawSKUReplaced)
+	}
+	repChanges := skuReplaced["recentChanges"].([]any)
+	if len(repChanges) != 1 || repChanges[0].(map[string]any)["planCode"] != "24sys02-v3" || repChanges[0].(map[string]any)["replacedFrom"] != "24sys022" {
+		t.Fatalf("expected 1 replaced change for 24sys02-v3, got %+v", repChanges)
+	}
+
+	// Filter by listing_state="announced"
+	skuAnnounced, isErr, rawSKUAnnounced := mcpCallTool(t, env, token, "catalog_sku_changes", map[string]any{
+		"listing_state": "announced",
+	})
+	if isErr {
+		t.Fatalf("catalog_sku_changes listing_state=announced failed: %s", rawSKUAnnounced)
+	}
+	annChanges := skuAnnounced["recentChanges"].([]any)
+	annTracked := skuAnnounced["trackedSkus"].([]any)
+	if len(annChanges) != 1 || annChanges[0].(map[string]any)["planCode"] != "27skle02-v1" {
+		t.Fatalf("expected 1 announced change for 27skle02-v1, got %+v", annChanges)
+	}
+	if len(annTracked) != 1 || annTracked[0].(map[string]any)["planCode"] != "27skle02-v1" {
+		t.Fatalf("expected 1 announced trackedSku for 27skle02-v1, got %+v", annTracked)
 	}
 }

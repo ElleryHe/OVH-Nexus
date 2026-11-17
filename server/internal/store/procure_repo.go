@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -17,6 +18,10 @@ type QueueItem struct {
 	PlanCode                string   `json:"planCode"`
 	Datacenters             []string `json:"datacenters"`
 	Options                 []string `json:"options"`
+	ConfigKey               string   `json:"configKey,omitempty"`
+	ConfigLabel             string   `json:"configLabel,omitempty"`
+	MaxMonthlyPrice         float64  `json:"maxMonthlyPrice,omitempty"`
+	Currency                string   `json:"currency,omitempty"`
 	Quantity                int      `json:"quantity"`
 	Purchased               int      `json:"purchased"`
 	FailureCount            int      `json:"failureCount"`
@@ -40,6 +45,8 @@ type PriceInfo struct {
 	WithTax      float64 `json:"withTax,omitempty"`
 	WithoutTax   float64 `json:"withoutTax,omitempty"`
 	Tax          float64 `json:"tax,omitempty"`
+	SetupFee     float64 `json:"setupFee,omitempty"`
+	MonthlyExVAT float64 `json:"monthlyExVat,omitempty"`
 	CurrencyCode string  `json:"currencyCode,omitempty"`
 	Text         string  `json:"text,omitempty"`
 }
@@ -52,11 +59,15 @@ type PurchaseHistory struct {
 	PlanCode          string     `json:"planCode"`
 	Datacenter        string     `json:"datacenter"`
 	Options           []string   `json:"options"`
+	ConfigKey         string     `json:"configKey,omitempty"`
+	ConfigLabel       string     `json:"configLabel,omitempty"`
+	Quantity          int        `json:"quantity,omitempty"`
 	Status            string     `json:"status"`
 	OrderID           string     `json:"orderId,omitempty"`
 	OrderURL          string     `json:"orderUrl,omitempty"`
 	PriceText         string     `json:"priceText,omitempty"`
 	Price             *PriceInfo `json:"price,omitempty"`
+	SetupFee          float64    `json:"setupFee,omitempty"`
 	AutoPaid          bool       `json:"autoPaid"`
 	AttemptCount      int        `json:"attemptCount,omitempty"`
 	Sequence          int        `json:"sequence,omitempty"`
@@ -78,28 +89,34 @@ type Stats struct {
 
 // StockHistoryEntry records an availability transition for a dedicated stock subscription.
 type StockHistoryEntry struct {
-	Timestamp  string         `json:"timestamp"`
-	Datacenter string         `json:"datacenter"`
-	Status     string         `json:"status"`
-	ChangeType string         `json:"changeType"`
-	OldStatus  string         `json:"oldStatus"`
-	Config     map[string]any `json:"config,omitempty"`
+	Timestamp   string         `json:"timestamp"`
+	Datacenter  string         `json:"datacenter"`
+	Status      string         `json:"status"`
+	ChangeType  string         `json:"changeType"`
+	OldStatus   string         `json:"oldStatus"`
+	TargetID    string         `json:"targetId,omitempty"`
+	ConfigKey   string         `json:"configKey,omitempty"`
+	ConfigLabel string         `json:"configLabel,omitempty"`
+	Config      map[string]any `json:"config,omitempty"`
 }
 
 // StockSubscription represents a dedicated server stock monitor subscription.
 type StockSubscription struct {
-	AccountID         string              `json:"accountId,omitempty"`
-	PlanCode          string              `json:"planCode"`
-	ServerName        string              `json:"serverName,omitempty"`
-	Datacenters       []string            `json:"datacenters"`
-	NotifyAvailable   bool                `json:"notifyAvailable"`
-	NotifyUnavailable bool                `json:"notifyUnavailable"`
-	AutoOrder         bool                `json:"autoOrder"`
-	AutoOrderQuantity int                 `json:"autoOrderQuantity"`
-	LastStatus        map[string]string   `json:"lastStatus"`
-	History           []StockHistoryEntry `json:"history"`
-	CreatedAt         string              `json:"createdAt"`
-	UpdatedAt         string              `json:"updatedAt,omitempty"`
+	AccountID            string              `json:"accountId,omitempty"`
+	PlanCode             string              `json:"planCode"`
+	ServerName           string              `json:"serverName,omitempty"`
+	Subsidiary           string              `json:"subsidiary,omitempty"`
+	Datacenters          []string            `json:"datacenters"`
+	NotifyAvailable      bool                `json:"notifyAvailable"`
+	NotifyUnavailable    bool                `json:"notifyUnavailable"`
+	AutoOrder            bool                `json:"autoOrder"`
+	AutoOrderQuantity    int                 `json:"autoOrderQuantity"`
+	Targets              []StockTarget       `json:"targets"`
+	NeedsConfigSelection bool                `json:"needsConfigSelection,omitempty"`
+	LastStatus           map[string]string   `json:"lastStatus"`
+	History              []StockHistoryEntry `json:"history"`
+	CreatedAt            string              `json:"createdAt"`
+	UpdatedAt            string              `json:"updatedAt,omitempty"`
 }
 
 // VPSHistoryEntry records a VPS datacenter availability transition.
@@ -151,6 +168,10 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 		&item.PlanCode,
 		&dcsJSON,
 		&optsJSON,
+		&item.ConfigKey,
+		&item.ConfigLabel,
+		&item.MaxMonthlyPrice,
+		&item.Currency,
 		&item.Quantity,
 		&item.Purchased,
 		&item.FailureCount,
@@ -190,6 +211,7 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, error) {
 	query := `
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
+		       config_key, config_label, max_monthly_price, currency,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
 		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
@@ -222,6 +244,7 @@ func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, e
 func (s *Store) GetQueueItem(ctx context.Context, id string) (*QueueItem, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
+		       config_key, config_label, max_monthly_price, currency,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
 		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
@@ -269,6 +292,9 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 		item.Source = strings.TrimSpace(item.Source)
 	}
 	item.SourceRef = strings.TrimSpace(item.SourceRef)
+	item.ConfigKey = strings.TrimSpace(item.ConfigKey)
+	item.ConfigLabel = strings.TrimSpace(item.ConfigLabel)
+	item.Currency = strings.TrimSpace(item.Currency)
 	now := nowUTC()
 	if item.CreatedAt == "" {
 		item.CreatedAt = now
@@ -281,12 +307,14 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO order_queue (
 			id, account_id, plan_code, datacenters_json, options_json,
+			config_key, config_label, max_monthly_price, currency,
 			quantity, purchased, failure_count, max_retry_count, status,
 			retry_interval, retry_count, last_check_time, next_attempt_at,
 			auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		item.ID, item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
+		item.ConfigKey, item.ConfigLabel, item.MaxMonthlyPrice, item.Currency,
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
 		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError,
@@ -313,6 +341,9 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 		item.Source = strings.TrimSpace(item.Source)
 	}
 	item.SourceRef = strings.TrimSpace(item.SourceRef)
+	item.ConfigKey = strings.TrimSpace(item.ConfigKey)
+	item.ConfigLabel = strings.TrimSpace(item.ConfigLabel)
+	item.Currency = strings.TrimSpace(item.Currency)
 	item.UpdatedAt = nowUTC()
 	dcsJSON, _ := json.Marshal(item.Datacenters)
 	optsJSON, _ := json.Marshal(item.Options)
@@ -320,12 +351,14 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE order_queue SET
 			account_id = ?, plan_code = ?, datacenters_json = ?, options_json = ?,
+			config_key = ?, config_label = ?, max_monthly_price = ?, currency = ?,
 			quantity = ?, purchased = ?, failure_count = ?, max_retry_count = ?, status = ?,
 			retry_interval = ?, retry_count = ?, last_check_time = ?, next_attempt_at = ?,
 			auto_pay = ?, waive_retractation_period = ?, source = ?, source_ref = ?, last_error = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
+		item.ConfigKey, item.ConfigLabel, item.MaxMonthlyPrice, item.Currency,
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
 		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError, item.UpdatedAt,
@@ -376,7 +409,8 @@ func (s *Store) ClearQueue(ctx context.Context, accountID string) (int64, error)
 // ListHistory returns purchase history entries newest first, optionally filtered by accountID.
 func (s *Store) ListHistory(ctx context.Context, accountID string) ([]PurchaseHistory, error) {
 	query := `
-		SELECT id, task_id, account_id, plan_code, datacenter, options_json, status,
+		SELECT id, task_id, account_id, plan_code, datacenter, options_json,
+		       config_key, config_label, quantity, status,
 		       order_id, order_url, price_text, price_json, auto_paid,
 		       attempt_count, sequence, delivered_notified, error_message, timestamp
 		FROM purchase_history`
@@ -399,7 +433,8 @@ func (s *Store) ListHistory(ctx context.Context, accountID string) ([]PurchaseHi
 		var optsJSON, priceJSON string
 		var autoPaidInt, deliveredInt int
 		if err := rows.Scan(
-			&h.ID, &h.TaskID, &h.AccountID, &h.PlanCode, &h.Datacenter, &optsJSON, &h.Status,
+			&h.ID, &h.TaskID, &h.AccountID, &h.PlanCode, &h.Datacenter, &optsJSON,
+			&h.ConfigKey, &h.ConfigLabel, &h.Quantity, &h.Status,
 			&h.OrderID, &h.OrderURL, &h.PriceText, &priceJSON, &autoPaidInt,
 			&h.AttemptCount, &h.Sequence, &deliveredInt, &h.ErrorMessage, &h.Timestamp,
 		); err != nil {
@@ -409,10 +444,16 @@ func (s *Store) ListHistory(ctx context.Context, accountID string) ([]PurchaseHi
 		if h.Options == nil {
 			h.Options = []string{}
 		}
+		if h.Quantity <= 0 {
+			h.Quantity = 1
+		}
 		if priceJSON != "" && priceJSON != "{}" && priceJSON != "null" {
 			var p PriceInfo
 			if json.Unmarshal([]byte(priceJSON), &p) == nil {
 				h.Price = &p
+				if h.SetupFee == 0 && p.SetupFee > 0 {
+					h.SetupFee = p.SetupFee
+				}
 			}
 		}
 		h.AutoPaid = autoPaidInt == 1
@@ -430,12 +471,18 @@ func (s *Store) AddHistory(ctx context.Context, entry PurchaseHistory) (*Purchas
 	if entry.Options == nil {
 		entry.Options = []string{}
 	}
+	if entry.Quantity <= 0 {
+		entry.Quantity = 1
+	}
 	if entry.Timestamp == "" {
 		entry.Timestamp = nowUTC()
 	}
 	optsJSON, _ := json.Marshal(entry.Options)
 	priceJSON := "{}"
 	if entry.Price != nil {
+		if entry.SetupFee > 0 && entry.Price.SetupFee == 0 {
+			entry.Price.SetupFee = entry.SetupFee
+		}
 		if b, err := json.Marshal(entry.Price); err == nil {
 			priceJSON = string(b)
 		}
@@ -443,12 +490,14 @@ func (s *Store) AddHistory(ctx context.Context, entry PurchaseHistory) (*Purchas
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO purchase_history (
-			id, task_id, account_id, plan_code, datacenter, options_json, status,
+			id, task_id, account_id, plan_code, datacenter, options_json,
+			config_key, config_label, quantity, status,
 			order_id, order_url, price_text, price_json, auto_paid,
 			attempt_count, sequence, delivered_notified, error_message, timestamp
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		entry.ID, entry.TaskID, entry.AccountID, entry.PlanCode, entry.Datacenter, string(optsJSON), entry.Status,
+		entry.ID, entry.TaskID, entry.AccountID, entry.PlanCode, entry.Datacenter, string(optsJSON),
+		entry.ConfigKey, entry.ConfigLabel, entry.Quantity, entry.Status,
 		entry.OrderID, entry.OrderURL, entry.PriceText, priceJSON, boolToInt(entry.AutoPaid),
 		entry.AttemptCount, entry.Sequence, boolToInt(entry.DeliveredNotified), entry.ErrorMessage, entry.Timestamp,
 	)
@@ -527,12 +576,80 @@ func (s *Store) ComputeStats(ctx context.Context, accountID string) (*Stats, err
 
 // ==================== stock_subscriptions ====================
 
-// ListStockSubs lists dedicated stock subscriptions, optionally filtered by accountID.
+// MigrateLegacyStockSub migrates a legacy StockSubscription with empty Targets into a single-target notify subscription.
+// It returns true if migration was performed, and pausedAutoOrder=true if legacy AutoOrder was paused.
+func MigrateLegacyStockSub(sub *StockSubscription) (migrated bool, pausedAutoOrder bool) {
+	if sub == nil {
+		return false, false
+	}
+	if sub.Datacenters == nil {
+		sub.Datacenters = []string{}
+	}
+	if sub.LastStatus == nil {
+		sub.LastStatus = map[string]string{}
+	}
+	if sub.History == nil {
+		sub.History = []StockHistoryEntry{}
+	}
+	if len(sub.Targets) == 0 {
+		lastCopy := make(map[string]string, len(sub.LastStatus))
+		for k, v := range sub.LastStatus {
+			lastCopy[k] = v
+		}
+		dcsCopy := append([]string{}, sub.Datacenters...)
+		if dcsCopy == nil {
+			dcsCopy = []string{}
+		}
+		sub.Targets = []StockTarget{
+			{
+				ID:                "default",
+				ConfigKey:         "",
+				Options:           []string{},
+				Label:             "",
+				Datacenters:       dcsCopy,
+				NotifyAvailable:   sub.NotifyAvailable,
+				NotifyUnavailable: sub.NotifyUnavailable,
+				AutoOrder:         false,
+				Quantity:          max(1, sub.AutoOrderQuantity),
+				LastStatus:        lastCopy,
+			},
+		}
+		if sub.AutoOrder {
+			sub.AutoOrder = false
+			sub.NeedsConfigSelection = true
+			pausedAutoOrder = true
+		}
+		return true, pausedAutoOrder
+	}
+
+	for i := range sub.Targets {
+		t := &sub.Targets[i]
+		if strings.TrimSpace(t.ID) == "" {
+			t.ID = fmt.Sprintf("tgt-%d", i+1)
+		}
+		if t.Options == nil {
+			t.Options = []string{}
+		}
+		if t.Datacenters == nil {
+			t.Datacenters = []string{}
+		}
+		if t.LastStatus == nil {
+			t.LastStatus = map[string]string{}
+		}
+		if t.Quantity <= 0 {
+			t.Quantity = 1
+		}
+	}
+	return false, false
+}
+
+// ListStockSubs lists dedicated stock subscriptions, optionally filtered by accountID,
+// transparently migrating legacy subscriptions that lack explicit targets.
 func (s *Store) ListStockSubs(ctx context.Context, accountID string) ([]StockSubscription, error) {
 	query := `
-		SELECT account_id, plan_code, server_name, datacenters_json,
+		SELECT account_id, plan_code, server_name, subsidiary, datacenters_json,
 		       notify_available, notify_unavailable, auto_order, auto_order_quantity,
-		       last_status_json, history_json, created_at, updated_at
+		       targets_json, needs_config_selection, last_status_json, history_json, created_at, updated_at
 		FROM stock_subscriptions`
 	var args []any
 	if strings.TrimSpace(accountID) != "" {
@@ -545,21 +662,22 @@ func (s *Store) ListStockSubs(ctx context.Context, accountID string) ([]StockSub
 	if err != nil {
 		return nil, fmt.Errorf("store: list stock subscriptions: %w", err)
 	}
-	defer rows.Close()
 
 	subs := make([]StockSubscription, 0)
 	for rows.Next() {
 		var sub StockSubscription
-		var dcsJSON, lastJSON, histJSON string
-		var nAvail, nUnavail, autoOrd int
+		var dcsJSON, targetsJSON, lastJSON, histJSON string
+		var nAvail, nUnavail, autoOrd, needsCfg int
 		if err := rows.Scan(
-			&sub.AccountID, &sub.PlanCode, &sub.ServerName, &dcsJSON,
+			&sub.AccountID, &sub.PlanCode, &sub.ServerName, &sub.Subsidiary, &dcsJSON,
 			&nAvail, &nUnavail, &autoOrd, &sub.AutoOrderQuantity,
-			&lastJSON, &histJSON, &sub.CreatedAt, &sub.UpdatedAt,
+			&targetsJSON, &needsCfg, &lastJSON, &histJSON, &sub.CreatedAt, &sub.UpdatedAt,
 		); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("store: scan stock subscription: %w", err)
 		}
 		_ = json.Unmarshal([]byte(dcsJSON), &sub.Datacenters)
+		_ = json.Unmarshal([]byte(targetsJSON), &sub.Targets)
 		_ = json.Unmarshal([]byte(lastJSON), &sub.LastStatus)
 		_ = json.Unmarshal([]byte(histJSON), &sub.History)
 		if sub.Datacenters == nil {
@@ -574,9 +692,35 @@ func (s *Store) ListStockSubs(ctx context.Context, accountID string) ([]StockSub
 		sub.NotifyAvailable = nAvail == 1
 		sub.NotifyUnavailable = nUnavail == 1
 		sub.AutoOrder = autoOrd == 1
+		sub.NeedsConfigSelection = needsCfg == 1
 		subs = append(subs, sub)
 	}
-	return subs, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	for i := range subs {
+		migrated, pausedAuto := MigrateLegacyStockSub(&subs[i])
+		if migrated {
+			if pausedAuto {
+				slog.Info("migrated legacy stock subscription: paused auto-order pending explicit configuration selection", "planCode", subs[i].PlanCode)
+				_, _ = s.InsertLog(
+					ctx,
+					nowUTC(),
+					"INFO",
+					"stock-monitor",
+					"migrated legacy stock subscription: paused auto-order pending explicit configuration selection",
+					fmt.Sprintf(`{"planCode":%q}`, subs[i].PlanCode),
+				)
+			}
+			if saved, upErr := s.UpsertStockSub(ctx, subs[i]); upErr == nil && saved != nil {
+				subs[i] = *saved
+			}
+		}
+	}
+	return subs, nil
 }
 
 // UpsertStockSub creates or updates a stock monitor subscription for (account_id, plan_code).
@@ -586,6 +730,27 @@ func (s *Store) UpsertStockSub(ctx context.Context, sub StockSubscription) (*Sto
 	}
 	if sub.Datacenters == nil {
 		sub.Datacenters = []string{}
+	}
+	if sub.Targets == nil {
+		sub.Targets = []StockTarget{}
+	}
+	for i := range sub.Targets {
+		t := &sub.Targets[i]
+		if strings.TrimSpace(t.ID) == "" {
+			t.ID = fmt.Sprintf("tgt-%d", i+1)
+		}
+		if t.Options == nil {
+			t.Options = []string{}
+		}
+		if t.Datacenters == nil {
+			t.Datacenters = []string{}
+		}
+		if t.LastStatus == nil {
+			t.LastStatus = map[string]string{}
+		}
+		if t.Quantity <= 0 {
+			t.Quantity = 1
+		}
 	}
 	if sub.LastStatus == nil {
 		sub.LastStatus = map[string]string{}
@@ -603,29 +768,34 @@ func (s *Store) UpsertStockSub(ctx context.Context, sub StockSubscription) (*Sto
 	sub.UpdatedAt = now
 
 	dcsJSON, _ := json.Marshal(sub.Datacenters)
+	targetsJSON, _ := json.Marshal(sub.Targets)
 	lastJSON, _ := json.Marshal(sub.LastStatus)
 	histJSON, _ := json.Marshal(sub.History)
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO stock_subscriptions (
-			account_id, plan_code, server_name, datacenters_json,
+			account_id, plan_code, server_name, subsidiary, datacenters_json,
 			notify_available, notify_unavailable, auto_order, auto_order_quantity,
-			last_status_json, history_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			targets_json, needs_config_selection, last_status_json, history_json, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(account_id, plan_code) DO UPDATE SET
 			server_name = excluded.server_name,
+			subsidiary = excluded.subsidiary,
 			datacenters_json = excluded.datacenters_json,
 			notify_available = excluded.notify_available,
 			notify_unavailable = excluded.notify_unavailable,
 			auto_order = excluded.auto_order,
 			auto_order_quantity = excluded.auto_order_quantity,
+			targets_json = excluded.targets_json,
+			needs_config_selection = excluded.needs_config_selection,
 			last_status_json = excluded.last_status_json,
 			history_json = excluded.history_json,
 			updated_at = excluded.updated_at
 	`,
-		sub.AccountID, sub.PlanCode, sub.ServerName, string(dcsJSON),
+		sub.AccountID, sub.PlanCode, sub.ServerName, sub.Subsidiary, string(dcsJSON),
 		boolToInt(sub.NotifyAvailable), boolToInt(sub.NotifyUnavailable),
 		boolToInt(sub.AutoOrder), sub.AutoOrderQuantity,
+		string(targetsJSON), boolToInt(sub.NeedsConfigSelection),
 		string(lastJSON), string(histJSON), sub.CreatedAt, sub.UpdatedAt,
 	)
 	if err != nil {
@@ -658,6 +828,27 @@ func (s *Store) BatchUpsertStockSubs(ctx context.Context, subs []StockSubscripti
 		if sub.Datacenters == nil {
 			sub.Datacenters = []string{}
 		}
+		if sub.Targets == nil {
+			sub.Targets = []StockTarget{}
+		}
+		for i := range sub.Targets {
+			t := &sub.Targets[i]
+			if strings.TrimSpace(t.ID) == "" {
+				t.ID = fmt.Sprintf("tgt-%d", i+1)
+			}
+			if t.Options == nil {
+				t.Options = []string{}
+			}
+			if t.Datacenters == nil {
+				t.Datacenters = []string{}
+			}
+			if t.LastStatus == nil {
+				t.LastStatus = map[string]string{}
+			}
+			if t.Quantity <= 0 {
+				t.Quantity = 1
+			}
+		}
 		if sub.LastStatus == nil {
 			sub.LastStatus = map[string]string{}
 		}
@@ -678,29 +869,34 @@ func (s *Store) BatchUpsertStockSubs(ctx context.Context, subs []StockSubscripti
 		}
 
 		dcsJSON, _ := json.Marshal(sub.Datacenters)
+		targetsJSON, _ := json.Marshal(sub.Targets)
 		lastJSON, _ := json.Marshal(sub.LastStatus)
 		histJSON, _ := json.Marshal(sub.History)
 
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO stock_subscriptions (
-				account_id, plan_code, server_name, datacenters_json,
+				account_id, plan_code, server_name, subsidiary, datacenters_json,
 				notify_available, notify_unavailable, auto_order, auto_order_quantity,
-				last_status_json, history_json, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				targets_json, needs_config_selection, last_status_json, history_json, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(account_id, plan_code) DO UPDATE SET
 				server_name = excluded.server_name,
+				subsidiary = excluded.subsidiary,
 				datacenters_json = excluded.datacenters_json,
 				notify_available = excluded.notify_available,
 				notify_unavailable = excluded.notify_unavailable,
 				auto_order = excluded.auto_order,
 				auto_order_quantity = excluded.auto_order_quantity,
+				targets_json = excluded.targets_json,
+				needs_config_selection = excluded.needs_config_selection,
 				last_status_json = excluded.last_status_json,
 				history_json = excluded.history_json,
 				updated_at = excluded.updated_at
 		`,
-			sub.AccountID, sub.PlanCode, sub.ServerName, string(dcsJSON),
+			sub.AccountID, sub.PlanCode, sub.ServerName, sub.Subsidiary, string(dcsJSON),
 			boolToInt(sub.NotifyAvailable), boolToInt(sub.NotifyUnavailable),
 			boolToInt(sub.AutoOrder), sub.AutoOrderQuantity,
+			string(targetsJSON), boolToInt(sub.NeedsConfigSelection),
 			string(lastJSON), string(histJSON), sub.CreatedAt, sub.UpdatedAt,
 		); err != nil {
 			return 0, 0, fmt.Errorf("store: batch upsert stock sub %q: %w", sub.PlanCode, err)

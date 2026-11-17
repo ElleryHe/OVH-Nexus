@@ -156,7 +156,7 @@ const NotificationCenterPage = () => {
   const [notifLocale, setNotifLocale] = useState<NotificationLocale>("en");
   const [rules, setRules] = useState<NotificationRules>({
     skuEnabled: true,
-    skuInterval: 600,
+    skuInterval: 120,
     skuTrackConfigs: false,
     skuRanges: ["KS", "RISE", "SYS", "ADV", "SCALE", "HGR"],
     skuMergeRegional: true,
@@ -1097,7 +1097,7 @@ const NotificationCenterPage = () => {
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-medium text-cyber-muted mb-1">
-                    轮询检测间隔（秒，建议 300 ~ 1800 秒）
+                    轮询检测间隔（秒，默认 120 秒，最低 60 秒）
                   </label>
                   <input
                     type="number"
@@ -1109,7 +1109,7 @@ const NotificationCenterPage = () => {
                         ...r,
                         skuInterval: Math.max(
                           60,
-                          parseInt(e.target.value, 10) || 600
+                          parseInt(e.target.value, 10) || 120
                         ),
                       }))
                     }
@@ -1123,7 +1123,7 @@ const NotificationCenterPage = () => {
                     内置防误报保护机制已开启：
                   </div>
                   <div>• 首次启动仅建立型号基线，不触发轰炸推送</div>
-                  <div>• 型号下架需连续 2 轮检测均缺失才确认推送</div>
+                  <div>• 型号缺失后约 20 秒自动快速复核一次，确认下架即推送</div>
                   <div>
                     • 单轮型号总数骤降超过 30% 时自动判定为 API 抖动并跳过
                   </div>

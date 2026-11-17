@@ -3,11 +3,48 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.3.1]
+:::note[当前最新版本：v1.3.2]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.3.2] - 2026-11-17 — 已公布未开售机型追踪、按配置精确监控、价格保护上限与紧凑视图重塑
+
+### 新增功能 (Added)
+
+- **已公布未开售状态 (`listingState: "announced"`) 与开售 (`saleStarted`) 自动提醒**：
+  - 识别已写入 OVHcloud 公开价格目录（`eco` / `baremetalServers`）但尚未在实时机房库存接口开放的机型（如 `KS-LE`、`RISE-LE`、`SYS-LE` 限量版系列），在实时库存矩阵（`/availability`）与服务器目录（`/servers`）中提供**已公布未开售（Announced）**徽标与筛选器。
+  - 当 `announced` 机型首次出现在实时库存接口时，自动生成带 `saleStarted: true` 的变动记录并推送**正式开售（Sale Started）**通知。
+- **产品线同代换号 (`replaced`) 识别与分组聚合通知**：
+  - 自动识别同一产品线（同型号名称 + CPU）在单轮扫描中的 `planCode` 换代（如 `24sys022 -> 24sys02-v3`），合并为单条 `replaced`（含 `replacedFrom`）时间线事件，不再同时误报新增与下架；并将 `sku.changed` 通知按产品线归类为**新增、开售、换代、下架**四个分组。
+  - MCP 网关 `catalog_availability` 与 `catalog_sku_changes` 工具同步补齐 `listingState`（`listed` / `announced` / `presale`）、`saleStarted` 与 `replacedFrom` 字段。
+- **机型配置明细与预估月价接口 (`GET /api/catalog/plans/{planCode}/configs`)**：
+  - 返回指定 `planCode` 合并后的标配与全部可选硬件配置列表，包含 `configKey`（`内存+硬盘`指纹）、三语可读规格、附加项 `options`、标配标识 `isDefault`、不含税预估月价 `estimatedMonthlyPrice`（基础月价 + 内存/硬盘附加月费）、币种及各机房实时库存状态。
+- **多目标配置级库存监控 (`targets[]`) 与购物车实时月价上限保护 (`maxMonthlyPrice`)**：
+  - 库存监控订阅升级为多目标结构（`StockSubscription.targets[]`），每个目标可独立设置具体硬件配置（`configKey` + `options`，仅通知模式可选「任意配置」）、机房列表、到货/断货通知开关、自动下单开关、采购数量 `quantity` 以及不含税**最高月价上限（`maxMonthlyPrice`）**。
+  - 自动下单结算前会读取购物车实时报价中的**不含税月维护费**（安装费单独展示、不计入月价上限）并与 `maxMonthlyPrice` 比对；若超限则拒绝下单（`PRICE_ABOVE_LIMIT`），记录 `WARNING` 日志并发送 `order.failed` 告警通知。
+
+### 变更与优化 (Changed)
+
+- **紧凑单行实时库存矩阵 (`/availability`)**：
+  - 按 `planCode` 合并为**一机一行**（`-sgp`、`-syd`、`-mum` 等区域独立 `planCode` 仍各自成行），行内提供配置下拉框，支持在「全部配置」（展示各机房最佳库存状态与有货配置数）与任意具体配置（展示该配置不含税月价、有货机房数与各机房库存）之间即时切换。
+- **紧凑可折叠服务器目录卡片 (`/servers`)**：
+  - 桌面端改为每行 3～4 张的默认折叠紧凑卡片网格（仅展示型号、CPU、单行标配摘要、起始月价、有货机房紧凑国旗徽标与快捷操作按钮）。
+  - 卡片展开后将原本分离的「默认配置」与「可选配置」合并为**统一可选配置列表**（标配带徽标且默认选中，默认仅展示有货配置与机房，支持勾选「显示全部库存（含无货）」），并将带宽、vRack 等放入默认收起的「高级选项」；点击「加入采购队列」或「快速监控」时自动带入已选配置与机房。
+- **SKU 变动监控提速与 20 秒快速复核确认**：
+  - 默认扫描周期由 `600` 秒缩短为 `120` 秒（已保存的旧默认值 `600` 自动平滑迁移为 `120`），独服 SKU 扫描通过 `GetBaremetalDictionary` 与 VPS 目录解耦提速；当检测到某 SKU 缺失时，约 `20` 秒内自动发起单独复核，确认缺失后立即推送下架通知，无需等待下一完整周期。
+- **旧版自动下单订阅安全迁移 (`needsConfigSelection`)**：
+  - 升级后旧版库存订阅会自动转换为「任意配置 + 原机房」通知目标；若旧订阅曾开启 `autoOrder` 但未指定具体配置，系统会自动暂停其自动下单并标记 `needsConfigSelection: true`，在监控页展示醒目横幅引导用户选择具体配置与最高月价后重新开启。
+
+### 问题修复 (Fixed)
+
+- **目录字典别名污染清理与预售状态精准判定**：
+  - 在 `CatalogDictionary` 中新增仅记录 `eco` 与 `baremetalServers` 真实 `planCode` 的 `RealPlans`，将 `baseCode` 与 `product` 别名严格限制为元数据查找键；静默清理历史残留的别名 SKU（如 `24sys02-1g`、`27risele01`），不触发假下架通知，并修复 `presale` / `listed` / `announced` 状态判定与非基线记录的 `listedAt` 时间回填。
+- **移除自动下单未指定配置时的盲选兜底并落实采购数量**：
+  - 移除 `stock-monitor` 自动采购在未传入 `options` 时自动回退选择第一个有货配置的高风险兜底逻辑（强制要求 `CONFIG_REQUIRED_FOR_AUTO_ORDER`），并在创建购物车时严格应用目标配置的 `quantity` 采购数量。
+
+---
 
 ## [1.3.1] - 2026-11-17 — 预售机型识别、一键快速监控、三语机房地理信息字典与 MCP 网关增强
 

@@ -27,7 +27,7 @@ import (
 const (
 	MCPProtocolVersion = "2025-03-26"
 	MCPServerName      = "ovh-nexus-mcp"
-	MCPServerVersion   = "1.3.1"
+	MCPServerVersion   = "1.3.2"
 	maxMCPBodyBytes    = 2 << 20
 )
 

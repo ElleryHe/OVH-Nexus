@@ -3,11 +3,48 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.3.1]
+:::note[Dernière version : v1.3.2]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.3.2] - 2026-11-17 — État SKU Annoncé & Remplacé, Surveillance Multi-Cibles par Configuration & Interface Compacte
+
+### Ajouté (Added)
+
+- **État de Publication « Annoncé » (`listingState: "announced"`) & Alertes de Mise en Vente (`saleStarted`)** :
+  - Identifie les modèles bare-metal déjà publiés avec leur tarif dans les catalogues publics OVHcloud (`eco` / `baremetalServers`) avant l'ouverture de leur flux de disponibilité (tels que les séries limitées `KS-LE`, `RISE-LE` et `SYS-LE`), avec badges et filtres **Annoncé** (`Announced`) dans la Matrice de Disponibilité (`/availability`) et le Catalogue Serveurs (`/servers`).
+  - Émet automatiquement un événement `saleStarted: true` et une notification **Mise en vente** dès qu'un modèle `announced` apparaît dans le flux de disponibilité des datacenters.
+- **Détection des Remplacements de Version SKU (`replaced`) & Notifications Groupées par Gamme** :
+  - Fusionne le retrait d'un ancien `planCode` et l'ajout d'un nouveau au sein de la même gamme matérielle (`Nom + CPU`, ex. `24sys022 -> 24sys02-v3`) en une seule entrée `replaced` (`replacedFrom`), et regroupe les notifications `sku.changed` par sections (**Nouveau**, **Mise en vente**, **Remplacé**, **Retiré**) sous chaque ligne de produit.
+  - Enrichissement des outils MCP `catalog_availability` et `catalog_sku_changes` avec `listingState` (`listed` / `announced` / `presale`), `saleStarted` et `replacedFrom`.
+- **Point de Terminaison des Configurations par Modèle (`GET /api/catalog/plans/{planCode}/configs`)** :
+  - Renvoie la liste fusionnée de la configuration par défaut et des configurations de disponibilité pour tout `planCode`, incluant `configKey` (`mémoire+stockage`), libellés localisés, codes d'options `options`, marqueur `isDefault`, prix mensuel estimé HT (`estimatedMonthlyPrice`), devise et stock par datacenter.
+- **Surveillance de Stock Multi-Cibles par Configuration (`targets[]`) & Plafond Mensuel HT (`maxMonthlyPrice`)** :
+  - Chaque abonnement de stock (`StockSubscription.targets[]`) peut désormais définir une ou plusieurs cibles associant chacune une configuration précise (`configKey` + `options`, ou `Toute configuration` en mode notification seule), des datacenters, des alertes de stock, l'option `autoOrder`, la quantité (`quantity`) et un **prix mensuel maximum HT (`maxMonthlyPrice`)**.
+  - Avant de valider une commande automatique, le montant mensuel récurrent HT du devis panier en direct (hors frais d'installation uniques) est comparé à `maxMonthlyPrice` ; en cas de dépassement (`PRICE_ABOVE_LIMIT`), la commande est bloquée avec un journal `WARNING` et une alerte `order.failed`.
+
+### Modifié (Changed)
+
+- **Matrice de Disponibilité en Direct Compacte (`/availability`)** :
+  - Regroupement à **1 ligne par `planCode`** (les variantes régionales distinctes `-sgp`, `-syd`, `-mum` conservant leur propre ligne) avec sélecteur de configuration intégré permettant de basculer entre `Toutes les configurations` (meilleur état de stock et compteur de configs disponibles) et une configuration précise (prix mensuel HT et stock par datacenter).
+- **Cartes Compactes Repliables dans le Catalogue Serveurs (`/servers`)** :
+  - Nouvelle grille compacte de 3 à 4 cartes par ligne sur ordinateur, repliées par défaut (nom du modèle, CPU, résumé standard sur 1 ligne, prix mensuel d'appel et badges datacenters compacts).
+  - À l'ouverture d'une carte, fusion de la configuration par défaut et des configurations optionnelles en **une seule liste sélectionnable** (filtrée par défaut sur le stock disponible avec case à cocher **Afficher tout l'inventaire (y compris hors stock)** et section repliable **Options avancées**), transmettant directement la configuration choisie vers **Ajouter à la file** et **Surveillance rapide**.
+- **Veille SKU Bare-Metal Accélérée & Revérification Rapide à 20 s** :
+  - Réduction de l'intervalle par défaut de la veille SKU de `600 s` à `120 s` (avec migration automatique de l'ancien défaut `600 s`), isolation du catalogue bare-metal (`GetBaremetalDictionary`) vis-à-vis du catalogue VPS, et ajout d'une revérification dédiée sous ~20 secondes avant de confirmer le retrait d'un SKU manquant.
+- **Migration Sécurisée des Anciens Abonnements d'Achat Auto (`needsConfigSelection`)** :
+  - Les anciens abonnements de stock sont convertis en cibles de notification « Toute configuration » ; ceux dont `autoOrder` était actif sans configuration explicite mettent l'achat automatique en pause (`needsConfigSelection: true`) et affichent une bannière d'avertissement sur `/monitor` invitant à choisir une configuration et un plafond de prix.
+
+### Corrigé (Fixed)
+
+- **Suppression de la Pollution par Alias dans le Dictionnaire Catalogue & Détection Prévente** :
+  - Séparation des `planCode` réels (`RealPlans`) et des clés d'alias de métadonnées (`baseCode`, `product`) dans `CatalogDictionary`, nettoyage silencieux des anciens alias SKU (`24sys02-1g`, `27risele01`) sans fausse alerte de retrait, et rétro-remplissage de `listedAt` à partir de `firstSeen`.
+- **Validation Stricte de la Configuration & de la Quantité lors de l'Achat Automatique** :
+  - Suppression du repli implicite sur la première configuration disponible lorsqu'aucune option n'était fournie lors d'un achat déclenché par `stock-monitor` (`CONFIG_REQUIRED_FOR_AUTO_ORDER`), et prise en compte effective du paramètre `quantity` lors de la création du panier.
+
+---
 
 ## [1.3.1] - 2026-11-17 — Détection des Modèles en Prévente, Surveillance Rapide, Datacenters Trilingues & Améliorations MCP
 

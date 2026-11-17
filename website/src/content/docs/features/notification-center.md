@@ -18,9 +18,9 @@ Each notification channel can subscribe independently to any combination of the 
 | :--- | :---: | :---: | :--- |
 | `stock.available` | Yes | No | A monitored server/VPS configuration transitions from out-of-stock to available. |
 | `stock.unavailable` | No | No | A previously available monitored configuration goes out of stock. |
-| `sku.changed` | Yes | No | The Public SKU Watcher detects a newly racked SKU, confirmed SKU removal, or sub-configuration change. |
+| `sku.changed` | Yes | No | The Public SKU Watcher detects newly listed/presale SKUs, `announced -> listed` sale starts (`saleStarted`), product-line version refreshes (`replaced`), or confirmed discontinuations (grouped by product line). |
 | `order.success` | Yes | Yes | Automated purchase queue or quick-order generates an OVHcloud order (includes payment link). |
-| `order.failed` | Yes | Yes | An automated order attempt fails during cart creation, configuration, or checkout. |
+| `order.failed` | Yes | Yes | An automated order attempt fails during cart creation, configuration, checkout, or when the live cart quote exceeds `maxMonthlyPrice` (`PRICE_ABOVE_LIMIT`). |
 | `order.delivered` | Yes | Yes | A tracked order in `/me/order` completes physical delivery (`INSTALLATION` done). |
 | `service.expiring` | No | Yes | A Dedicated Server or VPS is within `expiryDays` (default `7` days) of expiration. |
 | `mcp.action` | Yes | No | An AI client executes an L2 procurement/queue mutation or L3 operation via `/api/mcp`. |

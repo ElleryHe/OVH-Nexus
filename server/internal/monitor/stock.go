@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +19,12 @@ import (
 	"ovh-nexus/server/internal/procurement"
 	"ovh-nexus/server/internal/store"
 )
+
+// StockTarget aliases store.StockTarget for monitor consumers.
+type StockTarget = store.StockTarget
+
+// ErrConfigRequiredForAutoOrder indicates auto-order was enabled without an explicit configuration selection.
+var ErrConfigRequiredForAutoOrder = errors.New("CONFIG_REQUIRED_FOR_AUTO_ORDER: auto-order requires an explicit configuration selection")
 
 // IsStockRunning reports whether the 5s dedicated stock monitor goroutine is active.
 func (s *Service) IsStockRunning() bool {
@@ -158,147 +165,213 @@ func (s *Service) CheckStockNow(ctx context.Context) (int, error) {
 			modelName = sub.PlanCode
 		}
 
-		dcStatuses, dcConfigs, dcSpecs := evaluatePlanDatacenters(items, sub.PlanCode, sub.Datacenters, locale)
-		if len(dcStatuses) == 0 {
-			continue
-		}
-
 		if sub.LastStatus == nil {
 			sub.LastStatus = make(map[string]string)
 		}
+		if len(sub.Targets) == 0 {
+			store.MigrateLegacyStockSub(&sub)
+		}
 
 		dirty := false
-		for displayDC, curStatus := range dcStatuses {
-			oldStatus := sub.LastStatus[displayDC]
-			key := stockTrackKey(sub.AccountID, sub.PlanCode, displayDC)
-			now := time.Now()
-			nowUTC := now.UTC().Format(time.RFC3339Nano)
+		for ti := range sub.Targets {
+			target := &sub.Targets[ti]
+			if target.LastStatus == nil {
+				target.LastStatus = make(map[string]string)
+			}
+			if target.Quantity <= 0 {
+				target.Quantity = 1
+			}
+			if strings.TrimSpace(target.ID) == "" {
+				target.ID = fmt.Sprintf("tgt-%d", ti+1)
+			}
 
-			wasAvail := isStockStatusAvailable(oldStatus)
-			curAvail := isStockStatusAvailable(curStatus)
+			dcStatuses, dcConfigs, dcSpecs := evaluateTargetDatacenters(items, sub.PlanCode, *target, locale)
+			if len(dcStatuses) == 0 {
+				continue
+			}
 
-			switch {
-			case oldStatus == "":
-				sub.LastStatus[displayDC] = curStatus
-				if curAvail {
-					s.stateMu.Lock()
-					if _, exists := s.inStockSince[key]; !exists {
-						s.inStockSince[key] = now
+			dcs := make([]string, 0, len(dcStatuses))
+			for dc := range dcStatuses {
+				dcs = append(dcs, dc)
+			}
+			slices.Sort(dcs)
+
+			for _, displayDC := range dcs {
+				curStatus := dcStatuses[displayDC]
+				oldStatus := target.LastStatus[displayDC]
+				key := stockTargetTrackKey(sub.AccountID, sub.PlanCode, target.ID, target.ConfigKey, displayDC)
+				now := time.Now()
+				nowUTC := now.UTC().Format(time.RFC3339Nano)
+
+				wasAvail := isStockStatusAvailable(oldStatus)
+				curAvail := isStockStatusAvailable(curStatus)
+
+				switch {
+				case oldStatus == "":
+					target.LastStatus[displayDC] = curStatus
+					sub.LastStatus[displayDC] = pickBetterStockStatus(sub.LastStatus[displayDC], curStatus)
+					if curAvail {
+						s.stateMu.Lock()
+						if _, exists := s.inStockSince[key]; !exists {
+							s.inStockSince[key] = now
+						}
+						s.stateMu.Unlock()
 					}
+					dirty = true
+
+				case !wasAvail && curAvail:
+					transitions++
+					s.stateMu.Lock()
+					s.inStockSince[key] = now
 					s.stateMu.Unlock()
-				}
-				dirty = true
 
-			case !wasAvail && curAvail:
-				transitions++
-				s.stateMu.Lock()
-				s.inStockSince[key] = now
-				s.stateMu.Unlock()
-
-				sub.LastStatus[displayDC] = curStatus
-				sub.History = appendStockHistory(sub.History, store.StockHistoryEntry{
-					Timestamp:  nowUTC,
-					Datacenter: displayDC,
-					Status:     curStatus,
-					ChangeType: "available",
-					OldStatus:  oldStatus,
-					Config:     dcConfigs[displayDC],
-				})
-				// Persist immediately BEFORE firing alerts or auto-order to prevent duplicate triggers on concurrent ticks.
-				_, _ = s.store.UpsertStockSub(ctx, sub)
-				dirty = false
-
-				if s.log != nil {
-					s.log.Info(logger.SourceStockMonitor, "Dedicated stock transitioned to available",
-						"planCode", sub.PlanCode,
-						"datacenter", strings.ToUpper(displayDC),
-						"availability", curStatus,
-						"oldStatus", oldStatus,
-					)
-				}
-
-				if sub.NotifyAvailable && s.notify != nil {
-					priceText := s.resolveStockPriceText(ctx, sub.AccountID, sub.PlanCode, displayDC, meta)
-					_ = s.notify.EmitEvent(ctx, notify.EventStockAvailable, "", "", nil, notify.WithTemplateData(map[string]any{
-						"preferTemplate": true,
-						"planCode":       sub.PlanCode,
-						"modelName":      modelName,
-						"datacenter":     strings.ToUpper(displayDC),
-						"specs":          dcSpecs[displayDC],
-						"price":          priceText,
-					}))
-				}
-
-				if sub.AutoOrder && s.procurement != nil {
-					qoRes, statusCode, qoErr := s.procurement.QuickOrder(ctx, procurement.QuickOrderRequest{
-						AccountID:               sub.AccountID,
-						PlanCode:                sub.PlanCode,
-						Datacenter:              displayDC,
-						AutoPay:                 false,
-						WaiveRetractationPeriod: false,
-						Source:                  "stock-monitor",
-						SourceRef:               sub.PlanCode,
+					target.LastStatus[displayDC] = curStatus
+					sub.LastStatus[displayDC] = curStatus
+					cfgMap := dcConfigs[displayDC]
+					if cfgMap == nil {
+						cfgMap = make(map[string]any)
+					}
+					if strings.TrimSpace(target.ConfigKey) != "" {
+						cfgMap["configKey"] = strings.TrimSpace(target.ConfigKey)
+					}
+					if strings.TrimSpace(target.Label) != "" {
+						cfgMap["label"] = strings.TrimSpace(target.Label)
+					}
+					sub.History = appendStockHistory(sub.History, store.StockHistoryEntry{
+						Timestamp:   nowUTC,
+						Datacenter:  displayDC,
+						Status:      curStatus,
+						ChangeType:  "available",
+						OldStatus:   oldStatus,
+						TargetID:    target.ID,
+						ConfigKey:   target.ConfigKey,
+						ConfigLabel: target.Label,
+						Config:      cfgMap,
 					})
-					if qoErr != nil && s.log != nil {
-						if statusCode == http.StatusBadRequest && (errors.Is(qoErr, procurement.ErrNoPricedConfig) || (qoRes != nil && qoRes.Code == "NO_PRICED_CONFIG")) {
-							s.log.Info(logger.SourceStockMonitor, "Stock available for presale SKU; awaiting public catalog pricing before auto-order",
-								"planCode", sub.PlanCode,
-								"datacenter", displayDC,
-							)
-						} else {
-							s.log.Warn(logger.SourceStockMonitor, "Auto-order quick-order trigger skipped or failed",
-								"planCode", sub.PlanCode,
-								"datacenter", displayDC,
-								"error", qoErr.Error(),
-							)
+					// Persist immediately BEFORE firing alerts or auto-order to prevent duplicate triggers on concurrent ticks.
+					_, _ = s.store.UpsertStockSub(ctx, sub)
+					dirty = false
+
+					if s.log != nil {
+						s.log.Info(logger.SourceStockMonitor, "Dedicated stock transitioned to available",
+							"planCode", sub.PlanCode,
+							"datacenter", strings.ToUpper(displayDC),
+							"configKey", target.ConfigKey,
+							"label", target.Label,
+							"availability", curStatus,
+							"oldStatus", oldStatus,
+						)
+					}
+
+					if target.NotifyAvailable && s.notify != nil {
+						priceText := s.resolveStockPriceText(ctx, sub.AccountID, sub.PlanCode, displayDC, meta)
+						specsTxt := buildTargetSpecsText(*target, dcSpecs[displayDC])
+						_ = s.notify.EmitEvent(ctx, notify.EventStockAvailable, "", "", nil, notify.WithTemplateData(map[string]any{
+							"preferTemplate": true,
+							"planCode":       sub.PlanCode,
+							"modelName":      modelName,
+							"datacenter":     strings.ToUpper(displayDC),
+							"specs":          specsTxt,
+							"configKey":      target.ConfigKey,
+							"configLabel":    target.Label,
+							"price":          priceText,
+						}))
+					}
+
+					if target.AutoOrder && s.procurement != nil {
+						qoRes, statusCode, qoErr := s.procurement.QuickOrder(ctx, procurement.QuickOrderRequest{
+							AccountID:               sub.AccountID,
+							PlanCode:                sub.PlanCode,
+							Datacenter:              displayDC,
+							Options:                 append([]string{}, target.Options...),
+							ConfigKey:               target.ConfigKey,
+							ConfigLabel:             target.Label,
+							Quantity:                max(1, target.Quantity),
+							MaxMonthlyPrice:         target.MaxMonthlyPrice,
+							Currency:                target.Currency,
+							Subsidiary:              sub.Subsidiary,
+							AutoPay:                 false,
+							WaiveRetractationPeriod: false,
+							Source:                  "stock-monitor",
+							SourceRef:               sub.PlanCode,
+						})
+						if qoErr != nil && s.log != nil {
+							if statusCode == http.StatusBadRequest && (errors.Is(qoErr, procurement.ErrNoPricedConfig) || (qoRes != nil && qoRes.Code == "NO_PRICED_CONFIG")) {
+								s.log.Info(logger.SourceStockMonitor, "Stock available for presale SKU; awaiting public catalog pricing before auto-order",
+									"planCode", sub.PlanCode,
+									"datacenter", displayDC,
+								)
+							} else {
+								s.log.Warn(logger.SourceStockMonitor, "Auto-order quick-order trigger skipped or failed",
+									"planCode", sub.PlanCode,
+									"datacenter", displayDC,
+									"configKey", target.ConfigKey,
+									"error", qoErr.Error(),
+								)
+							}
 						}
 					}
-				}
 
-			case wasAvail && !curAvail:
-				transitions++
-				var durStr string
-				s.stateMu.Lock()
-				if started, ok := s.inStockSince[key]; ok {
-					durStr = formatDurationShort(now.Sub(started))
-					delete(s.inStockSince, key)
-				}
-				s.stateMu.Unlock()
+				case wasAvail && !curAvail:
+					transitions++
+					var durStr string
+					s.stateMu.Lock()
+					if started, ok := s.inStockSince[key]; ok {
+						durStr = formatDurationShort(now.Sub(started))
+						delete(s.inStockSince, key)
+					}
+					s.stateMu.Unlock()
 
-				sub.LastStatus[displayDC] = curStatus
-				sub.History = appendStockHistory(sub.History, store.StockHistoryEntry{
-					Timestamp:  nowUTC,
-					Datacenter: displayDC,
-					Status:     curStatus,
-					ChangeType: "unavailable",
-					OldStatus:  oldStatus,
-				})
-				_, _ = s.store.UpsertStockSub(ctx, sub)
-				dirty = false
-
-				if s.log != nil {
-					s.log.Info(logger.SourceStockMonitor, "Dedicated stock transitioned to unavailable",
-						"planCode", sub.PlanCode,
-						"datacenter", strings.ToUpper(displayDC),
-						"duration", durStr,
-					)
-				}
-
-				if sub.NotifyUnavailable && s.notify != nil {
-					_ = s.notify.EmitEvent(ctx, notify.EventStockUnavailable, "", "", nil, notify.WithTemplateData(map[string]any{
-						"preferTemplate": true,
-						"planCode":       sub.PlanCode,
-						"modelName":      modelName,
-						"datacenter":     strings.ToUpper(displayDC),
-						"duration":       durStr,
-					}))
-				}
-
-			default:
-				if oldStatus != curStatus {
+					target.LastStatus[displayDC] = curStatus
 					sub.LastStatus[displayDC] = curStatus
-					dirty = true
+					sub.History = appendStockHistory(sub.History, store.StockHistoryEntry{
+						Timestamp:   nowUTC,
+						Datacenter:  displayDC,
+						Status:      curStatus,
+						ChangeType:  "unavailable",
+						OldStatus:   oldStatus,
+						TargetID:    target.ID,
+						ConfigKey:   target.ConfigKey,
+						ConfigLabel: target.Label,
+					})
+					_, _ = s.store.UpsertStockSub(ctx, sub)
+					dirty = false
+
+					if s.log != nil {
+						s.log.Info(logger.SourceStockMonitor, "Dedicated stock transitioned to unavailable",
+							"planCode", sub.PlanCode,
+							"datacenter", strings.ToUpper(displayDC),
+							"configKey", target.ConfigKey,
+							"duration", durStr,
+						)
+					}
+
+					if target.NotifyUnavailable && s.notify != nil {
+						_ = s.notify.EmitEvent(ctx, notify.EventStockUnavailable, "", "", nil, notify.WithTemplateData(map[string]any{
+							"preferTemplate": true,
+							"planCode":       sub.PlanCode,
+							"modelName":      modelName,
+							"datacenter":     strings.ToUpper(displayDC),
+							"configKey":      target.ConfigKey,
+							"configLabel":    target.Label,
+							"duration":       durStr,
+						}))
+					}
+
+				default:
+					if oldStatus != curStatus {
+						target.LastStatus[displayDC] = curStatus
+						sub.LastStatus[displayDC] = pickBetterStockStatus(sub.LastStatus[displayDC], curStatus)
+						dirty = true
+					}
 				}
+			}
+		}
+
+		// Recompute top-level LastStatus summary across all targets.
+		for _, t := range sub.Targets {
+			for dc, st := range t.LastStatus {
+				sub.LastStatus[dc] = pickBetterStockStatus(sub.LastStatus[dc], st)
 			}
 		}
 
@@ -353,19 +426,19 @@ func (s *Service) currentLocale(ctx context.Context) string {
 	return notify.LocaleEN
 }
 
-func evaluatePlanDatacenters(
+func evaluateTargetDatacenters(
 	items []catalog.RawAvailabilityItem,
 	planCode string,
-	targetDCs []string,
+	target store.StockTarget,
 	locale string,
 ) (map[string]string, map[string]map[string]any, map[string]string) {
 	statuses := make(map[string]string)
 	configs := make(map[string]map[string]any)
 	specs := make(map[string]string)
 
-	wantAll := len(targetDCs) == 0
-	targetSet := make(map[string]bool, len(targetDCs))
-	for _, dc := range targetDCs {
+	wantAll := len(target.Datacenters) == 0
+	targetSet := make(map[string]bool, len(target.Datacenters))
+	for _, dc := range target.Datacenters {
 		norm := catalog.NormalizeDisplayDatacenter(dc)
 		if norm != "" {
 			targetSet[norm] = true
@@ -373,8 +446,33 @@ func evaluatePlanDatacenters(
 		}
 	}
 
+	if wantAll {
+		hasPlanRow := false
+		for _, item := range items {
+			if !strings.EqualFold(item.PlanCode, planCode) {
+				continue
+			}
+			hasPlanRow = true
+			for _, dc := range item.Datacenters {
+				if displayDC := catalog.NormalizeDisplayDatacenter(dc.Datacenter); displayDC != "" {
+					statuses[displayDC] = "unavailable"
+				}
+			}
+		}
+		if hasPlanRow {
+			for dc := range target.LastStatus {
+				if displayDC := catalog.NormalizeDisplayDatacenter(dc); displayDC != "" {
+					statuses[displayDC] = "unavailable"
+				}
+			}
+		}
+	}
+
 	for _, item := range items {
 		if !strings.EqualFold(item.PlanCode, planCode) {
+			continue
+		}
+		if !rowMatchesStockTarget(item, target) {
 			continue
 		}
 		for _, dc := range item.Datacenters {
@@ -395,14 +493,20 @@ func evaluatePlanDatacenters(
 				statuses[displayDC] = avail
 			}
 			if isStockStatusAvailable(avail) {
-				if !seen || !isStockStatusAvailable(existing) {
+				if !seen || !isStockStatusAvailable(existing) || pickBetterStockStatus(existing, avail) != existing {
 					statuses[displayDC] = avail
+					cfgKey := catalog.BuildConfigKey(item.Memory, item.Storage)
+					if strings.TrimSpace(target.ConfigKey) != "" {
+						cfgKey = strings.TrimSpace(target.ConfigKey)
+					}
 					configs[displayDC] = map[string]any{
 						"fqn":           item.FQN,
 						"memory":        item.Memory,
 						"storage":       item.Storage,
 						"systemStorage": item.SystemStorage,
 						"gpu":           item.GPU,
+						"configKey":     cfgKey,
+						"label":         target.Label,
 					}
 					memTxt := catalog.FormatMemory(catalog.ParseMemoryCode(item.Memory, nil), locale)
 					stoTxt := catalog.FormatStorage(catalog.ParseStorageCode(item.Storage, false), locale)
@@ -421,6 +525,116 @@ func evaluatePlanDatacenters(
 	return statuses, configs, specs
 }
 
+func rowMatchesStockTarget(item catalog.RawAvailabilityItem, target store.StockTarget) bool {
+	cfgKey := strings.TrimSpace(target.ConfigKey)
+	if cfgKey == "" {
+		return true
+	}
+	rowKey := catalog.BuildConfigKey(item.Memory, item.Storage)
+	if strings.EqualFold(rowKey, cfgKey) || (strings.TrimSpace(item.ConfigKey) != "" && strings.EqualFold(strings.TrimSpace(item.ConfigKey), cfgKey)) {
+		return true
+	}
+	if strings.Contains(cfgKey, "+") {
+		parts := strings.SplitN(cfgKey, "+", 2)
+		wantMem := strings.TrimSpace(parts[0])
+		wantSto := strings.TrimSpace(parts[1])
+		if hardwareCodeMatches(item.Memory, wantMem) && hardwareCodeMatches(item.Storage, wantSto) {
+			return true
+		}
+	}
+	if len(target.Options) > 0 {
+		var optMem, optSto string
+		for _, opt := range target.Options {
+			low := strings.ToLower(strings.TrimSpace(opt))
+			if strings.Contains(low, "ram-") || strings.Contains(low, "memory") {
+				optMem = low
+			} else if strings.Contains(low, "softraid-") || strings.Contains(low, "hardraid-") ||
+				strings.Contains(low, "hybrid") || strings.Contains(low, "noraid-") ||
+				strings.Contains(low, "nvme") || strings.Contains(low, "ssd") || strings.Contains(low, "hdd") {
+				optSto = low
+			}
+		}
+		if optMem != "" || optSto != "" {
+			memOK := optMem == "" || hardwareCodeMatches(item.Memory, optMem)
+			stoOK := optSto == "" || hardwareCodeMatches(item.Storage, optSto)
+			if memOK && stoOK {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hardwareCodeMatches(rawCode, targetCode string) bool {
+	r := strings.ToLower(strings.TrimSpace(rawCode))
+	t := strings.ToLower(strings.TrimSpace(targetCode))
+	if r == "" || t == "" {
+		return r == t
+	}
+	if r == t {
+		return true
+	}
+	if strings.HasPrefix(t, r+"-") || strings.HasPrefix(r, t+"-") {
+		return true
+	}
+	stdR := catalog.StandardizeConfig(r)
+	stdT := catalog.StandardizeConfig(t)
+	return stdR != "" && stdR == stdT
+}
+
+func buildTargetSpecsText(target store.StockTarget, fallbackSpecs string) string {
+	lbl := strings.TrimSpace(target.Label)
+	key := strings.TrimSpace(target.ConfigKey)
+	switch {
+	case lbl != "" && key != "" && !strings.EqualFold(lbl, key) && !strings.Contains(lbl, key):
+		return fmt.Sprintf("%s (%s)", lbl, key)
+	case lbl != "":
+		return lbl
+	case fallbackSpecs != "" && key != "" && !strings.Contains(fallbackSpecs, key):
+		return fmt.Sprintf("%s (%s)", fallbackSpecs, key)
+	case fallbackSpecs != "":
+		return fallbackSpecs
+	default:
+		return key
+	}
+}
+
+func pickBetterStockStatus(a, b string) string {
+	rank := func(s string) int {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "", "unknown":
+			return 0
+		case "unavailable":
+			return 1
+		case "480h":
+			return 2
+		case "72h", "240h":
+			return 3
+		case "1h-low":
+			return 4
+		case "1h-high", "available":
+			return 5
+		default:
+			return 3
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+func evaluatePlanDatacenters(
+	items []catalog.RawAvailabilityItem,
+	planCode string,
+	targetDCs []string,
+	locale string,
+) (map[string]string, map[string]map[string]any, map[string]string) {
+	return evaluateTargetDatacenters(items, planCode, store.StockTarget{
+		Datacenters: targetDCs,
+	}, locale)
+}
+
 func isStockStatusAvailable(status string) bool {
 	s := strings.ToLower(strings.TrimSpace(status))
 	return s != "" && s != "unavailable" && s != "unknown"
@@ -428,6 +642,10 @@ func isStockStatusAvailable(status string) bool {
 
 func stockTrackKey(accountID, planCode, dc string) string {
 	return accountID + "|" + planCode + "|" + strings.ToLower(dc)
+}
+
+func stockTargetTrackKey(accountID, planCode, targetID, configKey, dc string) string {
+	return accountID + "|" + planCode + "|" + targetID + "|" + strings.ToLower(strings.TrimSpace(configKey)) + "|" + strings.ToLower(dc)
 }
 
 func appendStockHistory(hist []store.StockHistoryEntry, entry store.StockHistoryEntry) []store.StockHistoryEntry {
@@ -457,6 +675,187 @@ func formatDurationShort(d time.Duration) string {
 	hours := mins / 60
 	remMin := mins % 60
 	return fmt.Sprintf("%dh %dm", hours, remMin)
+}
+
+// AddOrUpdateSubscription validates and persists a single or multi-target stock subscription.
+func (s *Service) AddOrUpdateSubscription(ctx context.Context, sub store.StockSubscription) (*store.StockSubscription, error) {
+	planCode := strings.TrimSpace(sub.PlanCode)
+	if planCode == "" {
+		return nil, errors.New("planCode is required")
+	}
+	sub.PlanCode = planCode
+	sub.AccountID = strings.TrimSpace(sub.AccountID)
+	sub.Subsidiary = strings.TrimSpace(sub.Subsidiary)
+
+	var existing *store.StockSubscription
+	if subs, err := s.store.ListStockSubs(ctx, sub.AccountID); err == nil {
+		for _, it := range subs {
+			if it.PlanCode == planCode {
+				copyIt := it
+				existing = &copyIt
+				if sub.AccountID == "" && existing.AccountID != "" {
+					sub.AccountID = existing.AccountID
+				}
+				break
+			}
+		}
+	}
+
+	dcs := make([]string, 0, len(sub.Datacenters))
+	for _, dc := range sub.Datacenters {
+		if norm := catalog.NormalizeDisplayDatacenter(dc); norm != "" {
+			dcs = append(dcs, norm)
+		}
+	}
+	sub.Datacenters = cleanStrings(dcs)
+
+	if len(sub.Targets) == 0 {
+		if sub.AutoOrder {
+			return nil, ErrConfigRequiredForAutoOrder
+		}
+		qty := sub.AutoOrderQuantity
+		if qty <= 0 {
+			qty = 1
+		}
+		lastStatus := map[string]string{}
+		if existing != nil && existing.LastStatus != nil {
+			for k, v := range existing.LastStatus {
+				lastStatus[k] = v
+			}
+		}
+		sub.Targets = []store.StockTarget{
+			{
+				ID:                "default",
+				ConfigKey:         "",
+				Options:           []string{},
+				Label:             "",
+				Datacenters:       append([]string{}, sub.Datacenters...),
+				NotifyAvailable:   sub.NotifyAvailable,
+				NotifyUnavailable: sub.NotifyUnavailable,
+				AutoOrder:         false,
+				Quantity:          qty,
+				LastStatus:        lastStatus,
+			},
+		}
+	} else {
+		for i := range sub.Targets {
+			t := &sub.Targets[i]
+			t.ConfigKey = strings.TrimSpace(t.ConfigKey)
+			t.Label = strings.TrimSpace(t.Label)
+			t.Options = cleanStrings(t.Options)
+			t.Currency = strings.TrimSpace(t.Currency)
+
+			tDCs := make([]string, 0, len(t.Datacenters))
+			for _, dc := range t.Datacenters {
+				if norm := catalog.NormalizeDisplayDatacenter(dc); norm != "" {
+					tDCs = append(tDCs, norm)
+				}
+			}
+			t.Datacenters = cleanStrings(tDCs)
+
+			if t.AutoOrder {
+				if t.ConfigKey == "" || strings.EqualFold(t.ConfigKey, "any") || strings.EqualFold(t.ConfigKey, "all") || len(t.Options) == 0 {
+					return nil, ErrConfigRequiredForAutoOrder
+				}
+			}
+			if t.Quantity <= 0 {
+				t.Quantity = 1
+			}
+			if strings.TrimSpace(t.ID) == "" {
+				t.ID = fmt.Sprintf("tgt-%d", i+1)
+			}
+			if len(t.LastStatus) == 0 && existing != nil {
+				for _, prevT := range existing.Targets {
+					if (prevT.ID == t.ID && prevT.ConfigKey == t.ConfigKey) || (t.ConfigKey != "" && prevT.ConfigKey == t.ConfigKey) {
+						if len(prevT.LastStatus) > 0 {
+							t.LastStatus = make(map[string]string, len(prevT.LastStatus))
+							for k, v := range prevT.LastStatus {
+								t.LastStatus[k] = v
+							}
+							break
+						}
+					}
+				}
+			}
+			if t.LastStatus == nil {
+				t.LastStatus = map[string]string{}
+			}
+		}
+	}
+
+	anyAutoOrder := false
+	anyNotifyAvail := false
+	anyNotifyUnavail := false
+	autoQty := 1
+	allSpecifyDCs := len(sub.Targets) > 0
+	var mergedDCs []string
+	for _, t := range sub.Targets {
+		if t.AutoOrder {
+			if !anyAutoOrder {
+				autoQty = max(1, t.Quantity)
+			}
+			anyAutoOrder = true
+		}
+		if t.NotifyAvailable {
+			anyNotifyAvail = true
+		}
+		if t.NotifyUnavailable {
+			anyNotifyUnavail = true
+		}
+		if len(t.Datacenters) == 0 {
+			allSpecifyDCs = false
+		} else {
+			mergedDCs = append(mergedDCs, t.Datacenters...)
+		}
+	}
+
+	sub.AutoOrder = anyAutoOrder
+	sub.NotifyAvailable = anyNotifyAvail
+	sub.NotifyUnavailable = anyNotifyUnavail
+	sub.NeedsConfigSelection = false
+	if anyAutoOrder {
+		sub.AutoOrderQuantity = autoQty
+	} else if sub.AutoOrderQuantity <= 0 {
+		sub.AutoOrderQuantity = 1
+	}
+	if len(sub.Datacenters) == 0 && allSpecifyDCs {
+		sub.Datacenters = cleanStrings(mergedDCs)
+	}
+
+	serverName := strings.TrimSpace(sub.ServerName)
+	if serverName == "" && s.catalog != nil {
+		ep, zn := s.resolveEndpointAndZone(ctx, sub.AccountID)
+		serverName = s.catalog.ResolvePlan(ctx, planCode, "", ep, zn).Name
+	}
+	sub.ServerName = serverName
+
+	if sub.LastStatus == nil {
+		sub.LastStatus = map[string]string{}
+	}
+	if sub.History == nil {
+		sub.History = []store.StockHistoryEntry{}
+	}
+	if existing != nil {
+		if len(sub.LastStatus) == 0 && existing.LastStatus != nil {
+			sub.LastStatus = existing.LastStatus
+		}
+		if len(sub.History) == 0 && existing.History != nil {
+			sub.History = existing.History
+		}
+		if sub.CreatedAt == "" {
+			sub.CreatedAt = existing.CreatedAt
+		}
+		if sub.ServerName == "" {
+			sub.ServerName = existing.ServerName
+		}
+	}
+
+	saved, err := s.store.UpsertStockSub(ctx, sub)
+	if err != nil {
+		return nil, err
+	}
+	s.StartStockMonitor(s.getRootCtx())
+	return saved, nil
 }
 
 // ==================== Dedicated Monitor HTTP Handlers ====================
@@ -522,14 +921,16 @@ func (s *Service) HandleListStockSubs(w http.ResponseWriter, r *http.Request) {
 // HandleAddStockSub handles POST /api/monitor/subscriptions and auto-starts the stock monitor.
 func (s *Service) HandleAddStockSub(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		AccountID         string   `json:"accountId"`
-		PlanCode          string   `json:"planCode"`
-		ServerName        string   `json:"serverName"`
-		Datacenters       []string `json:"datacenters"`
-		NotifyAvailable   *bool    `json:"notifyAvailable"`
-		NotifyUnavailable *bool    `json:"notifyUnavailable"`
-		AutoOrder         *bool    `json:"autoOrder"`
-		AutoOrderQuantity int      `json:"autoOrderQuantity"`
+		AccountID         string              `json:"accountId"`
+		PlanCode          string              `json:"planCode"`
+		ServerName        string              `json:"serverName"`
+		Subsidiary        string              `json:"subsidiary,omitempty"`
+		Datacenters       []string            `json:"datacenters"`
+		NotifyAvailable   *bool               `json:"notifyAvailable"`
+		NotifyUnavailable *bool               `json:"notifyUnavailable"`
+		AutoOrder         *bool               `json:"autoOrder"`
+		AutoOrderQuantity int                 `json:"autoOrderQuantity"`
+		Targets           []store.StockTarget `json:"targets"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid stock subscription JSON payload.")
@@ -544,17 +945,6 @@ func (s *Service) HandleAddStockSub(w http.ResponseWriter, r *http.Request) {
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
 	if accountID == "" {
 		accountID = strings.TrimSpace(body.AccountID)
-	}
-
-	var existing *store.StockSubscription
-	if subs, err := s.store.ListStockSubs(r.Context(), accountID); err == nil {
-		for _, it := range subs {
-			if it.PlanCode == planCode {
-				copyIt := it
-				existing = &copyIt
-				break
-			}
-		}
 	}
 
 	notifyAvail := true
@@ -574,48 +964,27 @@ func (s *Service) HandleAddStockSub(w http.ResponseWriter, r *http.Request) {
 		qty = 1
 	}
 
-	dcs := make([]string, 0, len(body.Datacenters))
-	for _, dc := range body.Datacenters {
-		if norm := catalog.NormalizeDisplayDatacenter(dc); norm != "" {
-			dcs = append(dcs, norm)
-		}
-	}
-	dcs = cleanStrings(dcs)
-
-	serverName := strings.TrimSpace(body.ServerName)
-	if serverName == "" && s.catalog != nil {
-		ep, zn := s.resolveEndpointAndZone(r.Context(), accountID)
-		serverName = s.catalog.ResolvePlan(r.Context(), planCode, "", ep, zn).Name
-	}
-
-	sub := store.StockSubscription{
+	saved, err := s.AddOrUpdateSubscription(r.Context(), store.StockSubscription{
 		AccountID:         accountID,
 		PlanCode:          planCode,
-		ServerName:        serverName,
-		Datacenters:       dcs,
+		ServerName:        strings.TrimSpace(body.ServerName),
+		Subsidiary:        strings.TrimSpace(body.Subsidiary),
+		Datacenters:       body.Datacenters,
 		NotifyAvailable:   notifyAvail,
 		NotifyUnavailable: notifyUnavail,
 		AutoOrder:         autoOrder,
 		AutoOrderQuantity: qty,
-		LastStatus:        map[string]string{},
-		History:           []store.StockHistoryEntry{},
-	}
-	if existing != nil {
-		sub.LastStatus = existing.LastStatus
-		sub.History = existing.History
-		sub.CreatedAt = existing.CreatedAt
-		if serverName == "" {
-			sub.ServerName = existing.ServerName
-		}
-	}
-
-	saved, err := s.store.UpsertStockSub(r.Context(), sub)
+		Targets:           body.Targets,
+	})
 	if err != nil {
+		if errors.Is(err, ErrConfigRequiredForAutoOrder) {
+			writeJSONError(w, http.StatusBadRequest, "CONFIG_REQUIRED_FOR_AUTO_ORDER", ErrConfigRequiredForAutoOrder.Error())
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "SUBSCRIPTION_SAVE_FAILED", err.Error())
 		return
 	}
 
-	s.StartStockMonitor(s.getRootCtx())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":       "success",
 		"subscription": saved,
@@ -701,13 +1070,29 @@ func (s *Service) HandleBatchAddStockSubs(w http.ResponseWriter, r *http.Request
 			NotifyUnavailable: notifyUnavail,
 			AutoOrder:         false,
 			AutoOrderQuantity: 1,
-			LastStatus:        map[string]string{},
-			History:           []store.StockHistoryEntry{},
+			Targets: []store.StockTarget{
+				{
+					ID:                "default",
+					ConfigKey:         "",
+					Options:           []string{},
+					Label:             "",
+					Datacenters:       append([]string{}, dcs...),
+					NotifyAvailable:   notifyAvail,
+					NotifyUnavailable: notifyUnavail,
+					AutoOrder:         false,
+					Quantity:          1,
+					LastStatus:        map[string]string{},
+				},
+			},
+			LastStatus: map[string]string{},
+			History:    []store.StockHistoryEntry{},
 		}
 		if prev, ok := existingMap[srv.PlanCode]; ok {
 			sub.Datacenters = prev.Datacenters
 			sub.AutoOrder = prev.AutoOrder
 			sub.AutoOrderQuantity = prev.AutoOrderQuantity
+			sub.Targets = prev.Targets
+			sub.NeedsConfigSelection = prev.NeedsConfigSelection
 			sub.LastStatus = prev.LastStatus
 			sub.History = prev.History
 			sub.CreatedAt = prev.CreatedAt

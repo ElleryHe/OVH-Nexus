@@ -239,13 +239,37 @@ func TestStockMonitorTransitionsAutoOrderAndRoutes(t *testing.T) {
 
 	env := newMonitorTestEnv(t, mockOVH)
 
-	// 1. Add subscription (auto-starts stock monitor).
-	req := httptest.NewRequest(http.MethodPost, "/api/monitor/subscriptions", strings.NewReader(`{
+	// 1. Adding subscription with autoOrder=true and no explicit config must return 400 CONFIG_REQUIRED_FOR_AUTO_ORDER.
+	badReq := httptest.NewRequest(http.MethodPost, "/api/monitor/subscriptions", strings.NewReader(`{
 		"planCode": "24ska01",
 		"datacenters": ["gra"],
 		"notifyAvailable": true,
-		"notifyUnavailable": true,
 		"autoOrder": true
+	}`))
+	badRec := httptest.NewRecorder()
+	env.router.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "CONFIG_REQUIRED_FOR_AUTO_ORDER") {
+		t.Fatalf("expected 400 CONFIG_REQUIRED_FOR_AUTO_ORDER when autoOrder=true without targets, got %d %s", badRec.Code, badRec.Body.String())
+	}
+
+	// Add subscription with explicit target config (auto-starts stock monitor).
+	req := httptest.NewRequest(http.MethodPost, "/api/monitor/subscriptions", strings.NewReader(`{
+		"planCode": "24ska01",
+		"datacenters": ["gra"],
+		"targets": [
+			{
+				"id": "tgt-1",
+				"configKey": "ram-32g-noecc-2133+softraid-2x480ssd",
+				"options": ["ram-32g-noecc-2133-24ska01", "softraid-2x480ssd-24ska01"],
+				"label": "32 GB DDR4 + 2x480 GB SSD",
+				"datacenters": ["gra"],
+				"notifyAvailable": true,
+				"notifyUnavailable": true,
+				"autoOrder": true,
+				"quantity": 1,
+				"maxMonthlyPrice": 20.00
+			}
+		]
 	}`))
 	rec := httptest.NewRecorder()
 	env.router.ServeHTTP(rec, req)
@@ -730,5 +754,246 @@ func TestLifecycleWatcherDeliveredAndExpiringDeduplication(t *testing.T) {
 	}
 	if env.tg.count() != 2 {
 		t.Fatalf("expected deduplicated lifecycle scan (still 2 alerts), got %d", env.tg.count())
+	}
+}
+
+func TestStockMultiTargetMigrationAndConfigSpecificAutoOrder(t *testing.T) {
+	var cfg32Status, cfg64Status atomic.Value
+	cfg32Status.Store("unavailable")
+	cfg64Status.Store("unavailable")
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/auth/time":
+			_ = json.NewEncoder(w).Encode(time.Now().Unix())
+		case r.URL.Path == "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24ska01",
+						"invoiceName": "KS-A | Intel i7-6700k",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "KS-A"}},
+						"pricings":    []map[string]any{{"mode": "default", "capacities": []string{"renew"}, "price": 2000000000}},
+						"addonFamilies": []map[string]any{
+							{
+								"name":    "memory",
+								"default": "ram-32g-noecc-2133-24ska01",
+								"addons":  []string{"ram-32g-noecc-2133-24ska01", "ram-64g-noecc-2133-24ska01"},
+							},
+							{
+								"name":    "storage",
+								"default": "softraid-2x480ssd-24ska01",
+								"addons":  []string{"softraid-2x480ssd-24ska01", "softraid-2x960nvme-24ska01"},
+							},
+						},
+					},
+				},
+			})
+		case r.URL.Path == "/order/catalog/public/baremetalServers" || r.URL.Path == "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case r.URL.Path == "/dedicated/server/datacenter/availabilities":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":      "24ska01.ram-32g-noecc-2133.softraid-2x480ssd",
+					"planCode": "24ska01",
+					"memory":   "ram-32g-noecc-2133",
+					"storage":  "softraid-2x480ssd",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": cfg32Status.Load().(string)},
+					},
+				},
+				{
+					"fqn":      "24ska01.ram-64g-noecc-2133.softraid-2x960nvme",
+					"planCode": "24ska01",
+					"memory":   "ram-64g-noecc-2133",
+					"storage":  "softraid-2x960nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": cfg64Status.Load().(string)},
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart":
+			_ = json.NewEncoder(w).Encode(map[string]any{"cartId": "stock-quote-mt"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/assign"):
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/stock-quote-mt/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{"itemId": 7})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/stock-quote-mt/item/7/configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/stock-quote-mt/eco/options":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"planCode": "ram-32g-noecc-2133-24ska01", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "softraid-2x480ssd-24ska01", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "ram-64g-noecc-2133-24ska01", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "softraid-2x960nvme-24ska01", "duration": "P1M", "pricingMode": "default"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/stock-quote-mt/eco/options":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/stock-quote-mt/summary":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withTax":      map[string]any{"value": 42.00, "currencyCode": "EUR"},
+					"withoutTax":   map[string]any{"value": 35.00, "currencyCode": "EUR"},
+					"tax":          map[string]any{"value": 7.00, "currencyCode": "EUR"},
+					"currencyCode": "EUR",
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/stock-quote-mt":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/order/cart/stock-quote-mt":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+
+	env := newMonitorTestEnv(t, mockOVH)
+
+	// 1. Legacy subscription migration: seed a legacy subscription with empty Targets and AutoOrder=true.
+	_, err := env.st.UpsertStockSub(context.Background(), store.StockSubscription{
+		AccountID:         "acc-1",
+		PlanCode:          "24ska01",
+		ServerName:        "KS-A",
+		Datacenters:       []string{"gra"},
+		NotifyAvailable:   true,
+		NotifyUnavailable: false,
+		AutoOrder:         true,
+		AutoOrderQuantity: 2,
+		LastStatus:        map[string]string{"gra": "unavailable"},
+	})
+	if err != nil {
+		t.Fatalf("seed legacy stock sub failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/monitor/subscriptions", nil)
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/monitor/subscriptions failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var listedSubs []store.StockSubscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &listedSubs); err != nil {
+		t.Fatalf("decode subscriptions failed: %v", err)
+	}
+	if len(listedSubs) != 1 {
+		t.Fatalf("expected 1 migrated subscription, got %d", len(listedSubs))
+	}
+	mig := listedSubs[0]
+	if mig.AutoOrder || !mig.NeedsConfigSelection || len(mig.Targets) != 1 {
+		t.Fatalf("expected legacy auto-order paused with needsConfigSelection=true and 1 default target, got %+v", mig)
+	}
+	if mig.Targets[0].ID != "default" || mig.Targets[0].ConfigKey != "" || mig.Targets[0].AutoOrder || mig.Targets[0].Quantity != 2 {
+		t.Fatalf("unexpected migrated target: %+v", mig.Targets[0])
+	}
+
+	// Verify migration INFO log was persisted.
+	logs, _ := env.st.QueryLogs(context.Background(), "INFO", "stock-monitor", "migrated legacy stock subscription", 10)
+	if len(logs) == 0 {
+		t.Fatalf("expected INFO log entry for legacy subscription migration")
+	}
+
+	// 2. Validation: target with autoOrder=true but missing options or configKey -> 400 CONFIG_REQUIRED_FOR_AUTO_ORDER.
+	for _, badPayload := range []string{
+		`{"planCode":"24ska01","targets":[{"configKey":"","options":["ram-32g"],"autoOrder":true}]}`,
+		`{"planCode":"24ska01","targets":[{"configKey":"ram-32g+softraid-2x480ssd","options":[],"autoOrder":true}]}`,
+	} {
+		req = httptest.NewRequest(http.MethodPost, "/api/monitor/subscriptions", strings.NewReader(badPayload))
+		rec = httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for payload %s, got %d %s", badPayload, rec.Code, rec.Body.String())
+		}
+		var errBody map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &errBody)
+		if errBody["code"] != "CONFIG_REQUIRED_FOR_AUTO_ORDER" {
+			t.Fatalf("expected code=CONFIG_REQUIRED_FOR_AUTO_ORDER, got %+v", errBody)
+		}
+	}
+
+	// 3. Save multi-target subscription:
+	//    - Target 1: 32G config (notify-only, autoOrder=false)
+	//    - Target 2: 64G config (notify + autoOrder=true, quantity=3, maxMonthlyPrice=45.00)
+	req = httptest.NewRequest(http.MethodPost, "/api/monitor/subscriptions", strings.NewReader(`{
+		"planCode": "24ska01",
+		"targets": [
+			{
+				"id": "tgt-32g",
+				"configKey": "ram-32g-noecc-2133+softraid-2x480ssd",
+				"options": ["ram-32g-noecc-2133-24ska01", "softraid-2x480ssd-24ska01"],
+				"label": "32GB + 2x480GB SSD",
+				"datacenters": ["gra"],
+				"notifyAvailable": true,
+				"autoOrder": false,
+				"quantity": 1
+			},
+			{
+				"id": "tgt-64g",
+				"configKey": "ram-64g-noecc-2133+softraid-2x960nvme",
+				"options": ["ram-64g-noecc-2133-24ska01", "softraid-2x960nvme-24ska01"],
+				"label": "64GB + 2x960GB NVMe",
+				"datacenters": ["gra"],
+				"notifyAvailable": true,
+				"autoOrder": true,
+				"quantity": 3,
+				"maxMonthlyPrice": 45.00,
+				"currency": "EUR"
+			}
+		]
+	}`))
+	rec = httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST multi-target subscription failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var saveResp struct {
+		Subscription store.StockSubscription `json:"subscription"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &saveResp)
+	if saveResp.Subscription.NeedsConfigSelection || !saveResp.Subscription.AutoOrder || len(saveResp.Subscription.Targets) != 2 {
+		t.Fatalf("expected NeedsConfigSelection=false, AutoOrder=true, 2 targets, got %+v", saveResp.Subscription)
+	}
+
+	// Baseline tick: both configs unavailable.
+	if _, err := env.svc.CheckStockNow(context.Background()); err != nil {
+		t.Fatalf("baseline CheckStockNow failed: %v", err)
+	}
+
+	// 4. Only 32G becomes available -> Target 1 notifies, Target 2 (64G) does NOT auto-order!
+	cfg32Status.Store("1H-high")
+	if _, err := env.svc.CheckStockNow(context.Background()); err != nil {
+		t.Fatalf("32G transition CheckStockNow failed: %v", err)
+	}
+	if env.tg.count() != 1 {
+		t.Fatalf("expected 1 notification for 32G target, got %d", env.tg.count())
+	}
+	if !strings.Contains(env.tg.slice()[0], "32GB + 2x480GB SSD") {
+		t.Fatalf("expected notification to mention target label '32GB + 2x480GB SSD', got %s", env.tg.slice()[0])
+	}
+	qItems, _ := env.st.ListQueue(context.Background(), "")
+	if len(qItems) != 0 {
+		t.Fatalf("expected 0 auto-order queue tasks when only notify-only 32G target is in stock, got %+v", qItems)
+	}
+
+	// 5. Now 64G becomes available -> Target 2 notifies AND triggers auto-order with options, quantity=3, maxMonthlyPrice=45.00!
+	cfg64Status.Store("1H-high")
+	if _, err := env.svc.CheckStockNow(context.Background()); err != nil {
+		t.Fatalf("64G transition CheckStockNow failed: %v", err)
+	}
+	if env.tg.count() != 2 {
+		t.Fatalf("expected 2 notifications total after 64G transition, got %d", env.tg.count())
+	}
+	qItems, _ = env.st.ListQueue(context.Background(), "")
+	if len(qItems) != 1 {
+		t.Fatalf("expected 1 auto-order queue task for 64G target, got %+v", qItems)
+	}
+	gotQ := qItems[0]
+	if gotQ.Quantity != 3 || gotQ.MaxMonthlyPrice != 45.00 || gotQ.ConfigKey != "ram-64g-noecc-2133+softraid-2x960nvme" {
+		t.Fatalf("expected queue task with Quantity=3, MaxMonthlyPrice=45.00, ConfigKey=ram-64g-noecc-2133+softraid-2x960nvme, got %+v", gotQ)
+	}
+	if len(gotQ.Options) != 2 || gotQ.Options[0] != "ram-64g-noecc-2133-24ska01" || gotQ.Options[1] != "softraid-2x960nvme-24ska01" {
+		t.Fatalf("unexpected auto-order options: %+v", gotQ.Options)
 	}
 }

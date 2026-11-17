@@ -33,10 +33,54 @@ var safeFileRegex = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 // ServerOption represents a default or selectable hardware addon option for a server plan.
 type ServerOption struct {
-	Label     string `json:"label"`
-	Value     string `json:"value"`
-	Family    string `json:"family,omitempty"`
-	IsDefault bool   `json:"isDefault,omitempty"`
+	Label                 string   `json:"label"`
+	Value                 string   `json:"value"`
+	Family                string   `json:"family,omitempty"`
+	IsDefault             bool     `json:"isDefault"`
+	ConfigKey             string   `json:"configKey,omitempty"`
+	Options               []string `json:"options,omitempty"`
+	EstimatedMonthlyPrice float64  `json:"estimatedMonthlyPrice,omitempty"`
+	Price                 float64  `json:"price,omitempty"`
+	Currency              string   `json:"currency,omitempty"`
+	Memory                string   `json:"memory,omitempty"`
+	Storage               string   `json:"storage,omitempty"`
+}
+
+// PlanConfigOption aliases ServerOption for configuration-level option metadata.
+type PlanConfigOption = ServerOption
+
+// PlanConfigItem represents a unified selectable hardware configuration (Memory + Storage) for a server plan.
+type PlanConfigItem struct {
+	ConfigKey             string            `json:"configKey"`
+	Memory                string            `json:"memory"`
+	Storage               string            `json:"storage"`
+	SystemStorage         string            `json:"systemStorage,omitempty"`
+	GPU                   string            `json:"gpu,omitempty"`
+	MemoryLabel           string            `json:"memoryLabel"`
+	StorageLabel          string            `json:"storageLabel"`
+	Label                 string            `json:"label"`
+	Options               []string          `json:"options"`
+	IsDefault             bool              `json:"isDefault"`
+	EstimatedMonthlyPrice float64           `json:"estimatedMonthlyPrice"`
+	Price                 float64           `json:"price"`
+	Currency              string            `json:"currency"`
+	Datacenters           map[string]string `json:"datacenters"`
+	InStockCount          int               `json:"inStockCount"`
+}
+
+// PlanConfigsResponse is returned by GET /api/catalog/plans/{planCode}/configs.
+type PlanConfigsResponse struct {
+	PlanCode         string           `json:"planCode"`
+	Name             string           `json:"name"`
+	Range            string           `json:"range,omitempty"`
+	CPU              string           `json:"cpu,omitempty"`
+	ListingState     string           `json:"listingState"`
+	Orderable        bool             `json:"orderable"`
+	BasePrice        float64          `json:"basePrice"`
+	StartingPrice    float64          `json:"startingPrice"`
+	Currency         string           `json:"currency"`
+	DefaultConfigKey string           `json:"defaultConfigKey"`
+	Configs          []PlanConfigItem `json:"configs"`
 }
 
 // DatacenterAvailability represents one datacenter's stock status for a server plan.
@@ -49,7 +93,7 @@ type DatacenterAvailability struct {
 	Flag         string `json:"flag,omitempty"`
 }
 
-// ServerPlan represents an enriched bare-metal server plan returned by GET /api/servers.
+// ServerPlan represents an enriched bare-metal server plan returned by GET /api/servers and GET /api/catalog/plans.
 type ServerPlan struct {
 	PlanCode         string                   `json:"planCode"`
 	Name             string                   `json:"name"`
@@ -61,14 +105,19 @@ type ServerPlan struct {
 	Bandwidth        string                   `json:"bandwidth"`
 	VRackBandwidth   string                   `json:"vrackBandwidth"`
 	MonthlyPrice     *float64                 `json:"monthlyPrice,omitempty"`
+	StartingPrice    float64                  `json:"startingPrice"`
+	Price            float64                  `json:"price,omitempty"`
 	Currency         string                   `json:"currency,omitempty"`
+	DefaultConfigKey string                   `json:"defaultConfigKey"`
 	CatalogSource    string                   `json:"catalogSource,omitempty"`
 	ListingState     string                   `json:"listingState"`
+	ListedAt         string                   `json:"listedAt,omitempty"`
 	Orderable        bool                     `json:"orderable"`
 	Generation       int                      `json:"generation,omitempty"`
 	Datacenters      []DatacenterAvailability `json:"datacenters"`
 	DefaultOptions   []ServerOption           `json:"defaultOptions"`
 	AvailableOptions []ServerOption           `json:"availableOptions"`
+	Configs          []PlanConfigItem         `json:"configs,omitempty"`
 }
 
 // CacheInfo describes backend server list cache freshness for ServersPage and CacheManager.
@@ -97,24 +146,45 @@ type ListServersOptions struct {
 	ForceRefresh bool
 }
 
+// CatalogPlanSpecs holds default hardware specification codes/labels for a catalog plan.
+type CatalogPlanSpecs struct {
+	Memory         string `json:"memory,omitempty"`
+	Storage        string `json:"storage,omitempty"`
+	SystemStorage  string `json:"systemStorage,omitempty"`
+	GPU            string `json:"gpu,omitempty"`
+	Bandwidth      string `json:"bandwidth,omitempty"`
+	VRackBandwidth string `json:"vrackBandwidth,omitempty"`
+}
+
 // CatalogPlanEntry holds merged dictionary data for a single server planCode.
 type CatalogPlanEntry struct {
-	Name          string             `json:"name"`
-	Product       string             `json:"product,omitempty"`
-	Range         string             `json:"range,omitempty"`
-	CPU           *CPUInfo           `json:"cpu,omitempty"`
-	Price         *float64           `json:"price,omitempty"`
-	Currency      string             `json:"currency,omitempty"`
-	AddonPrices   map[string]float64 `json:"addonPrices,omitempty"`
-	CatalogSource string             `json:"catalogSource,omitempty"`
+	PlanCode            string             `json:"planCode,omitempty"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description,omitempty"`
+	Product             string             `json:"product,omitempty"`
+	Range               string             `json:"range,omitempty"`
+	CPU                 *CPUInfo           `json:"cpu,omitempty"`
+	Price               *float64           `json:"price,omitempty"`
+	Currency            string             `json:"currency,omitempty"`
+	AddonPrices         map[string]float64 `json:"addonPrices,omitempty"`
+	CatalogSource       string             `json:"catalogSource,omitempty"`
+	DefaultSpecs        CatalogPlanSpecs   `json:"defaultSpecs,omitempty"`
+	DefaultMemory       string             `json:"defaultMemory,omitempty"`
+	DefaultStorage      string             `json:"defaultStorage,omitempty"`
+	DefaultConfigKey    string             `json:"defaultConfigKey,omitempty"`
+	DefaultAddonOptions []string           `json:"defaultAddonOptions,omitempty"`
+	DefaultOptions      []ServerOption     `json:"defaultOptions,omitempty"`
+	AvailableOptions    []ServerOption     `json:"availableOptions,omitempty"`
 }
 
 // CatalogDictionary matches GET /api/catalog/dictionary consumed by src/utils/hardwareFormat.ts.
 type CatalogDictionary struct {
-	UpdatedAt int64                       `json:"updatedAt"`
-	Currency  string                      `json:"currency,omitempty"`
-	Plans     map[string]CatalogPlanEntry `json:"plans"`
-	Options   map[string]any              `json:"options"`
+	UpdatedAt   int64                       `json:"updatedAt"`
+	Currency    string                      `json:"currency,omitempty"`
+	Plans       map[string]CatalogPlanEntry `json:"plans"`
+	RealPlans   map[string]CatalogPlanEntry `json:"realPlans,omitempty"`
+	AddonPrices map[string]float64          `json:"addonPrices,omitempty"`
+	Options     map[string]any              `json:"options"`
 }
 
 // RawAvailabilityDC represents one datacenter entry in OVH /dedicated/server/datacenter/availabilities.
@@ -125,26 +195,69 @@ type RawAvailabilityDC struct {
 
 // RawAvailabilityItem represents one hardware configuration entry in OVH /dedicated/server/datacenter/availabilities.
 type RawAvailabilityItem struct {
-	FQN           string              `json:"fqn"`
-	Memory        string              `json:"memory"`
-	PlanCode      string              `json:"planCode"`
-	Server        string              `json:"server"`
-	Storage       string              `json:"storage"`
-	SystemStorage string              `json:"systemStorage,omitempty"`
-	GPU           string              `json:"gpu,omitempty"`
-	Datacenters   []RawAvailabilityDC `json:"datacenters"`
+	FQN                   string              `json:"fqn"`
+	Memory                string              `json:"memory"`
+	PlanCode              string              `json:"planCode"`
+	Server                string              `json:"server"`
+	Storage               string              `json:"storage"`
+	SystemStorage         string              `json:"systemStorage,omitempty"`
+	GPU                   string              `json:"gpu,omitempty"`
+	Datacenters           []RawAvailabilityDC `json:"datacenters"`
+	ConfigKey             string              `json:"configKey,omitempty"`
+	Options               []string            `json:"options,omitempty"`
+	IsDefault             bool                `json:"isDefault,omitempty"`
+	EstimatedMonthlyPrice float64             `json:"estimatedMonthlyPrice,omitempty"`
+	Price                 float64             `json:"price,omitempty"`
+	Currency              string              `json:"currency,omitempty"`
+	ListingState          string              `json:"listingState,omitempty"`
+	CatalogSource         string              `json:"catalogSource,omitempty"`
+	Orderable             *bool               `json:"orderable,omitempty"`
+	Generation            int                 `json:"generation,omitempty"`
+	ListedAt              string              `json:"listedAt,omitempty"`
+}
+
+// AvailabilityItem represents an enriched availability configuration item returned by GET /api/availability and GET /api/catalog/availability.
+type AvailabilityItem struct {
+	FQN                   string              `json:"fqn"`
+	Memory                string              `json:"memory"`
+	PlanCode              string              `json:"planCode"`
+	Server                string              `json:"server"`
+	Storage               string              `json:"storage"`
+	SystemStorage         string              `json:"systemStorage,omitempty"`
+	GPU                   string              `json:"gpu,omitempty"`
+	Datacenters           []RawAvailabilityDC `json:"datacenters"`
+	ConfigKey             string              `json:"configKey"`
+	Options               []string            `json:"options"`
+	IsDefault             bool                `json:"isDefault"`
+	EstimatedMonthlyPrice float64             `json:"estimatedMonthlyPrice"`
+	Price                 float64             `json:"price"`
+	Currency              string              `json:"currency"`
+	ListingState          string              `json:"listingState,omitempty"`
+	CatalogSource         string              `json:"catalogSource,omitempty"`
+	Orderable             bool                `json:"orderable"`
+	Generation            int                 `json:"generation,omitempty"`
+	ListedAt              string              `json:"listedAt,omitempty"`
 }
 
 // ConfigAvailability holds configuration-level availability and matched catalog addons.
 type ConfigAvailability struct {
-	FQN          string            `json:"fqn"`
-	Memory       string            `json:"memory"`
-	Storage      string            `json:"storage"`
-	Datacenters  map[string]string `json:"datacenters"`
-	Options      []string          `json:"options"`
-	ListingState string            `json:"listingState,omitempty"`
-	Orderable    bool              `json:"orderable"`
-	Generation   int               `json:"generation,omitempty"`
+	FQN                   string            `json:"fqn"`
+	ConfigKey             string            `json:"configKey"`
+	Memory                string            `json:"memory"`
+	Storage               string            `json:"storage"`
+	MemoryLabel           string            `json:"memoryLabel,omitempty"`
+	StorageLabel          string            `json:"storageLabel,omitempty"`
+	Label                 string            `json:"label,omitempty"`
+	Datacenters           map[string]string `json:"datacenters"`
+	InStockCount          int               `json:"inStockCount"`
+	Options               []string          `json:"options"`
+	IsDefault             bool              `json:"isDefault"`
+	EstimatedMonthlyPrice float64           `json:"estimatedMonthlyPrice"`
+	Price                 float64           `json:"price,omitempty"`
+	Currency              string            `json:"currency,omitempty"`
+	ListingState          string            `json:"listingState,omitempty"`
+	Orderable             bool              `json:"orderable"`
+	Generation            int               `json:"generation,omitempty"`
 }
 
 // ServerPriceValues holds structured tax-inclusive and tax-exclusive monthly pricing.
@@ -279,6 +392,7 @@ type Service struct {
 
 	publicBaseOverride string
 	accountClientFn    func(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error)
+	listedAtResolver   func(planCode string) string
 }
 
 type mergedRawCatalogs struct {
@@ -324,6 +438,23 @@ func (s *Service) SetPublicAPIBaseURL(baseURL string) {
 // SetAccountClientFunc overrides authenticated OVH client lookup (intended for tests).
 func (s *Service) SetAccountClientFunc(fn func(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error)) {
 	s.accountClientFn = fn
+}
+
+// SetListedAtResolver sets a callback to resolve the SKU listedAt timestamp for a planCode.
+func (s *Service) SetListedAtResolver(fn func(planCode string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listedAtResolver = fn
+}
+
+func (s *Service) resolveListedAt(planCode string) string {
+	s.mu.RLock()
+	fn := s.listedAtResolver
+	s.mu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return fn(planCode)
 }
 
 func (s *Service) resolveEndpointAndZone(ctx context.Context, accountID, endpoint, zone string) (string, string) {
@@ -467,7 +598,7 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			s.rawCatalogs[cacheKey] = raw
 			s.mu.Unlock()
 			if s.log != nil {
-				s.log.Info(logger.SourceCatalog, "Refreshed OVH catalog dictionary", "endpoint", ep, "zone", zn, "plans", len(merged.Plans))
+				s.log.Info(logger.SourceCatalog, "Refreshed OVH catalog dictionary", "endpoint", ep, "zone", zn, "plans", len(merged.Plans), "realPlans", len(merged.RealPlans))
 			}
 			return merged, nil
 		}
@@ -480,10 +611,86 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			return &stale, nil
 		}
 		empty := &CatalogDictionary{
-			UpdatedAt: now,
-			Currency:  "EUR",
-			Plans:     make(map[string]CatalogPlanEntry),
-			Options:   make(map[string]any),
+			UpdatedAt:   now,
+			Currency:    "EUR",
+			Plans:       make(map[string]CatalogPlanEntry),
+			RealPlans:   make(map[string]CatalogPlanEntry),
+			AddonPrices: make(map[string]float64),
+			Options:     make(map[string]any),
+		}
+		return empty, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return val.(*CatalogDictionary), nil
+}
+
+// GetBaremetalDictionary fetches ONLY the eco and baremetalServers public catalogs (skipping vps),
+// used by bare-metal SKU monitoring so VPS catalog latency/plans never affect bare-metal SKU checks.
+func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone string, forceRefresh bool) (*CatalogDictionary, error) {
+	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
+	cacheKey := ep + ":" + zn
+	diskPath := s.dictCachePath(ep, zn)
+	now := time.Now().Unix()
+
+	if !forceRefresh {
+		s.mu.RLock()
+		mem := s.dictCache[cacheKey]
+		s.mu.RUnlock()
+		if mem != nil && len(mem.RealPlans) > 0 && (now-mem.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
+			return mem, nil
+		}
+		if diskDict, ok := readJSONFile[CatalogDictionary](diskPath); ok && len(diskDict.RealPlans) > 0 {
+			if (now - diskDict.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
+				s.mu.Lock()
+				s.dictCache[cacheKey] = &diskDict
+				s.mu.Unlock()
+				return &diskDict, nil
+			}
+		}
+	}
+
+	flightKey := fmt.Sprintf("bmdict:%s:%s:%v", ep, zn, forceRefresh)
+	val, err := s.flights.do(flightKey, func() (any, error) {
+		var wg sync.WaitGroup
+		var eco, bm map[string]any
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			eco = s.fetchPublicCatalog(ctx, ep, zn, "eco")
+		}()
+		go func() {
+			defer wg.Done()
+			bm = s.fetchPublicCatalog(ctx, ep, zn, "baremetalServers")
+		}()
+		wg.Wait()
+
+		if eco != nil || bm != nil {
+			merged := BuildDictionaryFromCatalogs(eco, bm, nil)
+			_ = writeJSONFile(diskPath, merged)
+			s.mu.Lock()
+			s.dictCache[cacheKey] = merged
+			s.mu.Unlock()
+			if s.log != nil {
+				s.log.Info(logger.SourceCatalog, "Refreshed OVH baremetal catalog dictionary", "endpoint", ep, "zone", zn, "realPlans", len(merged.RealPlans))
+			}
+			return merged, nil
+		}
+
+		if stale, ok := readJSONFile[CatalogDictionary](diskPath); ok {
+			s.mu.Lock()
+			s.dictCache[cacheKey] = &stale
+			s.mu.Unlock()
+			return &stale, nil
+		}
+		empty := &CatalogDictionary{
+			UpdatedAt:   now,
+			Currency:    "EUR",
+			Plans:       make(map[string]CatalogPlanEntry),
+			RealPlans:   make(map[string]CatalogPlanEntry),
+			AddonPrices: make(map[string]float64),
+			Options:     make(map[string]any),
 		}
 		return empty, nil
 	})
@@ -582,6 +789,8 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 		price   *float64
 	})
 	plansMap := make(map[string]CatalogPlanEntry)
+	realPlansMap := make(map[string]CatalogPlanEntry)
+	globalAddonPrices := make(map[string]float64)
 	optionsMap := make(map[string]any)
 	defaultCurrency := "EUR"
 
@@ -606,15 +815,24 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 			}
 		}
 		for _, rawAddon := range sliceOfMaps(cat["addons"]) {
-			ac, _ := rawAddon["planCode"].(string)
+			ac := strings.TrimSpace(strFromMap(rawAddon, "planCode"))
 			if ac == "" {
 				continue
 			}
-			prodCode, _ := rawAddon["product"].(string)
+			prodCode := strings.TrimSpace(strFromMap(rawAddon, "product"))
+			pr := extractMonthlyPrice(rawAddon)
 			addonsPriceByCode[ac] = struct {
 				product string
 				price   *float64
-			}{product: prodCode, price: extractMonthlyPrice(rawAddon)}
+			}{product: prodCode, price: pr}
+			if pr != nil && src.source != "vps" {
+				globalAddonPrices[ac] = *pr
+				if prodCode != "" {
+					if cur, exists := globalAddonPrices[prodCode]; !exists || (cur == 0 && *pr > 0) {
+						globalAddonPrices[prodCode] = *pr
+					}
+				}
+			}
 		}
 		for _, prod := range sliceOfMaps(cat["products"]) {
 			pname, _ := prod["name"].(string)
@@ -659,12 +877,16 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 			}
 		}
 		for _, plan := range sliceOfMaps(cat["plans"]) {
-			planCode, _ := plan["planCode"].(string)
+			planCode := strings.TrimSpace(strFromMap(plan, "planCode"))
 			if planCode == "" {
 				continue
 			}
-			productKey, _ := plan["product"].(string)
-			invoiceName, _ := plan["invoiceName"].(string)
+			productKey := strings.TrimSpace(strFromMap(plan, "product"))
+			invoiceName := strings.TrimSpace(strFromMap(plan, "invoiceName"))
+			desc := strings.TrimSpace(strFromMap(plan, "description"))
+			if desc == "" {
+				desc = invoiceName
+			}
 			commName := nestedString(plan, "blobs", "commercial", "name")
 
 			parts := splitPipeNonEmpty(invoiceName)
@@ -712,15 +934,112 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 
 			normRange := ClassifyProductRange(displayName, rawRange, planCode)
 			baseCode, regionInfo := ParsePlanRegion(planCode)
+			noVerCode := StripPlanVersion(planCode)
 			basePrice := extractMonthlyPrice(plan)
+			basePriceVal := 0.0
+			if basePrice != nil {
+				basePriceVal = *basePrice
+			}
+			if basePrice != nil && src.source != "vps" {
+				globalAddonPrices[planCode] = *basePrice
+			}
 
 			addonPrices := make(map[string]float64)
+			var defMemCode, defStoCode, defSysStoCode, defGPUCode, defBWStr, defVRackStr string
+			var defaultAddonOpts []string
+			defaultOpts := make([]ServerOption, 0)
+			availOpts := make([]ServerOption, 0)
+			hasMemory := false
+			hasStorage := false
+
 			for _, fam := range sliceOfMaps(plan["addonFamilies"]) {
-				for _, rawAC := range sliceOfStrings(fam["addons"]) {
-					if ap, ok := addonsPriceByCode[rawAC]; ok && ap.price != nil && *ap.price > 0 {
-						addonPrices[rawAC] = *ap.price
-						if ap.product != "" {
-							addonPrices[ap.product] = *ap.price
+				famName := strings.ToLower(strings.TrimSpace(strFromMap(fam, "name")))
+				defAddon := strings.TrimSpace(strFromMap(fam, "default"))
+				addons := sliceOfStrings(fam["addons"])
+
+				isMemFam := strings.Contains(famName, "memory") || strings.Contains(famName, "ram")
+				isStoFam := (strings.Contains(famName, "storage") || strings.Contains(famName, "disk") || strings.Contains(famName, "drive")) && !strings.Contains(famName, "system")
+				isSysStoFam := strings.Contains(famName, "system-storage") || strings.Contains(famName, "system_storage")
+				isGPUFam := strings.Contains(famName, "gpu")
+				if isMemFam {
+					hasMemory = true
+				}
+				if isStoFam || isSysStoFam {
+					hasStorage = true
+				}
+
+				for _, rawAC := range addons {
+					rawAC = strings.TrimSpace(rawAC)
+					if rawAC == "" || isLicenseOrOSOption(rawAC) {
+						continue
+					}
+					ap, hasAP := addonsPriceByCode[rawAC]
+					addonDelta := 0.0
+					if hasAP && ap.price != nil {
+						addonDelta = *ap.price
+						if *ap.price > 0 {
+							addonPrices[rawAC] = *ap.price
+							if ap.product != "" {
+								addonPrices[ap.product] = *ap.price
+							}
+						}
+					}
+					prodKey := ap.product
+					if prodKey == "" {
+						prodKey = stripPlanAddonSuffix(rawAC, planCode, baseCode, noVerCode, productKey)
+					}
+					isDef := rawAC == defAddon
+					estOptPrice := roundCents(basePriceVal + addonDelta)
+					opt := ServerOption{
+						Label:                 rawAC,
+						Value:                 rawAC,
+						Family:                famName,
+						IsDefault:             isDef,
+						ConfigKey:             prodKey,
+						Options:               []string{rawAC},
+						EstimatedMonthlyPrice: estOptPrice,
+						Price:                 addonDelta,
+						Currency:              catCurrency,
+					}
+					if isMemFam {
+						opt.Memory = prodKey
+					} else if isStoFam {
+						opt.Storage = prodKey
+					}
+					availOpts = append(availOpts, opt)
+					if isDef {
+						defaultOpts = append(defaultOpts, opt)
+					}
+				}
+
+				if defAddon != "" {
+					ap := addonsPriceByCode[defAddon]
+					prodKey := ap.product
+					if prodKey == "" {
+						prodKey = stripPlanAddonSuffix(defAddon, planCode, baseCode, noVerCode, productKey)
+					}
+					switch {
+					case isMemFam && defMemCode == "":
+						defMemCode = prodKey
+						if !slices.Contains(defaultAddonOpts, defAddon) {
+							defaultAddonOpts = append(defaultAddonOpts, defAddon)
+						}
+					case isStoFam && defStoCode == "":
+						defStoCode = prodKey
+						if !slices.Contains(defaultAddonOpts, defAddon) {
+							defaultAddonOpts = append(defaultAddonOpts, defAddon)
+						}
+					case isSysStoFam && defSysStoCode == "":
+						defSysStoCode = prodKey
+					case isGPUFam && defGPUCode == "":
+						defGPUCode = prodKey
+					case strings.Contains(famName, "vrack") && defVRackStr == "":
+						defVRackStr = FormatVRackCode(defAddon)
+					case (strings.Contains(famName, "bandwidth") || strings.Contains(famName, "traffic") || strings.Contains(famName, "network")) && defBWStr == "":
+						if strings.Contains(strings.ToLower(defAddon), "vrack") {
+							defVRackStr = FormatVRackCode(defAddon)
+						} else {
+							defBWStr = FormatBandwidthCode(defAddon)
 						}
 					}
 				}
@@ -730,9 +1049,12 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 			if prodName == "" {
 				prodName = baseCode
 			}
+			defConfigKey := BuildConfigKey(defMemCode, defStoCode)
 
 			entry := CatalogPlanEntry{
+				PlanCode:      planCode,
 				Name:          displayName,
+				Description:   desc,
 				Product:       prodName,
 				Range:         normRange,
 				CPU:           cpuInfo,
@@ -740,12 +1062,38 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 				Currency:      catCurrency,
 				AddonPrices:   addonPrices,
 				CatalogSource: src.source,
+				DefaultSpecs: CatalogPlanSpecs{
+					Memory:         defMemCode,
+					Storage:        defStoCode,
+					SystemStorage:  defSysStoCode,
+					GPU:            defGPUCode,
+					Bandwidth:      defBWStr,
+					VRackBandwidth: defVRackStr,
+				},
+				DefaultMemory:       defMemCode,
+				DefaultStorage:      defStoCode,
+				DefaultConfigKey:    defConfigKey,
+				DefaultAddonOptions: defaultAddonOpts,
+				DefaultOptions:      defaultOpts,
+				AvailableOptions:    availOpts,
 			}
+
+			if (src.source == "eco" || src.source == "baremetalServers") && !IsNonServerAddonCode(planCode) {
+				if (hasMemory && hasStorage) || (!hasMemory && !hasStorage) {
+					realPlansMap[planCode] = entry
+				}
+			}
+
 			plansMap[planCode] = entry
 			isRegional := regionInfo != nil && regionInfo.Code != ""
 			if baseCode != "" {
 				if _, exists := plansMap[baseCode]; !exists || !isRegional {
 					plansMap[baseCode] = entry
+				}
+			}
+			if noVerCode != "" {
+				if _, exists := plansMap[noVerCode]; !exists || !isRegional {
+					plansMap[noVerCode] = entry
 				}
 			}
 			if productKey != "" {
@@ -757,11 +1105,110 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 	}
 
 	return &CatalogDictionary{
-		UpdatedAt: time.Now().Unix(),
-		Currency:  defaultCurrency,
-		Plans:     plansMap,
-		Options:   optionsMap,
+		UpdatedAt:   time.Now().Unix(),
+		Currency:    defaultCurrency,
+		Plans:       plansMap,
+		RealPlans:   realPlansMap,
+		AddonPrices: globalAddonPrices,
+		Options:     optionsMap,
 	}
+}
+
+func stripPlanAddonSuffix(addonCode string, suffixes ...string) string {
+	trimmed := strings.TrimSpace(addonCode)
+	low := strings.ToLower(trimmed)
+	for _, s := range suffixes {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		suf := "-" + strings.ToLower(s)
+		if strings.HasSuffix(low, suf) && len(trimmed) > len(suf) {
+			return trimmed[:len(trimmed)-len(suf)]
+		}
+	}
+	return trimmed
+}
+
+func lookupPlanCaseInsensitive(m map[string]CatalogPlanEntry, key string) (CatalogPlanEntry, bool) {
+	if len(m) == 0 || strings.TrimSpace(key) == "" {
+		return CatalogPlanEntry{}, false
+	}
+	if entry, ok := m[key]; ok {
+		return entry, true
+	}
+	low := strings.ToLower(strings.TrimSpace(key))
+	if entry, ok := m[low]; ok {
+		return entry, true
+	}
+	for k, entry := range m {
+		if strings.EqualFold(k, low) {
+			return entry, true
+		}
+	}
+	return CatalogPlanEntry{}, false
+}
+
+// EstimateConfigMonthlyPrice computes the estimated monthly ex-VAT price for a (memory, storage) configuration.
+func EstimateConfigMonthlyPrice(
+	basePrice float64,
+	memory, storage string,
+	planEntry *CatalogPlanEntry,
+	dict *CatalogDictionary,
+) float64 {
+	if basePrice <= 0 {
+		return 0
+	}
+	lookupAddon := func(code, defaultCode string) float64 {
+		c := strings.TrimSpace(code)
+		if c == "" || strings.EqualFold(c, "N/A") || strings.EqualFold(c, "none") {
+			return 0
+		}
+		if defaultCode != "" && (strings.EqualFold(c, defaultCode) || StandardizeConfig(c) == StandardizeConfig(defaultCode)) {
+			if planEntry != nil && len(planEntry.AddonPrices) > 0 {
+				if v, ok := planEntry.AddonPrices[c]; ok {
+					return v
+				}
+			}
+			return 0
+		}
+		if planEntry != nil && len(planEntry.AddonPrices) > 0 {
+			if v, ok := planEntry.AddonPrices[c]; ok {
+				return v
+			}
+			low := strings.ToLower(c)
+			for k, v := range planEntry.AddonPrices {
+				if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
+					return v
+				}
+			}
+		}
+		if dict != nil && len(dict.AddonPrices) > 0 {
+			if v, ok := dict.AddonPrices[c]; ok {
+				return v
+			}
+			low := strings.ToLower(c)
+			for k, v := range dict.AddonPrices {
+				if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
+					return v
+				}
+			}
+		}
+		return 0
+	}
+
+	var defMem, defSto string
+	if planEntry != nil {
+		defMem = planEntry.DefaultMemory
+		defSto = planEntry.DefaultStorage
+	}
+	memDelta := lookupAddon(memory, defMem)
+	stoDelta := lookupAddon(storage, defSto)
+	return roundCents(basePrice + memDelta + stoDelta)
+}
+
+func roundCents(v float64) float64 {
+	return math.Round(v*100) / 100
 }
 
 // ResolvePlan resolves friendly name, CPU, range, price, and catalog source for a planCode.
@@ -773,18 +1220,25 @@ func (s *Service) ResolvePlan(ctx context.Context, planCode, serverCode, endpoin
 // ResolvePlanWithDict resolves plan metadata using a pre-fetched CatalogDictionary.
 func ResolvePlanWithDict(planCode, serverCode string, dict *CatalogDictionary) PlanMeta {
 	baseCode, regionInfo := ParsePlanRegion(planCode)
-	cleanBase := reTrailingVer.ReplaceAllString(strings.ToLower(baseCode), "$1")
+	noVer := StripPlanVersion(planCode)
+	cleanBase := reTrailingVer.ReplaceAllString(strings.ToLower(noVer), "$1")
 
-	if dict != nil && dict.Plans != nil {
+	if dict != nil {
 		var match *CatalogPlanEntry
-		for _, candidate := range []string{planCode, serverCode, baseCode, cleanBase} {
-			if candidate == "" {
-				continue
-			}
-			if entry, ok := dict.Plans[candidate]; ok {
+		for _, candidate := range []string{planCode, baseCode} {
+			if entry, ok := lookupPlanCaseInsensitive(dict.RealPlans, candidate); ok {
 				copyEntry := entry
 				match = &copyEntry
 				break
+			}
+		}
+		if match == nil && len(dict.Plans) > 0 {
+			for _, candidate := range []string{planCode, serverCode, baseCode, noVer, cleanBase} {
+				if entry, ok := lookupPlanCaseInsensitive(dict.Plans, candidate); ok {
+					copyEntry := entry
+					match = &copyEntry
+					break
+				}
 			}
 		}
 		if match != nil {
@@ -821,28 +1275,40 @@ func ResolvePlanWithDict(planCode, serverCode string, dict *CatalogDictionary) P
 	return InferPlanFromCode(planCode)
 }
 
-// IsPlanListedInDict reports whether planCode is present as a listed bare-metal plan in the public catalog dictionary.
+// IsPlanListedInDict reports whether planCode is present as a real bare-metal plan in dict.RealPlans
+// (matching only exact planCode or regional baseCode, never product or stripped-version aliases).
 func IsPlanListedInDict(planCode string, dict *CatalogDictionary) bool {
-	if dict == nil || len(dict.Plans) == 0 {
+	if dict == nil {
 		return false
 	}
 	pc := strings.TrimSpace(planCode)
 	if pc == "" {
 		return false
 	}
-	if entry, ok := dict.Plans[pc]; ok && !strings.EqualFold(entry.CatalogSource, "vps") {
-		return true
-	}
-	low := strings.ToLower(pc)
-	if entry, ok := dict.Plans[low]; ok && !strings.EqualFold(entry.CatalogSource, "vps") {
-		return true
-	}
-	for k, entry := range dict.Plans {
-		if strings.EqualFold(k, pc) && !strings.EqualFold(entry.CatalogSource, "vps") {
+	baseCode, _ := ParsePlanRegion(pc)
+	if len(dict.RealPlans) > 0 {
+		if _, ok := lookupPlanCaseInsensitive(dict.RealPlans, pc); ok {
 			return true
 		}
+		if baseCode != "" {
+			if _, ok := lookupPlanCaseInsensitive(dict.RealPlans, baseCode); ok {
+				return true
+			}
+		}
+		return false
+	}
+	if len(dict.Plans) == 0 {
+		return false
+	}
+	if entry, ok := lookupPlanCaseInsensitive(dict.Plans, pc); ok && !strings.EqualFold(entry.CatalogSource, "vps") {
+		return true
 	}
 	return false
+}
+
+// GetPlans aliases ListServers for callers referencing GetPlans.
+func (s *Service) GetPlans(ctx context.Context, opts ListServersOptions) (*ServerListResponse, error) {
+	return s.ListServers(ctx, opts)
 }
 
 // ListServers fetches/returns the enriched bare-metal server list with TTL + disk caching and singleflight dedup.
@@ -973,14 +1439,16 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 	s.dictCache[endpoint+":"+zone] = dict
 	s.mu.Unlock()
 
-	// Index datacenter availabilities by planCode (merging configs per planCode using best availability).
+	// Index datacenter availabilities and raw items by planCode.
 	availByPlan := make(map[string]map[string]string)
+	itemsByPlan := make(map[string][]RawAvailabilityItem)
 	firstAvailByPlan := make(map[string]RawAvailabilityItem)
 	for _, item := range availItems {
 		pc := strings.TrimSpace(item.PlanCode)
 		if pc == "" {
 			continue
 		}
+		itemsByPlan[strings.ToLower(pc)] = append(itemsByPlan[strings.ToLower(pc)], item)
 		if _, exists := firstAvailByPlan[pc]; !exists {
 			firstAvailByPlan[pc] = item
 		}
@@ -1012,9 +1480,11 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 			continue
 		}
 		for _, plan := range sliceOfMaps(cat.data["plans"]) {
-			pc, _ := plan["planCode"].(string)
-			pc = strings.TrimSpace(pc)
+			pc := strings.TrimSpace(strFromMap(plan, "planCode"))
 			if pc == "" {
+				continue
+			}
+			if _, isReal := lookupPlanCaseInsensitive(dict.RealPlans, pc); !isReal {
 				continue
 			}
 			if _, dup := seen[pc]; dup {
@@ -1024,9 +1494,23 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 			seenLow[strings.ToLower(pc)] = struct{}{}
 
 			meta := ResolvePlanWithDict(pc, "", dict)
-			sp := buildSingleServerPlan(plan, meta, cat.source, availByPlan[pc])
+			planEntry, _ := lookupPlanCaseInsensitive(dict.RealPlans, pc)
+			sp := buildSingleServerPlan(plan, &planEntry, meta, dict, cat.source, availByPlan[pc], itemsByPlan[strings.ToLower(pc)], s.resolveListedAt(pc))
 			out = append(out, sp)
 		}
+	}
+
+	// Ensure any plan in dict.RealPlans not yet in out is synthesized as "announced".
+	for pc, entry := range dict.RealPlans {
+		if _, ok := seenLow[strings.ToLower(pc)]; ok {
+			continue
+		}
+		seen[pc] = struct{}{}
+		seenLow[strings.ToLower(pc)] = struct{}{}
+		meta := ResolvePlanWithDict(pc, "", dict)
+		entryCopy := entry
+		sp := buildSynthesizedAnnouncedPlan(pc, &entryCopy, meta, dict, s.resolveListedAt(pc))
+		out = append(out, sp)
 	}
 
 	var presalePlans []ServerPlan
@@ -1037,7 +1521,7 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 		if _, ok := seenLow[strings.ToLower(pc)]; ok {
 			continue
 		}
-		if IsNonServerAddonCode(pc) {
+		if IsNonServerAddonCode(pc) || IsPlanListedInDict(pc, dict) {
 			continue
 		}
 		firstItem := firstAvailByPlan[pc]
@@ -1066,6 +1550,8 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 		}
 
 		dcs := buildSortedDatacenterAvailabilities(dcAvail)
+		defCfgKey := BuildConfigKey(firstItem.Memory, firstItem.Storage)
+		cfgs := buildPlanConfigsList(pc, nil, dict, itemsByPlan[strings.ToLower(pc)], nonEmpty(meta.Currency, dict.Currency))
 		presalePlans = append(presalePlans, ServerPlan{
 			PlanCode:         pc,
 			Name:             nonEmpty(meta.Name, pc),
@@ -1077,14 +1563,18 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 			Bandwidth:        "N/A",
 			VRackBandwidth:   "N/A",
 			MonthlyPrice:     nil,
+			StartingPrice:    0,
 			Currency:         nonEmpty(meta.Currency, dict.Currency),
+			DefaultConfigKey: defCfgKey,
 			CatalogSource:    "presale",
 			ListingState:     "presale",
+			ListedAt:         s.resolveListedAt(pc),
 			Orderable:        false,
 			Generation:       InferPlanGeneration(pc),
 			Datacenters:      dcs,
 			DefaultOptions:   []ServerOption{},
 			AvailableOptions: []ServerOption{},
+			Configs:          cfgs,
 		})
 	}
 	slices.SortFunc(presalePlans, func(a, b ServerPlan) int {
@@ -1117,7 +1607,16 @@ func buildSortedDatacenterAvailabilities(dcAvail map[string]string) []Datacenter
 	return dcs
 }
 
-func buildSingleServerPlan(plan map[string]any, meta PlanMeta, catalogSource string, dcAvail map[string]string) ServerPlan {
+func buildSingleServerPlan(
+	plan map[string]any,
+	planEntry *CatalogPlanEntry,
+	meta PlanMeta,
+	dict *CatalogDictionary,
+	catalogSource string,
+	dcAvail map[string]string,
+	planAvailItems []RawAvailabilityItem,
+	listedAt string,
+) ServerPlan {
 	planCode, _ := plan["planCode"].(string)
 	invoiceName, _ := plan["invoiceName"].(string)
 	desc, _ := plan["description"].(string)
@@ -1140,71 +1639,61 @@ func buildSingleServerPlan(plan map[string]any, meta PlanMeta, catalogSource str
 	stoStr := "N/A"
 	bwStr := "N/A"
 	vrackStr := "N/A"
-
 	defaultOpts := make([]ServerOption, 0)
 	availOpts := make([]ServerOption, 0)
+	defConfigKey := "default"
 
-	for _, fam := range sliceOfMaps(plan["addonFamilies"]) {
-		famName := strings.ToLower(strings.TrimSpace(strFromMap(fam, "name")))
-		defAddon := strings.TrimSpace(strFromMap(fam, "default"))
-		addons := sliceOfStrings(fam["addons"])
-
-		for _, addonCode := range addons {
-			if addonCode == "" || isLicenseOrOSOption(addonCode) {
-				continue
-			}
-			isDef := addonCode == defAddon
-			opt := ServerOption{
-				Label:     addonCode,
-				Value:     addonCode,
-				Family:    famName,
-				IsDefault: isDef,
-			}
-			availOpts = append(availOpts, opt)
-			if isDef {
-				defaultOpts = append(defaultOpts, ServerOption{
-					Label:  addonCode,
-					Value:  addonCode,
-					Family: famName,
-				})
+	if planEntry != nil {
+		defaultOpts = append(defaultOpts, planEntry.DefaultOptions...)
+		availOpts = append(availOpts, planEntry.AvailableOptions...)
+		if planEntry.DefaultConfigKey != "" {
+			defConfigKey = planEntry.DefaultConfigKey
+		}
+		if planEntry.DefaultMemory != "" {
+			parsed := ParseMemoryCode(planEntry.DefaultMemory, nil)
+			if parsed.SizeGB > 0 {
+				memStr = FormatMemory(parsed, "en")
+			} else {
+				memStr = planEntry.DefaultMemory
 			}
 		}
-
-		if defAddon != "" {
-			switch {
-			case (strings.Contains(famName, "cpu") || strings.Contains(famName, "processor")) && cpuStr == "N/A":
-				cpuStr = defAddon
-			case (strings.Contains(famName, "memory") || strings.Contains(famName, "ram")) && memStr == "N/A":
-				parsed := ParseMemoryCode(defAddon, nil)
-				if parsed.SizeGB > 0 {
-					memStr = FormatMemory(parsed, "en")
-				} else {
-					memStr = defAddon
-				}
-			case (strings.Contains(famName, "storage") || strings.Contains(famName, "disk") || strings.Contains(famName, "drive")) && stoStr == "N/A":
-				parsed := ParseStorageCode(defAddon, false)
-				if !parsed.None && len(parsed.Groups) > 0 {
-					stoStr = FormatStorage(parsed, "en")
-				} else {
-					stoStr = defAddon
-				}
-			case strings.Contains(famName, "vrack") && vrackStr == "N/A":
-				vrackStr = FormatVRackCode(defAddon)
-			case (strings.Contains(famName, "bandwidth") || strings.Contains(famName, "traffic") || strings.Contains(famName, "network")) && bwStr == "N/A":
-				if strings.Contains(strings.ToLower(defAddon), "vrack") {
-					vrackStr = FormatVRackCode(defAddon)
-				} else {
-					bwStr = FormatBandwidthCode(defAddon)
-				}
+		if planEntry.DefaultStorage != "" {
+			parsed := ParseStorageCode(planEntry.DefaultStorage, false)
+			if !parsed.None && len(parsed.Groups) > 0 {
+				stoStr = FormatStorage(parsedStoOrCode(planEntry.DefaultStorage), "en")
+			} else {
+				stoStr = planEntry.DefaultStorage
 			}
+		}
+		if planEntry.DefaultSpecs.Bandwidth != "" {
+			bwStr = planEntry.DefaultSpecs.Bandwidth
+		}
+		if planEntry.DefaultSpecs.VRackBandwidth != "" {
+			vrackStr = planEntry.DefaultSpecs.VRackBandwidth
 		}
 	}
 
 	dcs := buildSortedDatacenterAvailabilities(dcAvail)
-
 	displayName := meta.Name
 	if displayName == "" {
 		displayName = nonEmpty(invoiceName, planCode)
+	}
+
+	startingPrice := 0.0
+	if meta.Price != nil {
+		startingPrice = *meta.Price
+	}
+	listingState := "listed"
+	orderable := true
+	if len(planAvailItems) == 0 && len(dcAvail) == 0 {
+		listingState = "announced"
+		orderable = false
+	}
+
+	currency := nonEmpty(meta.Currency, "EUR")
+	cfgs := buildPlanConfigsList(planCode, planEntry, dict, planAvailItems, currency)
+	if defConfigKey == "default" && len(cfgs) > 0 {
+		defConfigKey = cfgs[0].ConfigKey
 	}
 
 	return ServerPlan{
@@ -1218,15 +1707,651 @@ func buildSingleServerPlan(plan map[string]any, meta PlanMeta, catalogSource str
 		Bandwidth:        bwStr,
 		VRackBandwidth:   vrackStr,
 		MonthlyPrice:     meta.Price,
-		Currency:         meta.Currency,
+		StartingPrice:    startingPrice,
+		Price:            startingPrice,
+		Currency:         currency,
+		DefaultConfigKey: defConfigKey,
 		CatalogSource:    catalogSource,
-		ListingState:     "listed",
-		Orderable:        true,
+		ListingState:     listingState,
+		ListedAt:         listedAt,
+		Orderable:        orderable,
 		Generation:       InferPlanGeneration(planCode),
 		Datacenters:      dcs,
 		DefaultOptions:   defaultOpts,
 		AvailableOptions: availOpts,
+		Configs:          cfgs,
 	}
+}
+
+func parsedStoOrCode(code string) ParsedStorage {
+	return ParseStorageCode(code, false)
+}
+
+func buildSynthesizedAnnouncedPlan(
+	planCode string,
+	entry *CatalogPlanEntry,
+	meta PlanMeta,
+	dict *CatalogDictionary,
+	listedAt string,
+) ServerPlan {
+	cpuStr := FormatCPU(meta.CPU, "en")
+	if cpuStr == "" {
+		cpuStr = "N/A"
+	}
+	memStr := "N/A"
+	stoStr := "N/A"
+	bwStr := "N/A"
+	vrackStr := "N/A"
+	defCfgKey := "default"
+	var defaultOpts, availOpts []ServerOption
+	if entry != nil {
+		defaultOpts = append([]ServerOption(nil), entry.DefaultOptions...)
+		availOpts = append([]ServerOption(nil), entry.AvailableOptions...)
+		if entry.DefaultConfigKey != "" {
+			defCfgKey = entry.DefaultConfigKey
+		}
+		if entry.DefaultMemory != "" {
+			parsed := ParseMemoryCode(entry.DefaultMemory, nil)
+			if parsed.SizeGB > 0 {
+				memStr = FormatMemory(parsed, "en")
+			} else {
+				memStr = entry.DefaultMemory
+			}
+		}
+		if entry.DefaultStorage != "" {
+			parsed := ParseStorageCode(entry.DefaultStorage, false)
+			if !parsed.None && len(parsed.Groups) > 0 {
+				stoStr = FormatStorage(parsed, "en")
+			} else {
+				stoStr = entry.DefaultStorage
+			}
+		}
+		if entry.DefaultSpecs.Bandwidth != "" {
+			bwStr = entry.DefaultSpecs.Bandwidth
+		}
+		if entry.DefaultSpecs.VRackBandwidth != "" {
+			vrackStr = entry.DefaultSpecs.VRackBandwidth
+		}
+	}
+	startingPrice := 0.0
+	if meta.Price != nil {
+		startingPrice = *meta.Price
+	}
+	currency := nonEmpty(meta.Currency, "EUR")
+	cfgs := buildPlanConfigsList(planCode, entry, dict, nil, currency)
+	return ServerPlan{
+		PlanCode:         planCode,
+		Name:             nonEmpty(meta.Name, planCode),
+		Description:      nonEmpty(entry.Description, meta.Name),
+		Range:            meta.Range,
+		CPU:              cpuStr,
+		Memory:           memStr,
+		Storage:          stoStr,
+		Bandwidth:        bwStr,
+		VRackBandwidth:   vrackStr,
+		MonthlyPrice:     meta.Price,
+		StartingPrice:    startingPrice,
+		Price:            startingPrice,
+		Currency:         currency,
+		DefaultConfigKey: defCfgKey,
+		CatalogSource:    nonEmpty(entry.CatalogSource, "eco"),
+		ListingState:     "announced",
+		ListedAt:         listedAt,
+		Orderable:        false,
+		Generation:       InferPlanGeneration(planCode),
+		Datacenters:      []DatacenterAvailability{},
+		DefaultOptions:    nonNilOptions(defaultOpts),
+		AvailableOptions: nonNilOptions(availOpts),
+		Configs:          cfgs,
+	}
+}
+
+func nonNilOptions(in []ServerOption) []ServerOption {
+	if in == nil {
+		return []ServerOption{}
+	}
+	return in
+}
+
+// GetCatalogAvailabilities returns enriched availability rows for GET /api/availability and GET /api/catalog/availability,
+// including configKey, options, isDefault, estimatedMonthlyPrice, listingState ("listed", "announced", "presale"),
+// and synthesized "announced" entries for real catalog plans with 0 availability rows.
+func (s *Service) GetCatalogAvailabilities(ctx context.Context, endpoint, zone, planCode string) ([]AvailabilityItem, error) {
+	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
+	filterPC := strings.TrimSpace(planCode)
+	rawItems, err := s.GetRawAvailabilities(ctx, ep, filterPC)
+	if err != nil {
+		return nil, err
+	}
+	dict, _ := s.GetDictionary(ctx, ep, zn, false)
+	hasRealPlans := dict != nil && len(dict.RealPlans) > 0
+
+	seenExact := make(map[string]bool)
+	seenBase := make(map[string]bool)
+	firstSeenCfgForPlan := make(map[string]bool)
+	out := make([]AvailabilityItem, 0, len(rawItems)+16)
+
+	for _, item := range rawItems {
+		pc := strings.TrimSpace(item.PlanCode)
+		if pc == "" {
+			continue
+		}
+		if filterPC != "" && !strings.EqualFold(pc, filterPC) {
+			continue
+		}
+		seenExact[strings.ToLower(pc)] = true
+		if base, _ := ParsePlanRegion(pc); base != "" {
+			seenBase[strings.ToLower(base)] = true
+		}
+
+		var planEntry *CatalogPlanEntry
+		if dict != nil {
+			if e, ok := lookupPlanCaseInsensitive(dict.RealPlans, pc); ok {
+				copyE := e
+				planEntry = &copyE
+			} else if base, _ := ParsePlanRegion(pc); base != "" {
+				if e, ok := lookupPlanCaseInsensitive(dict.RealPlans, base); ok {
+					copyE := e
+					planEntry = &copyE
+				}
+			}
+			if planEntry == nil {
+				if e, ok := lookupPlanCaseInsensitive(dict.Plans, pc); ok {
+					copyE := e
+					planEntry = &copyE
+				}
+			}
+		}
+
+		isListed := !hasRealPlans || IsPlanListedInDict(pc, dict)
+		listingState := "listed"
+		orderable := true
+		catSource := ""
+		if planEntry != nil {
+			catSource = planEntry.CatalogSource
+		}
+		if !isListed {
+			listingState = "presale"
+			orderable = false
+			catSource = "presale"
+		}
+
+		cfgKey := BuildConfigKey(item.Memory, item.Storage)
+		isDef := isDefaultPlanConfig(planEntry, item.Memory, item.Storage, cfgKey)
+		if !isDef && (planEntry == nil || planEntry.DefaultConfigKey == "" || planEntry.DefaultConfigKey == "default") {
+			if !firstSeenCfgForPlan[strings.ToLower(pc)] {
+				isDef = true
+			}
+		}
+		firstSeenCfgForPlan[strings.ToLower(pc)] = true
+
+		opts := matchOptionsFromPlanEntry(planEntry, item.Memory, item.Storage)
+		if isDef && len(opts) == 0 && planEntry != nil && len(planEntry.DefaultAddonOptions) > 0 {
+			opts = append([]string(nil), planEntry.DefaultAddonOptions...)
+		}
+		if opts == nil {
+			opts = []string{}
+		}
+
+		basePrice := 0.0
+		currency := "EUR"
+		if dict != nil && dict.Currency != "" {
+			currency = dict.Currency
+		}
+		if planEntry != nil {
+			if planEntry.Price != nil {
+				basePrice = *planEntry.Price
+			}
+			if planEntry.Currency != "" {
+				currency = planEntry.Currency
+			}
+		}
+		estPrice := EstimateConfigMonthlyPrice(basePrice, item.Memory, item.Storage, planEntry, dict)
+		dcs := item.Datacenters
+		if dcs == nil {
+			dcs = []RawAvailabilityDC{}
+		}
+
+		out = append(out, AvailabilityItem{
+			FQN:                   item.FQN,
+			Memory:                item.Memory,
+			PlanCode:              pc,
+			Server:                item.Server,
+			Storage:               item.Storage,
+			SystemStorage:         item.SystemStorage,
+			GPU:                   item.GPU,
+			Datacenters:           dcs,
+			ConfigKey:             cfgKey,
+			Options:               opts,
+			IsDefault:             isDef,
+			EstimatedMonthlyPrice: estPrice,
+			Price:                 estPrice,
+			Currency:              currency,
+			ListingState:          listingState,
+			CatalogSource:         catSource,
+			Orderable:             orderable,
+			Generation:            InferPlanGeneration(pc),
+			ListedAt:              s.resolveListedAt(pc),
+		})
+	}
+
+	if hasRealPlans {
+		var announcedCodes []string
+		for pc := range dict.RealPlans {
+			if filterPC != "" && !strings.EqualFold(pc, filterPC) {
+				continue
+			}
+			lowPC := strings.ToLower(pc)
+			base, _ := ParsePlanRegion(pc)
+			lowBase := strings.ToLower(base)
+			if seenExact[lowPC] || (lowBase != "" && seenBase[lowBase]) {
+				continue
+			}
+			announcedCodes = append(announcedCodes, pc)
+		}
+		slices.Sort(announcedCodes)
+		for _, pc := range announcedCodes {
+			entry := dict.RealPlans[pc]
+			entryCopy := entry
+			defMem := entry.DefaultMemory
+			if defMem == "" {
+				defMem = entry.DefaultSpecs.Memory
+			}
+			defSto := entry.DefaultStorage
+			if defSto == "" {
+				defSto = entry.DefaultSpecs.Storage
+			}
+			cfgKey := nonEmpty(entry.DefaultConfigKey, BuildConfigKey(defMem, defSto))
+			basePrice := 0.0
+			if entry.Price != nil {
+				basePrice = *entry.Price
+			}
+			estPrice := EstimateConfigMonthlyPrice(basePrice, defMem, defSto, &entryCopy, dict)
+			currency := nonEmpty(entry.Currency, nonEmpty(dict.Currency, "EUR"))
+			opts := append([]string(nil), entry.DefaultAddonOptions...)
+			if opts == nil {
+				opts = []string{}
+			}
+			fqn := pc
+			if defMem != "" || defSto != "" {
+				fqn = fmt.Sprintf("%s.%s.%s", pc, defMem, defSto)
+			}
+			out = append(out, AvailabilityItem{
+				FQN:                   fqn,
+				Memory:                defMem,
+				PlanCode:              pc,
+				Server:                nonEmpty(entry.Product, pc),
+				Storage:               defSto,
+				SystemStorage:         entry.DefaultSpecs.SystemStorage,
+				GPU:                   entry.DefaultSpecs.GPU,
+				Datacenters:           []RawAvailabilityDC{},
+				ConfigKey:             cfgKey,
+				Options:               opts,
+				IsDefault:             true,
+				EstimatedMonthlyPrice: estPrice,
+				Price:                 estPrice,
+				Currency:              currency,
+				ListingState:          "announced",
+				CatalogSource:         entry.CatalogSource,
+				Orderable:             false,
+				Generation:            InferPlanGeneration(pc),
+				ListedAt:              s.resolveListedAt(pc),
+			})
+		}
+	}
+
+	return out, nil
+}
+
+// GetPlanConfigs returns the merged configuration list and pricing for GET /api/catalog/plans/{planCode}/configs.
+func (s *Service) GetPlanConfigs(ctx context.Context, endpoint, zone, planCode string) (*PlanConfigsResponse, error) {
+	pc := strings.TrimSpace(planCode)
+	if pc == "" {
+		return nil, errors.New("planCode is required")
+	}
+	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
+	dict, _ := s.GetDictionary(ctx, ep, zn, false)
+	rawItems, _ := s.GetRawAvailabilities(ctx, ep, pc)
+
+	var filteredAvail []RawAvailabilityItem
+	for _, it := range rawItems {
+		if strings.EqualFold(strings.TrimSpace(it.PlanCode), pc) {
+			filteredAvail = append(filteredAvail, it)
+		}
+	}
+
+	var planEntry *CatalogPlanEntry
+	inRealPlans := false
+	if dict != nil {
+		if e, ok := lookupPlanCaseInsensitive(dict.RealPlans, pc); ok {
+			copyE := e
+			planEntry = &copyE
+			inRealPlans = true
+		} else if base, _ := ParsePlanRegion(pc); base != "" {
+			if e, ok := lookupPlanCaseInsensitive(dict.RealPlans, base); ok {
+				copyE := e
+				planEntry = &copyE
+				inRealPlans = true
+			}
+		}
+		if planEntry == nil {
+			if e, ok := lookupPlanCaseInsensitive(dict.Plans, pc); ok && !strings.EqualFold(e.CatalogSource, "vps") {
+				copyE := e
+				planEntry = &copyE
+				if len(dict.RealPlans) == 0 {
+					inRealPlans = true
+				}
+			}
+		}
+	}
+
+	var firstServer string
+	if len(filteredAvail) > 0 {
+		firstServer = filteredAvail[0].Server
+	}
+	meta := ResolvePlanWithDict(pc, firstServer, dict)
+
+	listingState := "presale"
+	orderable := false
+	if inRealPlans {
+		if len(filteredAvail) > 0 {
+			listingState = "listed"
+			orderable = true
+		} else {
+			listingState = "announced"
+			orderable = false
+		}
+	}
+
+	basePrice := 0.0
+	if meta.Price != nil {
+		basePrice = *meta.Price
+	}
+	currency := nonEmpty(meta.Currency, "EUR")
+	if dict != nil && dict.Currency != "" && meta.Currency == "" {
+		currency = dict.Currency
+	}
+
+	configs := buildPlanConfigsList(pc, planEntry, dict, filteredAvail, currency)
+	defCfgKey := "default"
+	if planEntry != nil && planEntry.DefaultConfigKey != "" {
+		defCfgKey = planEntry.DefaultConfigKey
+	}
+	for _, c := range configs {
+		if c.IsDefault {
+			defCfgKey = c.ConfigKey
+			break
+		}
+	}
+	startingPrice := basePrice
+	if startingPrice == 0 && len(configs) > 0 {
+		startingPrice = configs[0].EstimatedMonthlyPrice
+	}
+
+	return &PlanConfigsResponse{
+		PlanCode:         pc,
+		Name:             nonEmpty(meta.Name, pc),
+		Range:            meta.Range,
+		CPU:              FormatCPU(meta.CPU, "en"),
+		ListingState:     listingState,
+		Orderable:        orderable,
+		BasePrice:        basePrice,
+		StartingPrice:    startingPrice,
+		Currency:         currency,
+		DefaultConfigKey: defCfgKey,
+		Configs:          configs,
+	}, nil
+}
+
+func buildPlanConfigsList(
+	planCode string,
+	planEntry *CatalogPlanEntry,
+	dict *CatalogDictionary,
+	availItems []RawAvailabilityItem,
+	currency string,
+) []PlanConfigItem {
+	basePrice := 0.0
+	if planEntry != nil && planEntry.Price != nil {
+		basePrice = *planEntry.Price
+	}
+	if currency == "" {
+		currency = "EUR"
+	}
+
+	byKey := make(map[string]*PlanConfigItem)
+	order := make([]string, 0, len(availItems)+1)
+	sawDefault := false
+
+	for _, it := range availItems {
+		if planCode != "" && it.PlanCode != "" && !strings.EqualFold(it.PlanCode, planCode) {
+			continue
+		}
+		mem := strings.TrimSpace(it.Memory)
+		sto := strings.TrimSpace(it.Storage)
+		cfgKey := BuildConfigKey(mem, sto)
+		isDef := isDefaultPlanConfig(planEntry, mem, sto, cfgKey)
+		if isDef {
+			sawDefault = true
+		}
+
+		existing, ok := byKey[cfgKey]
+		if !ok {
+			opts := matchOptionsFromPlanEntry(planEntry, mem, sto)
+			if isDef && len(opts) == 0 && planEntry != nil && len(planEntry.DefaultAddonOptions) > 0 {
+				opts = append([]string(nil), planEntry.DefaultAddonOptions...)
+			}
+			if opts == nil {
+				opts = []string{}
+			}
+			memLabel := FormatMemory(ParseMemoryCode(mem, nil), "en")
+			stoLabel := FormatStorage(ParseStorageCode(sto, false), "en")
+			lbl := joinNonEmpty(" + ", memLabel, stoLabel)
+			if lbl == "" {
+				lbl = cfgKey
+			}
+			estPrice := EstimateConfigMonthlyPrice(basePrice, mem, sto, planEntry, dict)
+			existing = &PlanConfigItem{
+				ConfigKey:             cfgKey,
+				Memory:                mem,
+				Storage:               sto,
+				SystemStorage:         it.SystemStorage,
+				GPU:                   it.GPU,
+				MemoryLabel:           memLabel,
+				StorageLabel:          stoLabel,
+				Label:                 lbl,
+				Options:               opts,
+				IsDefault:             isDef,
+				EstimatedMonthlyPrice: estPrice,
+				Price:                 estPrice,
+				Currency:              currency,
+				Datacenters:           make(map[string]string),
+			}
+			byKey[cfgKey] = existing
+			order = append(order, cfgKey)
+		} else if isDef {
+			existing.IsDefault = true
+		}
+
+		for _, dc := range it.Datacenters {
+			normDC := NormalizeDisplayDatacenter(dc.Datacenter)
+			if normDC == "" {
+				continue
+			}
+			av := strings.TrimSpace(dc.Availability)
+			if av == "" {
+				av = "unknown"
+			}
+			existing.Datacenters[normDC] = pickBetterAvailability(existing.Datacenters[normDC], av)
+		}
+	}
+
+	// Merge the plan's default configuration if it wasn't present in availItems.
+	if planEntry != nil && !sawDefault {
+		defMem := nonEmpty(planEntry.DefaultMemory, planEntry.DefaultSpecs.Memory)
+		defSto := nonEmpty(planEntry.DefaultStorage, planEntry.DefaultSpecs.Storage)
+		if defMem != "" || defSto != "" || basePrice > 0 {
+			defKey := nonEmpty(planEntry.DefaultConfigKey, BuildConfigKey(defMem, defSto))
+			if existing, ok := byKey[defKey]; ok {
+				existing.IsDefault = true
+				sawDefault = true
+			} else {
+				memLabel := FormatMemory(ParseMemoryCode(defMem, nil), "en")
+				stoLabel := FormatStorage(ParseStorageCode(defSto, false), "en")
+				lbl := joinNonEmpty(" + ", memLabel, stoLabel)
+				if lbl == "" {
+					lbl = "Default Configuration"
+				}
+				opts := append([]string(nil), planEntry.DefaultAddonOptions...)
+				if len(opts) == 0 {
+					opts = matchOptionsFromPlanEntry(planEntry, defMem, defSto)
+				}
+				if opts == nil {
+					opts = []string{}
+				}
+				estPrice := EstimateConfigMonthlyPrice(basePrice, defMem, defSto, planEntry, dict)
+				byKey[defKey] = &PlanConfigItem{
+					ConfigKey:             defKey,
+					Memory:                defMem,
+					Storage:               defSto,
+					SystemStorage:         planEntry.DefaultSpecs.SystemStorage,
+					GPU:                   planEntry.DefaultSpecs.GPU,
+					MemoryLabel:           memLabel,
+					StorageLabel:          stoLabel,
+					Label:                 lbl,
+					Options:               opts,
+					IsDefault:             true,
+					EstimatedMonthlyPrice: estPrice,
+					Price:                 estPrice,
+					Currency:              currency,
+					Datacenters:           make(map[string]string),
+				}
+				order = append([]string{defKey}, order...)
+				sawDefault = true
+			}
+		}
+	}
+
+	out := make([]PlanConfigItem, 0, len(order))
+	for _, k := range order {
+		item := byKey[k]
+		inStock := 0
+		for _, av := range item.Datacenters {
+			if av != "" && !strings.EqualFold(av, "unavailable") && !strings.EqualFold(av, "unknown") {
+				inStock++
+			}
+		}
+		item.InStockCount = inStock
+		out = append(out, *item)
+	}
+	if !sawDefault && len(out) > 0 {
+		out[0].IsDefault = true
+	}
+
+	slices.SortStableFunc(out, func(a, b PlanConfigItem) int {
+		if a.IsDefault != b.IsDefault {
+			if a.IsDefault {
+				return -1
+			}
+			return 1
+		}
+		if a.EstimatedMonthlyPrice != b.EstimatedMonthlyPrice {
+			if a.EstimatedMonthlyPrice < b.EstimatedMonthlyPrice {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.ConfigKey, b.ConfigKey)
+	})
+	return out
+}
+
+func isDefaultPlanConfig(planEntry *CatalogPlanEntry, memory, storage, cfgKey string) bool {
+	if planEntry == nil {
+		return false
+	}
+	defKey := planEntry.DefaultConfigKey
+	if defKey != "" && defKey != "default" && strings.EqualFold(cfgKey, defKey) {
+		return true
+	}
+	defMem := nonEmpty(planEntry.DefaultMemory, planEntry.DefaultSpecs.Memory)
+	defSto := nonEmpty(planEntry.DefaultStorage, planEntry.DefaultSpecs.Storage)
+	if defMem == "" && defSto == "" {
+		return false
+	}
+	memMatch := defMem == "" || strings.EqualFold(memory, defMem) || StandardizeConfig(memory) == StandardizeConfig(defMem)
+	stoMatch := defSto == "" || strings.EqualFold(storage, defSto) || StandardizeConfig(storage) == StandardizeConfig(defSto)
+	return memMatch && stoMatch
+}
+
+func matchOptionsFromPlanEntry(planEntry *CatalogPlanEntry, memoryCode, storageCode string) []string {
+	if planEntry == nil || len(planEntry.AvailableOptions) == 0 {
+		return nil
+	}
+	var opts []string
+	findBestOption := func(code string, isMem bool) string {
+		c := strings.TrimSpace(code)
+		if c == "" || strings.EqualFold(c, "N/A") || strings.EqualFold(c, "none") {
+			return ""
+		}
+		low := strings.ToLower(c)
+		// 1. Exact ConfigKey or Value match
+		for _, opt := range planEntry.AvailableOptions {
+			fam := strings.ToLower(opt.Family)
+			if isMem && !strings.Contains(fam, "memory") && !strings.Contains(fam, "ram") && !strings.HasPrefix(strings.ToLower(opt.Value), "ram-") {
+				continue
+			}
+			if !isMem && !strings.Contains(fam, "storage") && !strings.Contains(fam, "disk") && !strings.Contains(fam, "drive") {
+				continue
+			}
+			if strings.EqualFold(opt.ConfigKey, low) || strings.EqualFold(opt.Value, low) {
+				return opt.Value
+			}
+		}
+		// 2. Prefix match (e.g. "ram-32g-ecc-2933" -> "ram-32g-ecc-2933-24ska01")
+		for _, opt := range planEntry.AvailableOptions {
+			if strings.HasPrefix(strings.ToLower(opt.Value), low+"-") {
+				return opt.Value
+			}
+		}
+		// 3. Standardized match
+		std := StandardizeConfig(c)
+		if std == "" {
+			return ""
+		}
+		for _, opt := range planEntry.AvailableOptions {
+			fam := strings.ToLower(opt.Family)
+			if isMem && !strings.Contains(fam, "memory") && !strings.Contains(fam, "ram") && !strings.HasPrefix(strings.ToLower(opt.Value), "ram-") {
+				continue
+			}
+			if !isMem && !strings.Contains(fam, "storage") && !strings.Contains(fam, "disk") && !strings.Contains(fam, "drive") {
+				continue
+			}
+			if StandardizeConfig(opt.Value) == std {
+				return opt.Value
+			}
+		}
+		return ""
+	}
+
+	if memOpt := findBestOption(memoryCode, true); memOpt != "" {
+		opts = append(opts, memOpt)
+	}
+	if stoOpt := findBestOption(storageCode, false); stoOpt != "" {
+		if !slices.Contains(opts, stoOpt) {
+			opts = append(opts, stoOpt)
+		}
+	}
+	return opts
+}
+
+func joinNonEmpty(sep string, parts ...string) string {
+	var filtered []string
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" && t != "-" && !strings.EqualFold(t, "N/A") {
+			filtered = append(filtered, t)
+		}
+	}
+	return strings.Join(filtered, sep)
 }
 
 // GetAvailability returns per-datacenter availability for planCode (optionally filtered by options).
@@ -1313,30 +2438,59 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 		return map[string]*ConfigAvailability{}, nil
 	}
 
-	var catalogPlan map[string]any
-	for _, catName := range []string{"eco", "baremetalServers"} {
-		cat := s.fetchPublicCatalog(ctx, ep, zn, catName)
-		if cat == nil {
-			continue
-		}
-		for _, p := range sliceOfMaps(cat["plans"]) {
-			if strings.EqualFold(strFromMap(p, "planCode"), planCode) {
-				catalogPlan = p
-				break
+	dict, _ := s.GetDictionary(ctx, ep, zn, false)
+	var planEntry *CatalogPlanEntry
+	if dict != nil {
+		if e, ok := lookupPlanCaseInsensitive(dict.RealPlans, planCode); ok {
+			copyE := e
+			planEntry = &copyE
+		} else if base, _ := ParsePlanRegion(planCode); base != "" {
+			if e, ok := lookupPlanCaseInsensitive(dict.RealPlans, base); ok {
+				copyE := e
+				planEntry = &copyE
 			}
 		}
-		if catalogPlan != nil {
-			break
+	}
+
+	var catalogPlan map[string]any
+	if planEntry == nil {
+		for _, catName := range []string{"eco", "baremetalServers"} {
+			cat := s.fetchPublicCatalog(ctx, ep, zn, catName)
+			if cat == nil {
+				continue
+			}
+			for _, p := range sliceOfMaps(cat["plans"]) {
+				if strings.EqualFold(strFromMap(p, "planCode"), planCode) {
+					catalogPlan = p
+					break
+				}
+			}
+			if catalogPlan != nil {
+				break
+			}
 		}
 	}
 
 	listingState := "presale"
 	orderable := false
-	if catalogPlan != nil {
+	if planEntry != nil || catalogPlan != nil {
 		listingState = "listed"
 		orderable = true
 	}
 	gen := InferPlanGeneration(planCode)
+	basePrice := 0.0
+	currency := "EUR"
+	if dict != nil && dict.Currency != "" {
+		currency = dict.Currency
+	}
+	if planEntry != nil {
+		if planEntry.Price != nil {
+			basePrice = *planEntry.Price
+		}
+		if planEntry.Currency != "" {
+			currency = planEntry.Currency
+		}
+	}
 
 	out := make(map[string]*ConfigAvailability, len(items))
 	for _, item := range items {
@@ -1344,6 +2498,7 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 			continue
 		}
 		dcs := make(map[string]string, len(item.Datacenters))
+		inStock := 0
 		for _, dc := range item.Datacenters {
 			code := strings.ToLower(strings.TrimSpace(dc.Datacenter))
 			if code != "" {
@@ -1352,29 +2507,56 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 					av = "unknown"
 				}
 				dcs[code] = pickBetterAvailability(dcs[code], av)
-				if norm := NormalizeDisplayDatacenter(code); norm != "" && norm != code {
+				norm := NormalizeDisplayDatacenter(code)
+				if norm != "" && norm != code {
 					dcs[norm] = pickBetterAvailability(dcs[norm], av)
 				}
 			}
 		}
+		for _, av := range dcs {
+			if av != "" && !strings.EqualFold(av, "unavailable") && !strings.EqualFold(av, "unknown") {
+				inStock++
+			}
+		}
 
-		matchedOptions := matchAddonOptionsForConfig(catalogPlan, item.Memory, item.Storage)
+		matchedOptions := matchOptionsFromPlanEntry(planEntry, item.Memory, item.Storage)
+		if len(matchedOptions) == 0 && catalogPlan != nil {
+			matchedOptions = matchAddonOptionsForConfig(catalogPlan, item.Memory, item.Storage)
+		}
+		cfgKey := BuildConfigKey(item.Memory, item.Storage)
+		isDef := isDefaultPlanConfig(planEntry, item.Memory, item.Storage, cfgKey)
+		if isDef && len(matchedOptions) == 0 && planEntry != nil && len(planEntry.DefaultAddonOptions) > 0 {
+			matchedOptions = append([]string(nil), planEntry.DefaultAddonOptions...)
+		}
 		if matchedOptions == nil {
 			matchedOptions = []string{}
 		}
+		estPrice := EstimateConfigMonthlyPrice(basePrice, item.Memory, item.Storage, planEntry, dict)
+		memLabel := FormatMemory(ParseMemoryCode(item.Memory, nil), "en")
+		stoLabel := FormatStorage(ParseStorageCode(item.Storage, false), "en")
+
 		key := item.FQN
 		if key == "" {
 			key = fmt.Sprintf("%s.%s.%s", nonEmpty(item.PlanCode, planCode), item.Memory, item.Storage)
 		}
 		out[key] = &ConfigAvailability{
-			FQN:          key,
-			Memory:       nonEmpty(item.Memory, "N/A"),
-			Storage:      nonEmpty(item.Storage, "N/A"),
-			Datacenters:  dcs,
-			Options:      matchedOptions,
-			ListingState: listingState,
-			Orderable:    orderable,
-			Generation:   gen,
+			FQN:                   key,
+			ConfigKey:             cfgKey,
+			Memory:                nonEmpty(item.Memory, "N/A"),
+			Storage:               nonEmpty(item.Storage, "N/A"),
+			MemoryLabel:           memLabel,
+			StorageLabel:          stoLabel,
+			Label:                 nonEmpty(joinNonEmpty(" + ", memLabel, stoLabel), cfgKey),
+			Datacenters:           dcs,
+			InStockCount:          inStock,
+			Options:               matchedOptions,
+			IsDefault:             isDef,
+			EstimatedMonthlyPrice: estPrice,
+			Price:                 estPrice,
+			Currency:              currency,
+			ListingState:          listingState,
+			Orderable:             orderable,
+			Generation:            gen,
 		}
 	}
 	return out, nil

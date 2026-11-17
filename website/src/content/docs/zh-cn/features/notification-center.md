@@ -18,9 +18,9 @@ description: 配置纯出站 Telegram 机器人与 SMTP 邮件推送通道，支
 | :--- | :---: | :---: | :--- |
 | `stock.available` | 是 | 否 | 监控中的独服或 VPS 配置从无货变为有货（补货）。 |
 | `stock.unavailable` | 否 | 否 | 原本有货的监控配置变为售罄状态。 |
-| `sku.changed` | 是 | 否 | 公开货架 SKU 监控检测到新上机架型号、确认下架或子配置增减。 |
+| `sku.changed` | 是 | 否 | 公开货架 SKU 监控检测到新上机架、已公布机型正式开售（`saleStarted`）、同产品线换代（`replaced`）或确认下架（按产品线分组聚合）。 |
 | `order.success` | 是 | 是 | 自动采购队列或快捷下单成功生成 OVHcloud 订单（含付款链接）。 |
-| `order.failed` | 是 | 是 | 自动下单尝试在创建购物车、挂载配置或结算阶段失败。 |
+| `order.failed` | 是 | 是 | 自动下单在创建购物车、挂载配置、结算阶段失败，或购物车实时不含税月价超出目标设定的 `maxMonthlyPrice` 上限（`PRICE_ABOVE_LIMIT`）。 |
 | `order.delivered` | 是 | 是 | `/me/order` 中追踪的订单完成全部 4 步硬件交付（`INSTALLATION` 完成）。 |
 | `service.expiring` | 否 | 是 | 账户名下的独服或 VPS 剩余有效期小于等于 `expiryDays`（默认 `7` 天）。 |
 | `mcp.action` | 是 | 否 | AI 客户端通过 `/api/mcp` 触发 L2 免付下单/队列变更或 L3 可逆运维操作。 |

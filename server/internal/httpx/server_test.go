@@ -203,7 +203,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 		t.Fatalf("read gunzipped /api/health: %v", err)
 	}
 	healthMap := decodeMap(t, healthBytes)
-	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.1" {
+	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.2" {
 		t.Fatalf("unexpected health payload: %+v", healthMap)
 	}
 
@@ -1021,7 +1021,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"Authorization": "Bearer " + mcpToken,
 	}
 
-	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.1"
+	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.2"
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1035,7 +1035,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}
 	initRes := decodeMap(t, body)["result"].(map[string]any)
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.1" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.2" {
 		t.Fatalf("unexpected MCP serverInfo: %+v", srvInfo)
 	}
 
@@ -1391,5 +1391,216 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		case <-time.After(40 * time.Millisecond):
 			deadline = time.Time{}
 		}
+	}
+}
+
+func TestE2EV132AnnouncedModelsListedAtAndSKUChanges(t *testing.T) {
+	svcs, handler, _ := newTestApp(t)
+	ctx := context.Background()
+
+	var (
+		mu              sync.Mutex
+		phase           = 1
+		sysPlanCode     = "24sys022"
+		le01InAvailFeed = false
+	)
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		p := strings.TrimPrefix(r.URL.Path, "/1.0")
+		mu.Lock()
+		curSYS := sysPlanCode
+		le01Live := le01InAvailFeed
+		curPhase := phase
+		mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodGet && p == "/dedicated/server/datacenter/availabilities":
+			avails := []map[string]any{
+				{
+					"fqn":      curSYS + ".ram-32g-ecc-2133.softraid-2x512nvme",
+					"planCode": curSYS,
+					"server":   "Intel Xeon-E 2136",
+					"memory":   "ram-32g-ecc-2133",
+					"storage":  "softraid-2x512nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+					},
+				},
+			}
+			if le01Live {
+				avails = append(avails, map[string]any{
+					"fqn":      "27skle01.ram-32g-ecc-3200.softraid-2x960nvme",
+					"planCode": "27skle01",
+					"server":   "Intel Xeon E-2386G",
+					"memory":   "ram-32g-ecc-3200",
+					"storage":  "softraid-2x960nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "rbx", "availability": "72H"},
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(avails)
+
+		case r.Method == http.MethodGet && strings.HasPrefix(p, "/order/catalog/public/"):
+			plans := []map[string]any{}
+			if strings.HasSuffix(p, "/eco") {
+				plans = append(plans, map[string]any{
+					"planCode":    curSYS,
+					"invoiceName": "SYS-2 | Intel Xeon-E 2136",
+					"pricings": []map[string]any{
+						{"mode": "default", "capacities": []string{"renew"}, "price": 3999000000},
+					},
+					"addonFamilies": []map[string]any{
+						{"name": "memory", "default": "ram-32g-ecc-2133", "addons": []string{"ram-32g-ecc-2133"}},
+						{"name": "storage", "default": "softraid-2x512nvme", "addons": []string{"softraid-2x512nvme"}},
+					},
+				})
+				for i := 1; i <= 14; i++ {
+					code := fmt.Sprintf("27skle%02d", i)
+					plans = append(plans, map[string]any{
+						"planCode":    code,
+						"invoiceName": fmt.Sprintf("KS-LE-%d | Intel Xeon E-2386G", i),
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 2999000000},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-3200", "addons": []string{"ram-32g-ecc-3200"}},
+							{"name": "storage", "default": "softraid-2x960nvme", "addons": []string{"softraid-2x960nvme"}},
+						},
+					})
+				}
+			}
+			_ = curPhase
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale":   map[string]any{"currencyCode": "EUR"},
+				"plans":    plans,
+				"products": []any{},
+				"addons":   []any{},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockOVH.Close()
+
+	svcs.Catalog.SetPublicAPIBaseURL(mockOVH.URL + "/1.0")
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	client := newCookieClient(t)
+
+	// Login + enable 2FA + enable MCP
+	code, _, _ := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{"password": testSecretKey}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("login failed: %d", code)
+	}
+	now := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+	svcs.Auth.SetNowFunc(func() time.Time { return now })
+	_, _, setupRaw := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/totp/setup", map[string]any{"accountName": "Admin"}, nil)
+	totpSecret := fmt.Sprint(decodeMap(t, setupRaw)["secret"])
+	otpAct, _, _ := auth.ComputeCurrentTOTP(totpSecret, now)
+	_, _, _ = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/totp/activate", map[string]any{"code": otpAct}, nil)
+
+	now = now.Add(35 * time.Second)
+	otpEnable, _, _ := auth.ComputeCurrentTOTP(totpSecret, now)
+	code, _, body := doHTTPJSON(t, client, http.MethodPut, ts.URL+"/api/mcp/settings", map[string]any{
+		"enabled": true,
+		"scopes":  map[string]any{"read": true},
+	}, map[string]string{"X-TOTP-Code": otpEnable})
+	if code != http.StatusOK {
+		t.Fatalf("enable MCP failed: %d body=%s", code, string(body))
+	}
+	mcpToken := decodeMap(t, body)["data"].(map[string]any)["revealedToken"].(string)
+	mcpHeaders := map[string]string{"Authorization": "Bearer " + mcpToken}
+
+	// Phase 1: Baseline SKU check (1 listed: 24sys022, 14 announced: 27skle01..27skle14)
+	if _, err := svcs.Monitor.CheckSKUOnce(ctx, true); err != nil {
+		t.Fatalf("CheckSKUOnce baseline: %v", err)
+	}
+
+	// Verify catalog_availability for "27skle" or only_announced=true returns all 14 announced Limited Edition models
+	for _, args := range []map[string]any{
+		{"plan_code": "27skle"},
+		{"only_announced": true},
+		{"listing_state": "announced"},
+	} {
+		code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
+			"jsonrpc": "2.0",
+			"id":      100,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "catalog_availability",
+				"arguments": args,
+			},
+		}, mcpHeaders)
+		if code != http.StatusOK {
+			t.Fatalf("catalog_availability (%+v) failed: %d body=%s", args, code, string(body))
+		}
+		resJSON := decodeMap(t, []byte(decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)))
+		if int(resJSON["totalMatched"].(float64)) != 14 || int(resJSON["returned"].(float64)) != 14 {
+			t.Fatalf("expected 14 announced models for args %+v, got %+v", args, resJSON)
+		}
+		first := resJSON["items"].([]any)[0].(map[string]any)
+		if first["listingState"] != "announced" ||
+			first["orderable"] != false ||
+			first["configKey"] != "ram-32g-ecc-3200+softraid-2x960nvme" ||
+			first["isDefault"] != true ||
+			first["estimatedMonthlyPrice"].(float64) != 29.99 ||
+			first["currency"] != "EUR" {
+			t.Fatalf("unexpected announced item fields for args %+v: %+v", args, first)
+		}
+	}
+
+	// Phase 2: 24sys022 is replaced by 24sys02-v3 AND 27skle01 transitions from announced -> listed (saleStarted=true)
+	mu.Lock()
+	phase = 2
+	sysPlanCode = "24sys02-v3"
+	le01InAvailFeed = true
+	mu.Unlock()
+	_, _ = svcs.Catalog.GetDictionary(ctx, "ovh-eu", "IE", true)
+	// First check marks 24sys022 missing (count=1) and detects 27skle01 saleStarted + 24sys02-v3; second check confirms removal/replacement if needed
+	if _, err := svcs.Monitor.CheckSKUOnce(ctx, true); err != nil {
+		t.Fatalf("CheckSKUOnce phase2 step1: %v", err)
+	}
+
+	// Verify GET /api/catalog/availability and GET /api/catalog/plans populate listedAt from SKU monitor!
+	code, _, availRaw := doHTTPJSON(t, client, http.MethodGet, ts.URL+"/api/catalog/availability?planCode=27skle01", nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/catalog/availability failed: %d body=%s", code, string(availRaw))
+	}
+	var availList []map[string]any
+	if err := json.Unmarshal(availRaw, &availList); err != nil || len(availList) != 1 {
+		t.Fatalf("expected 1 availability item for 27skle01, got %s", string(availRaw))
+	}
+	if strings.TrimSpace(fmt.Sprint(availList[0]["listedAt"])) == "" {
+		t.Fatalf("expected listedAt populated from SKU monitor on GET /api/catalog/availability, got %+v", availList[0])
+	}
+
+	// Verify catalog_sku_changes exposes announcedSkus=13, listedSkus=2, saleStarted=true on 27skle01
+	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      101,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "catalog_sku_changes",
+			"arguments": map[string]any{"limit": 20},
+		},
+	}, mcpHeaders)
+	if code != http.StatusOK {
+		t.Fatalf("catalog_sku_changes failed: %d body=%s", code, string(body))
+	}
+	skuRes := decodeMap(t, []byte(decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)))
+	if int(skuRes["announcedSkus"].(float64)) != 13 {
+		t.Fatalf("expected announcedSkus=13 after 27skle01 went on sale, got %+v", skuRes)
+	}
+	foundSaleStarted := false
+	for _, rawCh := range skuRes["recentChanges"].([]any) {
+		ch := rawCh.(map[string]any)
+		if ch["planCode"] == "27skle01" && ch["saleStarted"] == true {
+			foundSaleStarted = true
+		}
+	}
+	if !foundSaleStarted {
+		t.Fatalf("expected recentChanges to include 27skle01 with saleStarted=true, got %+v", skuRes["recentChanges"])
 	}
 }

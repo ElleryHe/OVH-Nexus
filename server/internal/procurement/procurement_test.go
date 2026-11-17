@@ -353,11 +353,25 @@ func TestQuickOrderNoPricedConfigAndCooldown(t *testing.T) {
 		t.Fatalf("expected 429 duplicate guard, got %d %s", rec.Code, rec.Body.String())
 	}
 
-	// 4. Direct QuickOrder with Source="stock-monitor" and SourceRef="24ska01" persists source linkage.
+	// 4. Direct QuickOrder with Source="stock-monitor" without options MUST be rejected with CONFIG_REQUIRED_FOR_AUTO_ORDER.
+	noOptRes, noOptStatus, noOptErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:          "acc-1",
+		PlanCode:           "24ska01",
+		Datacenter:         "gra",
+		SkipDuplicateCheck: true,
+		Source:             "stock-monitor",
+		SourceRef:          "24ska01",
+	})
+	if noOptErr == nil || noOptStatus != http.StatusBadRequest || noOptRes == nil || noOptRes.Code != "CONFIG_REQUIRED_FOR_AUTO_ORDER" || noOptRes.ErrorCode != "CONFIG_REQUIRED_FOR_AUTO_ORDER" {
+		t.Fatalf("expected stock-monitor QuickOrder without options to fail with 400 CONFIG_REQUIRED_FOR_AUTO_ORDER, got status=%d err=%v res=%+v", noOptStatus, noOptErr, noOptRes)
+	}
+
+	// 5. Direct QuickOrder with Source="stock-monitor", SourceRef="24ska01", and explicit Options persists source linkage.
 	monRes, monStatus, monErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
 		AccountID:          "acc-1",
 		PlanCode:           "24ska01",
 		Datacenter:         "gra",
+		Options:            []string{"ram-32g-noecc-2133-24ska01", "softraid-2x480ssd-24ska01"},
 		SkipDuplicateCheck: true,
 		Source:             "stock-monitor",
 		SourceRef:          "24ska01",
@@ -583,5 +597,228 @@ func TestQuoteCreateUnpaidOrderAndQueueWorkerExecution(t *testing.T) {
 	env.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("DELETE /api/history failed: %d", rec.Code)
+	}
+}
+
+func TestQuickOrderMaxMonthlyPriceSetupFeeAndQuantity(t *testing.T) {
+	var checkoutCount atomic.Int32
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/auth/time":
+			_ = json.NewEncoder(w).Encode(time.Now().Unix())
+		case r.URL.Path == "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24ska01",
+						"invoiceName": "KS-A | Intel i7-6700k",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "KS-A"}},
+						"pricings":    []map[string]any{{"mode": "default", "capacities": []string{"renew"}, "price": 3500000000}},
+						"addonFamilies": []map[string]any{
+							{
+								"name":    "memory",
+								"default": "ram-32g-noecc-2133-24ska01",
+								"addons":  []string{"ram-32g-noecc-2133-24ska01", "ram-128g-ecc-2933-24ska01"},
+							},
+							{
+								"name":    "storage",
+								"default": "softraid-2x480ssd-24ska01",
+								"addons":  []string{"softraid-2x480ssd-24ska01", "softraid-4x3840nvme-24ska01"},
+							},
+						},
+					},
+				},
+			})
+		case r.URL.Path == "/order/catalog/public/baremetalServers" || r.URL.Path == "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case r.URL.Path == "/dedicated/server/datacenter/availabilities":
+			// In sbg: default 32G config is unavailable, only expensive 128G config is available.
+			// In gra: default 32G config is available.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":      "24ska01.ram-32g-noecc-2133.softraid-2x480ssd",
+					"planCode": "24ska01",
+					"memory":   "ram-32g-noecc-2133",
+					"storage":  "softraid-2x480ssd",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+						{"datacenter": "sbg", "availability": "unavailable"},
+					},
+				},
+				{
+					"fqn":      "24ska01.ram-128g-ecc-2933.softraid-4x3840nvme",
+					"planCode": "24ska01",
+					"memory":   "ram-128g-ecc-2933",
+					"storage":  "softraid-4x3840nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H-high"},
+						{"datacenter": "sbg", "availability": "1H-high"},
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart":
+			_ = json.NewEncoder(w).Encode(map[string]any{"cartId": "cart-guard-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-guard-1/assign":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-guard-1/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{"itemId": 77})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-guard-1/item/77/configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-guard-1/eco/options":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"planCode": "ram-32g-noecc-2133-24ska01", "duration": "P1M", "pricingMode": "default"},
+				{"planCode": "softraid-2x480ssd-24ska01", "duration": "P1M", "pricingMode": "default"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-guard-1/eco/options":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-guard-1/summary":
+			// Live cart quote:
+			// - Monthly recurring ex-VAT: 35.00 EUR (server) + 10.00 EUR (memory) = 45.00 EUR
+			// - One-off installation/setup fee ex-VAT: 50.00 EUR
+			// - Total upfront ex-VAT: 95.00 EUR (114.00 EUR with tax)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withTax":      map[string]any{"value": 114.00, "currencyCode": "EUR"},
+					"withoutTax":   map[string]any{"value": 95.00, "currencyCode": "EUR"},
+					"tax":          map[string]any{"value": 19.00, "currencyCode": "EUR"},
+					"currencyCode": "EUR",
+				},
+				"details": []map[string]any{
+					{
+						"detailType":  "DURATION",
+						"planCode":    "24ska01",
+						"description": "KS-A Server",
+						"totalPrice":  map[string]any{"value": 35.00, "currencyCode": "EUR"},
+					},
+					{
+						"detailType":  "DURATION",
+						"planCode":    "ram-32g-noecc-2133-24ska01",
+						"description": "32GB RAM",
+						"totalPrice":  map[string]any{"value": 10.00, "currencyCode": "EUR"},
+					},
+					{
+						"detailType":  "INSTALLATION",
+						"planCode":    "installation",
+						"description": "Installation fee",
+						"totalPrice":  map[string]any{"value": 50.00, "currencyCode": "EUR"},
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-guard-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/order/cart/cart-guard-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-guard-1/checkout":
+			_ = json.NewEncoder(w).Encode(map[string]any{"contracts": []any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-guard-1/checkout":
+			seq := checkoutCount.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"orderId": 1000 + seq,
+				"url":     "https://www.ovh.com/order/bill/1000",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+
+	env := newTestProcurementEnv(t, mockOVH)
+
+	// 1. Manual QuickOrder without options in SBG (where default config is unavailable and only expensive 128G is available)
+	//    MUST NOT auto-pick the expensive non-default config!
+	sbgRes, sbgStatus, _ := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:  "acc-1",
+		PlanCode:   "24ska01",
+		Datacenter: "sbg",
+		Source:     "manual",
+	})
+	if sbgStatus != http.StatusBadRequest || sbgRes == nil || sbgRes.Code != "NO_PRICED_CONFIG" {
+		t.Fatalf("expected manual QuickOrder without options to reject non-default expensive config in sbg, got status=%d res=%+v", sbgStatus, sbgRes)
+	}
+
+	// 2. MaxMonthlyPrice exceeded (45.00 EUR monthly ex-VAT > 40.00 EUR cap):
+	//    Must abort before checkout, return PRICE_ABOVE_LIMIT, log WARNING, and emit order.failed notification!
+	capRes, capStatus, capErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:          "acc-1",
+		PlanCode:           "24ska01",
+		Datacenter:         "gra",
+		Options:            []string{"ram-32g-noecc-2133-24ska01", "softraid-2x480ssd-24ska01"},
+		ConfigKey:          "ram-32g-noecc-2133+softraid-2x480ssd",
+		ConfigLabel:        "32GB + 2x480GB SSD",
+		MaxMonthlyPrice:    40.00,
+		Quantity:           2,
+		SkipDuplicateCheck: true,
+		Source:             "stock-monitor",
+	})
+	if capErr == nil || !strings.Contains(capErr.Error(), "PRICE_ABOVE_LIMIT") {
+		t.Fatalf("expected error containing PRICE_ABOVE_LIMIT, got %v", capErr)
+	}
+	if capStatus != http.StatusBadRequest || capRes == nil || capRes.ErrorCode != "PRICE_ABOVE_LIMIT" || capRes.Code != "PRICE_ABOVE_LIMIT" {
+		t.Fatalf("expected 400 QuickOrderResult with ErrorCode=PRICE_ABOVE_LIMIT, got status=%d res=%+v", capStatus, capRes)
+	}
+	if checkoutCount.Load() != 0 {
+		t.Fatalf("expected 0 checkouts when MaxMonthlyPrice exceeded, got %d", checkoutCount.Load())
+	}
+	if env.tgPosts.Load() != 1 {
+		t.Fatalf("expected 1 order.failed notification on PRICE_ABOVE_LIMIT, got %d", env.tgPosts.Load())
+	}
+	env.tgMu.Lock()
+	tgMsg := strings.ReplaceAll(*env.lastTG, `\_`, `_`)
+	env.tgMu.Unlock()
+	if !strings.Contains(tgMsg, "PRICE_ABOVE_LIMIT") || !strings.Contains(tgMsg, "32GB + 2x480GB SSD") {
+		t.Fatalf("expected order.failed notification to mention PRICE_ABOVE_LIMIT and ConfigLabel, got %q", tgMsg)
+	}
+	warnLogs, _ := env.st.QueryLogs(context.Background(), "WARNING", "queue", "live cart monthly price exceeds configured maxMonthlyPrice", 10)
+	if len(warnLogs) == 0 {
+		t.Fatalf("expected WARNING log when live cart monthly price exceeds maxMonthlyPrice")
+	}
+
+	// 3. MaxMonthlyPrice respected when setup fee is ignored (45.00 EUR monthly ex-VAT <= 50.00 EUR cap, despite 50.00 EUR setup fee = 95.00 EUR upfront),
+	//    AND Quantity=3 is honored across checkout & PurchaseHistory!
+	okRes, okStatus, okErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:          "acc-1",
+		PlanCode:           "24ska01",
+		Datacenter:         "gra",
+		Options:            []string{"ram-32g-noecc-2133-24ska01", "softraid-2x480ssd-24ska01"},
+		ConfigKey:          "ram-32g-noecc-2133+softraid-2x480ssd",
+		ConfigLabel:        "32GB + 2x480GB SSD",
+		MaxMonthlyPrice:    50.00,
+		Quantity:           3,
+		SkipDuplicateCheck: true,
+		Source:             "stock-monitor",
+	})
+	if okErr != nil || okStatus != http.StatusOK || okRes == nil || !okRes.Success {
+		t.Fatalf("expected QuickOrder to succeed when monthly ex-VAT (45.00) <= MaxMonthlyPrice (50.00) ignoring setup fee (50.00), got status=%d err=%v res=%+v", okStatus, okErr, okRes)
+	}
+	if okRes.MonthlyPrice != 45.00 || okRes.SetupFee != 50.00 || okRes.Quantity != 3 || okRes.Item.Quantity != 3 {
+		t.Fatalf("expected MonthlyPrice=45.00, SetupFee=50.00, Quantity=3, got %+v", okRes)
+	}
+
+	// Execute queue worker -> must loop 3 times to fulfill Quantity=3!
+	env.svc.ProcessDueTasksOnce(context.Background())
+
+	if checkoutCount.Load() != 3 {
+		t.Fatalf("expected 3 checkouts for Quantity=3, got %d", checkoutCount.Load())
+	}
+	completedTask, err := env.st.GetQueueItem(context.Background(), okRes.ID)
+	if err != nil || completedTask.Status != "completed" || completedTask.Purchased != 3 || completedTask.Quantity != 3 {
+		t.Fatalf("expected completed queue task with Purchased=3/Quantity=3, got %+v err=%v", completedTask, err)
+	}
+
+	hist, _ := env.st.ListHistory(context.Background(), "acc-1")
+	successCount := 0
+	for _, h := range hist {
+		if h.Status == "success" {
+			successCount++
+			if h.Quantity != 3 || h.SetupFee != 50.00 {
+				t.Fatalf("expected PurchaseHistory Quantity=3 and SetupFee=50.00, got %+v", h)
+			}
+		}
+	}
+	if successCount != 3 {
+		t.Fatalf("expected 3 successful PurchaseHistory entries for Quantity=3, got %d", successCount)
 	}
 }

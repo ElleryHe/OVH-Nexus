@@ -589,35 +589,60 @@ func buildLocalizedTemplate(loc, eventType string, data map[string]any, localTS 
 
 	case EventSKUChanged:
 		detailText := str("details", "")
+		saleStartedCount := str("saleStartedCount", "0")
+		replacedCount := str("replacedCount", "0")
+		hasExtendedCounts := saleStartedCount != "0" || replacedCount != "0"
+		onlySaleStarted := saleStartedCount != "0" && addedCount == "0" && removedCount == "0" && replacedCount == "0"
 		switch loc {
 		case LocaleFR:
+			summaryVal := fmt.Sprintf("+%s ajoutés / -%s retirés / %s modifiés", addedCount, removedCount, changedCount)
+			if hasExtendedCounts {
+				summaryVal = fmt.Sprintf("+%s ajoutés / %s en vente / %s remplacés / -%s retirés / %s modifiés", addedCount, saleStartedCount, replacedCount, removedCount, changedCount)
+			}
 			fields := []Field{
 				{Label: "Région API", Value: endpoint},
-				{Label: "Résumé", Value: fmt.Sprintf("+%s ajoutés / -%s retirés / %s modifiés", addedCount, removedCount, changedCount)},
+				{Label: "Résumé", Value: summaryVal},
 			}
 			body := detailText
 			if body == "" {
 				body = fmt.Sprintf("Changements détectés sur le catalogue public %s à %s.", endpoint, localTS)
 			}
+			if onlySaleStarted {
+				return fmt.Sprintf("Ouverture des ventes SKU : %s modèle(s)", saleStartedCount), body, fields
+			}
 			return fmt.Sprintf("Changement SKU : +%s / -%s", addedCount, removedCount), body, fields
 		case LocaleZHCN:
+			summaryVal := fmt.Sprintf("上新 %s 款 / 下架 %s 款 / 配置更新 %s 款", addedCount, removedCount, changedCount)
+			if hasExtendedCounts {
+				summaryVal = fmt.Sprintf("新增 %s 款 / 开售 %s 款 / 换代 %s 款 / 下架 %s 款 / 配置更新 %s 款", addedCount, saleStartedCount, replacedCount, removedCount, changedCount)
+			}
 			fields := []Field{
 				{Label: "API 区域", Value: endpoint},
-				{Label: "变动统计", Value: fmt.Sprintf("上新 %s 款 / 下架 %s 款 / 配置更新 %s 款", addedCount, removedCount, changedCount)},
+				{Label: "变动统计", Value: summaryVal},
 			}
 			body := detailText
 			if body == "" {
 				body = fmt.Sprintf("检测到 %s 公开货架 SKU 发生变化（%s）。", endpoint, localTS)
 			}
+			if onlySaleStarted {
+				return fmt.Sprintf("SKU 开售提醒：%s 款机型正式开售", saleStartedCount), body, fields
+			}
 			return fmt.Sprintf("SKU 变动提醒：上新 %s 款 / 下架 %s 款", addedCount, removedCount), body, fields
 		default:
+			summaryVal := fmt.Sprintf("+%s added / -%s removed / %s updated", addedCount, removedCount, changedCount)
+			if hasExtendedCounts {
+				summaryVal = fmt.Sprintf("+%s added / %s sale started / %s replaced / -%s removed / %s updated", addedCount, saleStartedCount, replacedCount, removedCount, changedCount)
+			}
 			fields := []Field{
 				{Label: "API Endpoint", Value: endpoint},
-				{Label: "Summary", Value: fmt.Sprintf("+%s added / -%s removed / %s updated", addedCount, removedCount, changedCount)},
+				{Label: "Summary", Value: summaryVal},
 			}
 			body := detailText
 			if body == "" {
 				body = fmt.Sprintf("Public catalog SKU changes detected on %s at %s.", endpoint, localTS)
+			}
+			if onlySaleStarted {
+				return fmt.Sprintf("SKU Sale Started: %s model(s)", saleStartedCount), body, fields
 			}
 			return fmt.Sprintf("SKU Catalog Update: +%s / -%s", addedCount, removedCount), body, fields
 		}

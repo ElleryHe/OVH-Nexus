@@ -18,9 +18,9 @@ Chaque canal de notification peut s'abonner indépendamment à n'importe quelle 
 | :--- | :---: | :---: | :--- |
 | `stock.available` | Oui | Non | Une configuration serveur ou VPS surveillée passe de rupture de stock à disponible. |
 | `stock.unavailable` | Non | Non | Une configuration surveillée auparavant disponible tombe en rupture de stock. |
-| `sku.changed` | Oui | Non | La Veille SKU Publique détecte un nouveau SKU mis en baie, un retrait confirmé ou une modification de sous-configuration. |
+| `sku.changed` | Oui | Non | La Veille SKU Publique détecte un nouveau SKU, une ouverture de vente (`saleStarted`), un remplacement de version (`replaced`) ou un retrait confirmé (groupés par ligne de produit). |
 | `order.success` | Oui | Oui | La file d'achat ou commande rapide génère avec succès une commande OVHcloud (inclut le lien de paiement). |
-| `order.failed` | Oui | Oui | Une tentative d'achat automatisé échoue lors de la création ou de la validation du panier. |
+| `order.failed` | Oui | Oui | Une tentative d'achat automatisé échoue lors du panier, de la validation, ou lorsque le devis mensuel HT dépasse `maxMonthlyPrice` (`PRICE_ABOVE_LIMIT`). |
 | `order.delivered` | Oui | Oui | Une commande suivie dans `/me/order` termine les 4 étapes de livraison (`INSTALLATION` terminée). |
 | `service.expiring` | Non | Oui | Un serveur dédié ou VPS arrive à moins de `expiryDays` jours (défaut `7` jours) de son expiration. |
 | `mcp.action` | Oui | Non | Un client IA exécute une action L2 (commande non payée / file) ou L3 via `/api/mcp`. |

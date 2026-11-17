@@ -21,24 +21,32 @@ Raw OVHcloud availability records only expose internal codes such as `24ska01`, 
    - **Memory**: Converts `ram-64g-ecc-3200` into `64 GB DDR4 ECC 3200 MHz`.
    - **Storage & System Disks**: Converts `softraid-2x512nvme` into `2 × 512 GB NVMe (Soft RAID)` and `raid-r1-2x480ssd-s10-2x6000sa` into separate boot (`2 × 480 GB SSD, HW RAID 1`) and data (`2 × 6 TB SATA, HW RAID 10`) descriptions.
 
-## Exact Configuration-Level Monthly Pricing
+## Exact Configuration-Level Monthly Pricing & Compact Views
 
-Unlike basic stock checkers that only show a plan's starting base price, OVH Nexus computes the **exact monthly price for each specific hardware configuration (`FQN`)**:
+Unlike basic stock checkers that only show a plan's starting base price, OVH Nexus computes the **estimated ex-VAT monthly price for each specific hardware configuration (`configKey`: `memory+storage`)** via `/api/catalog/availability`, `/api/catalog/plans`, and `GET /api/catalog/plans/{planCode}/configs`:
 
 ```text
-Total Monthly Price = Base Plan Monthly Price (P1M)
-                    + Memory Addon Monthly Surcharge (if > 0)
-                    + Storage Addon Monthly Surcharge (if > 0)
-                    + System Storage Addon Surcharge (if > 0)
+Estimated Monthly Price (ex-VAT) = Base Plan Monthly Price (P1M)
+                                 + Memory Addon Monthly Surcharge (if > 0)
+                                 + Storage Addon Monthly Surcharge (if > 0)
 ```
 
-- When a `planCode` has multiple memory/storage configurations with different prices, the matrix displays the starting price (`From €XX.XX/mo`) on the plan summary card and the **exact monthly price badge** (`€XX.XX/mo` + setup fee if any) on each individual configuration card.
-- Sort the entire availability matrix by **Price: Low to High** or **Price: High to Low**, or filter by product line (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `TOR`, `SGP`, `SYD`, etc.), and stock status (`Available Only` / `1H High` / `72H`).
+- **Compact Single-Row Availability Matrix (`/availability`)**:
+  - Consolidates identical `planCode` configurations into **1 row per `planCode`** (while keeping distinct regional `planCode`s such as `-sgp`, `-syd`, and `-mum` on their own rows).
+  - Each row includes an **inline configuration dropdown**:
+    - **All Configurations (`N`)** *(default)*: Each datacenter cell displays the **best availability status** across all configurations of that `planCode` along with an in-stock configuration counter.
+    - **Specific Configuration (`Memory + Storage — €XX.XX/mo · K DCs`)**: Selecting a specific configuration immediately switches the row's price display and datacenter cells to that exact configuration's stock status.
+- **Compact Collapsible Server Catalog Cards (`/servers`)**:
+  - Displays a dense 3–4 column desktop card grid **collapsed by default** (showing model name, `planCode`, CPU, 1-line default spec summary, starting monthly price `from €XX.XX/mo`, compact in-stock datacenter flag pills, and status badges).
+  - Expanding a card reveals a **single unified selectable configuration list** (with the default configuration marked `Default` and pre-selected, displaying ex-VAT monthly pricing and per-datacenter stock pills). By default, only in-stock configurations and datacenters are shown; enable **Show all inventory (including out-of-stock)** to inspect unavailable configurations, or open the collapsible **Advanced Options** section for bandwidth and vRack addons.
+- Sort by **Price: Low to High** or **Price: High to Low**, or filter by product line (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `TOR`, `SGP`, `SYD`, etc.), and listing state (`All`, `Listed`, `Announced`, `Presale`, `New`).
 
-## Presale / Unlisted Server Detection & Quick Monitor
+## Listing States (`listed`, `announced`, `presale`) & Quick Monitor
 
-OVHcloud technicians often rack new server generations (`2024`–`2027`) and register their `planCode`s in the live availability feed hours or days before publishing commercial pricing in the public catalog:
+OVH Nexus tracks three distinct catalog lifecycle states across `/availability` and `/servers`:
 
-- **Presale Badges & Generation Tags (`listingState: "presale"`)**: Both the **Live Availability Matrix (`/availability`)** and **Server Catalog (`/servers`)** automatically detect unlisted/presale SKUs, display a **Presale** badge alongside the inferred hardware generation (`2024`–`2027`), and provide a **Presale Only** filter toggle.
-- **One-Click Quick Monitor (`QuickMonitorDialog`)**: Click **Quick Monitor** on any row in `/availability` or `/servers` to open a unified modal where you can select target datacenters (with live per-datacenter stock badges), toggle restock/out-of-stock notifications, filter specific `memory` / `storage` configurations, and pre-arm automated ordering (for presale models, notifications fire immediately while auto-ordering activates automatically once public catalog pricing goes live).
+- **Listed (`listingState: "listed"`)**: Present in the public catalog (`eco` / `baremetalServers`) **and** active in the live datacenter availability feed.
+- **Announced (`listingState: "announced"`)**: Published with official pricing and default specs in the OVHcloud public catalog, but **not yet active** in `/dedicated/server/datacenter/availabilities` (such as newly announced `KS-LE`, `RISE-LE`, and `SYS-LE` Limited Edition models prior to flash-sale activation). When availability goes live, OVH Nexus automatically emits a **Sale Started (`saleStarted: true`)** alert.
+- **Presale (`listingState: "presale"`)**: Newly racked `planCode`s (`2024`–`2027` generations) already registered in the live availability feed hours or days before appearing in the public catalog.
+- **One-Click Multi-Target Quick Monitor (`QuickMonitorDialog`)**: Click **Quick Monitor** on any row in `/availability` or card in `/servers` to pass the selected `planCode`, configuration (`configKey` + addon `options`), and datacenters directly into the configuration-level monitor dialog—where you can configure one or more monitoring targets with per-target quantity and an ex-VAT **Max Monthly Price (`maxMonthlyPrice`)** cap.
 - **Tri-Lingual Datacenter Geolocation Labels**: All datacenter badges and filters across the console and notification templates render localized city, country, and flag emoji labels (`en` / `fr` / `zh-CN`), such as `BHS (Beauharnois, Canada 🇨🇦)` and `TOR (Toronto, Canada 🇨🇦)` in full views or compact `🇨🇦 BHS` / `🇨🇦 TOR` pills with hover tooltips.
