@@ -199,12 +199,17 @@ func TestStoreTOTPQueueHistoryStats(t *testing.T) {
 	if qItem.AutoPay || qItem.WaiveRetractationPeriod {
 		t.Fatal("expected AutoPay and WaiveRetractationPeriod to default to false")
 	}
+	if qItem.Source != "manual" || qItem.SourceRef != "" {
+		t.Fatalf("expected default queue source='manual' and empty sourceRef, got source=%q sourceRef=%q", qItem.Source, qItem.SourceRef)
+	}
 	qItem.Status = "paused"
+	qItem.Source = "stock-monitor"
+	qItem.SourceRef = "24ska01"
 	if _, err := st.UpdateQueueItem(ctx, *qItem); err != nil {
 		t.Fatalf("UpdateQueueItem: %v", err)
 	}
 	gotQ, err := st.GetQueueItem(ctx, qItem.ID)
-	if err != nil || gotQ.Status != "paused" {
+	if err != nil || gotQ.Status != "paused" || gotQ.Source != "stock-monitor" || gotQ.SourceRef != "24ska01" {
 		t.Fatalf("GetQueueItem: %+v err=%v", gotQ, err)
 	}
 

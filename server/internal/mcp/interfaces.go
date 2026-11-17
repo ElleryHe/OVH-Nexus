@@ -30,14 +30,23 @@ type CatalogEntry struct {
 	ModelName              string   `json:"modelName"`
 	Range                  string   `json:"range"`
 	CPU                    string   `json:"cpu"`
+	ListingState           string   `json:"listingState"`
+	Orderable              bool     `json:"orderable"`
+	Generation             int      `json:"generation,omitempty"`
 	AvailableDatacenters   []string `json:"availableDatacenters"`
 	MatchingConfigurations int      `json:"matchingConfigurations"`
 }
 
 // CatalogReader abstracts catalog resolution, global stock availability, and SKU changes.
 type CatalogReader interface {
-	QueryAvailability(ctx context.Context, planFilter, dcFilter string, onlyAvailable bool, limit int) ([]CatalogEntry, int, error)
+	QueryAvailability(ctx context.Context, planFilter, dcFilter string, onlyAvailable, presaleOnly bool, offset, limit int) ([]CatalogEntry, int, error)
 	ResolveModelName(ctx context.Context, planCode string) (string, error)
+	GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error)
+}
+
+// SKUChangesReader is an optional interface that MonitorClient implementations (such as httpx monitorAdapter)
+// can satisfy to serve real-time SKU Watcher status and change events directly from monitor.Service.
+type SKUChangesReader interface {
 	GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error)
 }
 

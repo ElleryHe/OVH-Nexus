@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
 import { api } from "@/utils/apiClient";
 import { useAPI } from "@/context/APIContext";
+import { useLocale } from "@/context/LocaleContext";
 import { toast } from "sonner";
 import {
   Bot,
@@ -250,6 +251,7 @@ const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
 
 const MCPGatewayPage = () => {
   const { accounts } = useAPI();
+  const { t } = useLocale();
 
   const [activeTab, setActiveTab] = useState<
     "config" | "aliases" | "audit" | "tools"
@@ -257,6 +259,9 @@ const MCPGatewayPage = () => {
   const [clientSnippetTab, setClientSnippetTab] = useState<
     "claude-cli" | "claude-desktop" | "antigravity" | "curl"
   >("claude-cli");
+  const [jsonSnippetMode, setJsonSnippetMode] = useState<"entry-only" | "full">(
+    "entry-only"
+  );
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -505,15 +510,19 @@ const MCPGatewayPage = () => {
   --header "Authorization: Bearer ${tokenDisplay}"`;
     }
     if (clientSnippetTab === "claude-desktop") {
+      const serverEntry = {
+        url: mcpEndpointUrl,
+        headers: {
+          Authorization: `Bearer ${tokenDisplay}`,
+        },
+      };
+      if (jsonSnippetMode === "entry-only") {
+        return `"ovh-nexus": ${JSON.stringify(serverEntry, null, 2)}`;
+      }
       return JSON.stringify(
         {
           mcpServers: {
-            "ovh-nexus": {
-              url: mcpEndpointUrl,
-              headers: {
-                Authorization: `Bearer ${tokenDisplay}`,
-              },
-            },
+            "ovh-nexus": serverEntry,
           },
         },
         null,
@@ -521,15 +530,19 @@ const MCPGatewayPage = () => {
       );
     }
     if (clientSnippetTab === "antigravity") {
+      const serverEntry = {
+        serverUrl: mcpEndpointUrl,
+        headers: {
+          Authorization: `Bearer ${tokenDisplay}`,
+        },
+      };
+      if (jsonSnippetMode === "entry-only") {
+        return `"ovh-nexus": ${JSON.stringify(serverEntry, null, 2)}`;
+      }
       return JSON.stringify(
         {
           mcpServers: {
-            "ovh-nexus": {
-              serverUrl: mcpEndpointUrl,
-              headers: {
-                Authorization: `Bearer ${tokenDisplay}`,
-              },
-            },
+            "ovh-nexus": serverEntry,
           },
         },
         null,
@@ -540,7 +553,7 @@ const MCPGatewayPage = () => {
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${tokenDisplay}" \\
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`;
-  }, [clientSnippetTab, mcpEndpointUrl, tokenDisplay]);
+  }, [clientSnippetTab, jsonSnippetMode, mcpEndpointUrl, tokenDisplay]);
 
   return (
     <div className="space-y-6 pb-10">
@@ -1134,6 +1147,34 @@ const MCPGatewayPage = () => {
                 ))}
               </div>
 
+              {(clientSnippetTab === "claude-desktop" ||
+                clientSnippetTab === "antigravity") && (
+                <div className="flex flex-wrap items-center gap-1.5 p-1 rounded-md bg-cyber-bg/60 border border-cyber-grid">
+                  <button
+                    type="button"
+                    onClick={() => setJsonSnippetMode("entry-only")}
+                    className={`flex-1 px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                      jsonSnippetMode === "entry-only"
+                        ? "bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40"
+                        : "text-cyber-muted hover:text-cyber-text"
+                    }`}
+                  >
+                    {t("mcp.snippet.modeEntryOnly")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJsonSnippetMode("full")}
+                    className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                      jsonSnippetMode === "full"
+                        ? "bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40"
+                        : "text-cyber-muted hover:text-cyber-text"
+                    }`}
+                  >
+                    {t("mcp.snippet.modeFullFile")}
+                  </button>
+                </div>
+              )}
+
               <div className="relative">
                 <pre className="p-3.5 rounded-lg bg-cyber-bg border border-cyber-grid font-mono text-[11px] text-cyber-text overflow-x-auto leading-relaxed">
                   {snippetContent}
@@ -1149,6 +1190,17 @@ const MCPGatewayPage = () => {
                   <span>复制代码</span>
                 </button>
               </div>
+
+              {(clientSnippetTab === "claude-desktop" ||
+                clientSnippetTab === "antigravity") && (
+                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300 leading-relaxed flex items-start gap-2">
+                  <AlertTriangle
+                    size={14}
+                    className="text-amber-400 shrink-0 mt-0.5"
+                  />
+                  <span>{t("mcp.snippet.mergeHint")}</span>
+                </div>
+              )}
 
               <div className="p-3 rounded-lg bg-cyber-accent/5 border border-cyber-accent/20 text-[11px] text-cyber-muted space-y-1">
                 <div className="font-semibold text-cyber-text">

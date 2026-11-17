@@ -35,7 +35,7 @@ AI 模型在上下文中永远不会接触到原始 OVH 主机名、完整公网
 
 | 级别 | 权限键 | 默认状态 | 包含工具与硬性边界 |
 | :--- | :---: | :---: | :--- |
-| **L1 只读查询** | `read` | **开启** | **11 个工具**：查询脱敏后的账户画像、独服列表与硬件详情、VPS 列表、边缘防火墙状态、服务到期倒计时、订单交付进度、全球机房实时库存与 SKU 上新变动。 |
+| **L1 只读查询** | `read` | **开启** | **11 个工具**：查询脱敏后的账户画像、独服列表与硬件详情、VPS 列表、边缘防火墙状态、服务到期倒计时、订单交付进度、全球机房实时库存（`catalog_availability`，支持 `offset` 分页、`nextOffset`、`listingState`、`generation` 及 `presale_only` 预售过滤）与 SKU 变动时间线（`catalog_sku_changes`）。 |
 | **L2 免付采购** | `procurement` | **关闭** | **5 个工具**：两步确认生成【未付款订单】（`order_quote` → `order_create_unpaid`）、采购队列任务管理（`queue_add`、`queue_manage`）与库存订阅管理。**底层代码硬性锁死 `auto_pay=false` 且单次数量固定为 `1`。** |
 | **L3 可逆运维** | `operations` | **关闭** | **4 个工具**：独服/VPS 硬件重启（`baremetal_reboot`、`vps_reboot`）、重置卡死的 IPMI 会话（`baremetal_ipmi_reset`）、边缘防火墙规则与永久防洪开关（`baremetal_firewall_update`）。需启用 2FA 后方可解锁。 |
 | **L4 高危与财务** | *代码级封禁* | **永久熔断** | **0 个工具（不提供任何开启开关）**：自动扣款结账（`autoPay`）、重装系统/格式化磁盘、退订销毁服务、读取带一次性令牌的 KVM 远程控制台链接、增删 SSH 公钥或 API 密钥均被永久排除。 |
@@ -58,7 +58,7 @@ AI 模型在上下文中永远不会接触到原始 OVH 主机名、完整公网
 
 ## 一键接入主流 AI 客户端
 
-前往 **WebUI → MCP AI 网关 (`/mcp`)** 启用网关并复制 `nxs_mcp_...` 令牌后，可在任一支持 MCP 的客户端中配置（远程访问请将 `http://localhost:20000` 替换为您的 HTTPS 反代域名）：
+前往 **WebUI → MCP AI 网关 (`/mcp`)** 启用网关并复制 `nxs_mcp_...` 令牌后，可在任一支持 MCP 的客户端中配置（远程访问请将 `http://localhost:20000` 替换为您的 HTTPS 反代域名）。控制台提供**完整配置文件（Full Config File）**与**仅服务器条目（Server Entry Only）**两种复制模式——若您的 `mcp.json` / `mcp_config.json` 中已存在其他 MCP 服务，选择“仅服务器条目”即可直接复制 `"ovh-nexus": { ... }` 片段（粘贴到已有 `mcpServers` 对象内时，请记得在前一个条目末尾补上英文逗号 `,`）：
 
 ### Claude Code (CLI)
 

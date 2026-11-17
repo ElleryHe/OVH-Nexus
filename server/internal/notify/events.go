@@ -5,6 +5,8 @@ import (
 	"html"
 	"strings"
 	"time"
+
+	"ovh-nexus/server/internal/catalog"
 )
 
 // Canonical outbound notification event keys.
@@ -393,7 +395,11 @@ func buildLocalizedTemplate(loc, eventType string, data map[string]any, localTS 
 
 	planCode := str("planCode", "N/A")
 	modelName := str("modelName", planCode)
-	dc := strings.ToUpper(str("datacenter", str("datacenters", "ALL")))
+	rawDC := str("datacenter", str("datacenters", "ALL"))
+	dc := strings.ToUpper(rawDC)
+	if !strings.EqualFold(rawDC, "ALL") && !strings.EqualFold(rawDC, "N/A") {
+		dc = catalog.FormatDatacenterLabel(rawDC, loc)
+	}
 	orderID := str("orderId", "N/A")
 	orderURL := str("orderUrl", "")
 	priceText := str("price", "")

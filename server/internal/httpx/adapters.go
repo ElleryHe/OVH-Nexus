@@ -22,6 +22,7 @@ import (
 type catalogAdapter struct {
 	cat   *catalog.Service
 	store *store.Store
+	mon   *monitor.Service
 }
 
 func (a *catalogAdapter) resolveEndpointAndZone(ctx context.Context) (string, string) {
@@ -37,16 +38,19 @@ func (a *catalogAdapter) resolveEndpointAndZone(ctx context.Context) (string, st
 func (a *catalogAdapter) QueryAvailability(
 	ctx context.Context,
 	planFilter, dcFilter string,
-	onlyAvailable bool,
-	limit int,
+	onlyAvailable, presaleOnly bool,
+	offset, limit int,
 ) ([]mcp.CatalogEntry, int, error) {
 	if a.cat == nil {
 		return nil, 0, errors.New("catalog service is not configured")
 	}
+	if offset < 0 {
+		offset = 0
+	}
 	if limit < 1 {
-		limit = 20
-	} else if limit > 50 {
 		limit = 50
+	} else if limit > 200 {
+		limit = 200
 	}
 
 	ep, zn := a.resolveEndpointAndZone(ctx)
@@ -55,6 +59,7 @@ func (a *catalogAdapter) QueryAvailability(
 		return nil, 0, err
 	}
 	dict, _ := a.cat.GetDictionary(ctx, ep, zn, false)
+	hasDict := dict != nil && len(dict.Plans) > 0
 
 	planLow := strings.ToLower(strings.TrimSpace(planFilter))
 	dcLow := strings.ToLower(strings.TrimSpace(dcFilter))
@@ -68,10 +73,25 @@ func (a *catalogAdapter) QueryAvailability(
 
 	for _, item := range rawItems {
 		pcode := strings.TrimSpace(item.PlanCode)
-		if pcode == "" {
+		if pcode == "" || catalog.IsNonServerAddonCode(pcode) {
 			continue
 		}
 		meta := catalog.ResolvePlanWithDict(pcode, item.Server, dict)
+		if strings.EqualFold(meta.Range, "VPS") {
+			continue
+		}
+
+		isListed := !hasDict || catalog.IsPlanListedInDict(pcode, dict)
+		listingState := "listed"
+		orderable := true
+		if !isListed {
+			listingState = "presale"
+			orderable = false
+		}
+		if presaleOnly && (listingState != "presale" || orderable) {
+			continue
+		}
+
 		if planLow != "" {
 			if !strings.Contains(strings.ToLower(pcode), planLow) &&
 				!strings.Contains(strings.ToLower(meta.Name), planLow) &&
@@ -117,14 +137,21 @@ func (a *catalogAdapter) QueryAvailability(
 				modelName = pcode
 			}
 			cpuStr := catalog.FormatCPU(meta.CPU, "en")
-			if cpuStr == "" {
+			if cpuStr == "" || cpuStr == "-" {
 				cpuStr = item.Server
+			}
+			gen := meta.Generation
+			if gen == 0 {
+				gen = catalog.InferPlanGeneration(pcode)
 			}
 			rec = &mcp.CatalogEntry{
 				PlanCode:             pcode,
 				ModelName:            modelName,
 				Range:                meta.Range,
 				CPU:                  cpuStr,
+				ListingState:         listingState,
+				Orderable:            orderable,
+				Generation:           gen,
 				AvailableDatacenters: []string{},
 			}
 			grouped[pcode] = rec
@@ -138,14 +165,16 @@ func (a *catalogAdapter) QueryAvailability(
 		}
 	}
 
-	out := make([]mcp.CatalogEntry, 0, min(limit, len(order)))
-	for _, pcode := range order {
-		if len(out) >= limit {
-			break
-		}
+	totalMatched := len(order)
+	if offset > totalMatched {
+		offset = totalMatched
+	}
+	end := min(offset+limit, totalMatched)
+	out := make([]mcp.CatalogEntry, 0, end-offset)
+	for _, pcode := range order[offset:end] {
 		out = append(out, *grouped[pcode])
 	}
-	return out, len(grouped), nil
+	return out, totalMatched, nil
 }
 
 func (a *catalogAdapter) ResolveModelName(ctx context.Context, planCode string) (string, error) {
@@ -161,61 +190,11 @@ func (a *catalogAdapter) ResolveModelName(ctx context.Context, planCode string) 
 }
 
 func (a *catalogAdapter) GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error) {
-	if limit < 1 {
-		limit = 20
-	} else if limit > 50 {
-		limit = 50
-	}
-	if a.store == nil {
-		return map[string]any{}, []map[string]any{}, nil
-	}
-	st, err := a.store.LoadSKUWatcherState(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var rawChanges []map[string]any
-	_ = json.Unmarshal(st.ChangesJSON, &rawChanges)
-
-	filter := strings.ToUpper(strings.TrimSpace(changeType))
-	if filter == "" {
-		filter = "ALL"
-	}
-
-	filtered := make([]map[string]any, 0, min(limit, len(rawChanges)))
-	for _, ch := range rawChanges {
-		kind := strings.ToUpper(strings.TrimSpace(stringVal(ch["type"])))
-		if kind == "" {
-			kind = strings.ToUpper(strings.TrimSpace(stringVal(ch["changeType"])))
-		}
-		switch filter {
-		case "ALL":
-		case "ADDED":
-			if kind != "ADDED" && kind != "CONFIG_ADDED" {
-				continue
-			}
-		case "REMOVED":
-			if kind != "REMOVED" && kind != "CONFIG_REMOVED" {
-				continue
-			}
-		default:
-			if kind != filter {
-				continue
-			}
-		}
-		filtered = append(filtered, ch)
-		if len(filtered) >= limit {
-			break
-		}
-	}
-
-	status := map[string]any{
-		"initialized": st.Initialized,
-		"endpoint":    st.Endpoint,
-		"updatedAt":   st.UpdatedAt,
-		"total":       len(rawChanges),
-	}
-	return status, filtered, nil
+	return (&monitorAdapter{
+		mon:   a.mon,
+		store: a.store,
+		cat:   a.cat,
+	}).GetSKUChanges(ctx, limit, changeType)
 }
 
 type procurementAdapter struct {
@@ -274,6 +253,156 @@ type monitorAdapter struct {
 	mon   *monitor.Service
 	store *store.Store
 	cat   *catalog.Service
+}
+
+func (a *monitorAdapter) GetSKUChanges(ctx context.Context, limit int, changeType string) (map[string]any, []map[string]any, error) {
+	if limit < 1 {
+		limit = 20
+	} else if limit > 50 {
+		limit = 50
+	}
+
+	filter := strings.ToUpper(strings.TrimSpace(changeType))
+	if filter == "" {
+		filter = "ALL"
+	}
+
+	if a.mon != nil {
+		skuStatus, allChanges, err := a.mon.GetSKUStatusAndChanges(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		presaleSkus := skuStatus.PresaleSKUs
+		if presaleSkus == nil {
+			presaleSkus = map[string]string{}
+		}
+		recentFirstSeen := skuStatus.RecentFirstSeen
+		if recentFirstSeen == nil {
+			recentFirstSeen = map[string]string{}
+		}
+
+		filtered := make([]map[string]any, 0, min(limit, len(allChanges)))
+		for _, rec := range allChanges {
+			kind := strings.ToUpper(strings.TrimSpace(rec.Type))
+			switch filter {
+			case "ALL":
+			case "ADDED":
+				if kind != "ADDED" && kind != "CONFIG_ADDED" {
+					continue
+				}
+			case "REMOVED":
+				if kind != "REMOVED" && kind != "CONFIG_REMOVED" {
+					continue
+				}
+			default:
+				if kind != filter {
+					continue
+				}
+			}
+
+			ch := structToMap(rec)
+			skuKey := strings.TrimSpace(rec.SKUKey)
+			if skuKey == "" {
+				skuKey = rec.PlanCode
+			}
+			modelName := strings.TrimSpace(rec.Name)
+			if modelName == "" {
+				modelName = rec.PlanCode
+			}
+			listingState := strings.TrimSpace(rec.ListingState)
+			if listingState == "" {
+				listingState = "listed"
+			}
+			gen := rec.Generation
+			if gen == 0 {
+				gen = catalog.InferPlanGeneration(rec.PlanCode)
+			}
+
+			ch["skuKey"] = skuKey
+			ch["planCode"] = rec.PlanCode
+			ch["name"] = modelName
+			ch["modelName"] = modelName
+			ch["range"] = rec.Range
+			ch["type"] = rec.Type
+			ch["changeType"] = kind
+			ch["listingState"] = listingState
+			if gen > 0 {
+				ch["generation"] = gen
+			}
+			ch["timestamp"] = rec.Timestamp
+			ch["detectedAt"] = rec.Timestamp
+
+			filtered = append(filtered, ch)
+			if len(filtered) >= limit {
+				break
+			}
+		}
+
+		status := map[string]any{
+			"running":            skuStatus.Running,
+			"initialized":        skuStatus.Initialized,
+			"endpoint":           skuStatus.Endpoint,
+			"totalSkus":          skuStatus.TotalSKUs,
+			"skuCount":           skuStatus.SKUCount,
+			"totalTracked":       skuStatus.TotalTracked,
+			"presaleCount":       len(presaleSkus),
+			"presaleSkus":        presaleSkus,
+			"lastCheckTime":      skuStatus.LastCheckTime,
+			"lastCheck":          skuStatus.LastCheck,
+			"lastError":          skuStatus.LastError,
+			"updatedAt":          skuStatus.UpdatedAt,
+			"recentChangesCount": skuStatus.RecentChangesCount,
+			"recentFirstSeen":    recentFirstSeen,
+			"total":              len(allChanges),
+		}
+		return status, filtered, nil
+	}
+
+	if a.store == nil {
+		return map[string]any{}, []map[string]any{}, nil
+	}
+	st, err := a.store.LoadSKUWatcherState(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var rawChanges []map[string]any
+	_ = json.Unmarshal(st.ChangesJSON, &rawChanges)
+
+	filtered := make([]map[string]any, 0, min(limit, len(rawChanges)))
+	for _, ch := range rawChanges {
+		kind := strings.ToUpper(strings.TrimSpace(stringVal(ch["type"])))
+		if kind == "" {
+			kind = strings.ToUpper(strings.TrimSpace(stringVal(ch["changeType"])))
+		}
+		switch filter {
+		case "ALL":
+		case "ADDED":
+			if kind != "ADDED" && kind != "CONFIG_ADDED" {
+				continue
+			}
+		case "REMOVED":
+			if kind != "REMOVED" && kind != "CONFIG_REMOVED" {
+				continue
+			}
+		default:
+			if kind != filter {
+				continue
+			}
+		}
+		filtered = append(filtered, ch)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+
+	status := map[string]any{
+		"initialized": st.Initialized,
+		"endpoint":    st.Endpoint,
+		"updatedAt":   st.UpdatedAt,
+		"total":       len(rawChanges),
+	}
+	return status, filtered, nil
 }
 
 func (a *monitorAdapter) AddStockSubscription(

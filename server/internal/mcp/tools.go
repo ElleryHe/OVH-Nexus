@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"ovh-nexus/server/internal/catalog"
 	"ovh-nexus/server/internal/store"
 )
 
@@ -62,7 +63,9 @@ var toolDefinitions = []ToolDefinition{
 				"plan_code":      map[string]any{"type": "string", "description": "Optional exact or partial planCode / model name filter (e.g. '24ska01', 'KS-A', 'rise')."},
 				"datacenter":     map[string]any{"type": "string", "description": "Optional datacenter filter (e.g. 'gra', 'rbx', 'sbg', 'bhs', 'fra', 'vin')."},
 				"only_available": map[string]any{"type": "boolean", "description": "If true, return only configurations currently in stock."},
-				"limit":          map[string]any{"type": "integer", "description": "Max plans to return (1-50, default 20)."},
+				"presale_only":   map[string]any{"type": "boolean", "default": false, "description": "If true, only return presale / unlisted models that appear in datacenter availability feeds but are not yet in the public catalog."},
+				"offset":         map[string]any{"type": "integer", "default": 0, "description": "Pagination offset (0-based) for browsing beyond the first page."},
+				"limit":          map[string]any{"type": "integer", "default": 50, "description": "Max plans to return (1-200, default 50)."},
 			},
 			"additionalProperties": false,
 		},
@@ -640,26 +643,55 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 	planFilter := strings.TrimSpace(asString(args["plan_code"]))
 	dcFilter := strings.TrimSpace(asString(args["datacenter"]))
 	onlyAvail := asBool(args["only_available"])
-	limit := asInt(args["limit"], 20)
+	presaleOnly := asBool(args["presale_only"])
+	offset := asInt(args["offset"], 0)
+	if offset < 0 {
+		offset = 0
+	}
+	limit := asInt(args["limit"], 50)
 	if limit < 1 {
 		limit = 1
-	} else if limit > 50 {
-		limit = 50
+	} else if limit > 200 {
+		limit = 200
 	}
 
 	if s.deps.Catalog != nil {
-		items, totalMatched, err := s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, limit)
+		items, totalMatched, err := s.deps.Catalog.QueryAvailability(ctx, planFilter, dcFilter, onlyAvail, presaleOnly, offset, limit)
 		if err != nil {
 			return nil, "", err
 		}
 		if items == nil {
 			items = []CatalogEntry{}
 		}
+		for i := range items {
+			if strings.TrimSpace(items[i].ListingState) == "" {
+				items[i].ListingState = "listed"
+				items[i].Orderable = true
+			} else if strings.EqualFold(items[i].ListingState, "presale") {
+				items[i].ListingState = "presale"
+				items[i].Orderable = false
+			}
+			if items[i].Generation == 0 {
+				items[i].Generation = catalog.InferPlanGeneration(items[i].PlanCode)
+			}
+			if items[i].AvailableDatacenters == nil {
+				items[i].AvailableDatacenters = []string{}
+			}
+		}
+		if offset > totalMatched {
+			offset = totalMatched
+		}
+		var nextOffset any
+		if offset+len(items) < totalMatched {
+			nextOffset = offset + len(items)
+		}
 		return map[string]any{
 			"items":        items,
+			"offset":       offset,
 			"returned":     len(items),
 			"totalMatched": totalMatched,
-		}, fmt.Sprintf("Queried bare-metal stock matrix (matched %d plan(s)).", totalMatched), nil
+			"nextOffset":   nextOffset,
+		}, fmt.Sprintf("Queried bare-metal stock matrix (matched %d plan(s), returned %d).", totalMatched, len(items)), nil
 	}
 
 	// Fallback to public OVH availability endpoint if CatalogReader is not wired.
@@ -673,35 +705,56 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 
 	planLow := strings.ToLower(planFilter)
 	dcLow := strings.ToLower(dcFilter)
+	dcDispLow := ""
+	if dcLow != "" {
+		dcDispLow = strings.ToLower(catalog.NormalizeDisplayDatacenter(dcLow))
+	}
 
 	grouped := make(map[string]*CatalogEntry)
 	order := make([]string, 0)
 	for _, entry := range rawAvail {
 		pcode := strings.TrimSpace(asString(entry["planCode"]))
-		if pcode == "" {
+		if pcode == "" || catalog.IsNonServerAddonCode(pcode) {
 			continue
 		}
 		if planLow != "" && !strings.Contains(strings.ToLower(pcode), planLow) {
 			continue
 		}
+		listingState := strings.ToLower(strings.TrimSpace(asString(entry["listingState"])))
+		if listingState != "presale" {
+			listingState = "listed"
+		}
+		orderable := listingState != "presale"
+		if presaleOnly && (listingState != "presale" || orderable) {
+			continue
+		}
+
+		matchedDC := dcLow == ""
 		var inStock []string
 		rawDCs, _ := entry["datacenters"].([]any)
 		for _, dcRaw := range rawDCs {
 			dcMap := asMap(dcRaw)
-			dcCode := strings.ToLower(strings.TrimSpace(asString(dcMap["datacenter"])))
+			rawDC := strings.ToLower(strings.TrimSpace(asString(dcMap["datacenter"])))
+			dispDC := catalog.NormalizeDisplayDatacenter(rawDC)
+			if dispDC == "" {
+				continue
+			}
 			availVal := strings.TrimSpace(asString(dcMap["availability"]))
 			if availVal == "" {
 				availVal = "unavailable"
 			}
-			if dcLow != "" && !strings.Contains(dcLow, "") && !strings.Contains(dcCode, dcLow) {
-				continue
-			}
-			if dcLow != "" && !strings.Contains(dcCode, dcLow) {
-				continue
+			if dcLow != "" {
+				if !strings.EqualFold(dispDC, dcDispLow) && !strings.Contains(rawDC, dcLow) && !strings.Contains(strings.ToLower(dispDC), dcLow) {
+					continue
+				}
+				matchedDC = true
 			}
 			if availVal != "unavailable" && availVal != "unknown" {
-				inStock = append(inStock, fmt.Sprintf("%s (%s)", strings.ToUpper(dcCode), availVal))
+				inStock = append(inStock, fmt.Sprintf("%s (%s)", strings.ToUpper(dispDC), availVal))
 			}
+		}
+		if !matchedDC {
+			continue
 		}
 		if onlyAvail && len(inStock) == 0 {
 			continue
@@ -712,6 +765,9 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 				PlanCode:             pcode,
 				ModelName:            pcode,
 				CPU:                  asString(entry["server"]),
+				ListingState:         listingState,
+				Orderable:            orderable,
+				Generation:           catalog.InferPlanGeneration(pcode),
 				AvailableDatacenters: []string{},
 			}
 			grouped[pcode] = rec
@@ -732,18 +788,26 @@ func (s *Service) toolCatalogAvailability(ctx context.Context, args map[string]a
 		}
 	}
 
-	items := make([]CatalogEntry, 0, min(limit, len(order)))
-	for _, pcode := range order {
-		if len(items) >= limit {
-			break
-		}
+	totalMatched := len(order)
+	if offset > totalMatched {
+		offset = totalMatched
+	}
+	end := min(offset+limit, totalMatched)
+	items := make([]CatalogEntry, 0, end-offset)
+	for _, pcode := range order[offset:end] {
 		items = append(items, *grouped[pcode])
+	}
+	var nextOffset any
+	if offset+len(items) < totalMatched {
+		nextOffset = offset + len(items)
 	}
 	return map[string]any{
 		"items":        items,
+		"offset":       offset,
 		"returned":     len(items),
-		"totalMatched": len(grouped),
-	}, fmt.Sprintf("Queried bare-metal stock matrix (matched %d plan(s)).", len(grouped)), nil
+		"totalMatched": totalMatched,
+		"nextOffset":   nextOffset,
+	}, fmt.Sprintf("Queried bare-metal stock matrix (matched %d plan(s), returned %d).", totalMatched, len(items)), nil
 }
 
 func (s *Service) toolCatalogSKUChanges(ctx context.Context, args map[string]any) (map[string]any, string, error) {
@@ -756,6 +820,23 @@ func (s *Service) toolCatalogSKUChanges(ctx context.Context, args map[string]any
 	changeType := strings.ToUpper(strings.TrimSpace(asString(args["change_type"])))
 	if changeType == "" {
 		changeType = "ALL"
+	}
+
+	if monReader, ok := s.deps.Monitor.(SKUChangesReader); ok && monReader != nil {
+		status, changes, err := monReader.GetSKUChanges(ctx, limit, changeType)
+		if err != nil {
+			return nil, "", err
+		}
+		if status == nil {
+			status = map[string]any{}
+		}
+		if changes == nil {
+			changes = []map[string]any{}
+		}
+		return map[string]any{
+			"status":  status,
+			"changes": changes,
+		}, fmt.Sprintf("Retrieved %d SKU watcher change event(s).", len(changes)), nil
 	}
 
 	if s.deps.Catalog != nil {
@@ -786,7 +867,11 @@ func (s *Service) toolCatalogSKUChanges(ctx context.Context, args map[string]any
 	_ = json.Unmarshal(st.ChangesJSON, &allChanges)
 	filtered := make([]map[string]any, 0)
 	for _, ch := range allChanges {
-		if changeType != "ALL" && !strings.EqualFold(asString(ch["changeType"]), changeType) {
+		kind := strings.ToUpper(strings.TrimSpace(asString(ch["type"])))
+		if kind == "" {
+			kind = strings.ToUpper(strings.TrimSpace(asString(ch["changeType"])))
+		}
+		if changeType != "ALL" && !strings.EqualFold(kind, changeType) {
 			continue
 		}
 		filtered = append(filtered, ch)
@@ -1347,7 +1432,11 @@ func (s *Service) toolProcurementStatus(ctx context.Context, cfg *store.MCPConfi
 		if pal := aliasByID[q.AccountID]; pal != "" {
 			profilePtr = &pal
 		}
-		safeQueue = append(safeQueue, map[string]any{
+		source := strings.TrimSpace(q.Source)
+		if source == "" {
+			source = "manual"
+		}
+		qMap := map[string]any{
 			"id":          q.ID,
 			"planCode":    q.PlanCode,
 			"datacenters": q.Datacenters,
@@ -1357,9 +1446,14 @@ func (s *Service) toolProcurementStatus(ctx context.Context, cfg *store.MCPConfi
 			"quantity":    q.Quantity,
 			"purchased":   q.Purchased,
 			"autoPay":     false, // Never expose or allow autoPay via MCP
+			"source":      source,
 			"profile":     profilePtr,
 			"createdAt":   q.CreatedAt,
-		})
+		}
+		if ref := strings.TrimSpace(q.SourceRef); ref != "" {
+			qMap["sourceRef"] = ref
+		}
+		safeQueue = append(safeQueue, qMap)
 	}
 
 	rawHistory, err := s.store.ListHistory(ctx, "")

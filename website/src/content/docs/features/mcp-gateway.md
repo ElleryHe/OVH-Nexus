@@ -35,7 +35,7 @@ When the AI invokes a tool using an alias (for example `baremetal_get(server="bm
 
 | Tier | Scope Key | Default | Capabilities & Redlines |
 | :--- | :---: | :---: | :--- |
-| **L1 Read-Only** | `read` | **ON** | **11 Tools**: Inspect obfuscated accounts, dedicated servers, VPS instances, IP firewall rules, service expiration countdowns, order delivery progress, live datacenter stock, and SKU watcher changes. |
+| **L1 Read-Only** | `read` | **ON** | **11 Tools**: Inspect obfuscated accounts, dedicated servers, VPS instances, IP firewall rules, service expiration countdowns, order delivery progress, live datacenter stock (`catalog_availability` with `offset` pagination, `nextOffset`, `listingState`, `generation`, and `presale_only` filtering), and SKU watcher timeline changes (`catalog_sku_changes`). |
 | **L2 Unpaid Procurement** | `procurement` | **OFF** | **5 Tools**: Two-step unpaid order creation (`order_quote` → `order_create_unpaid`), auto-order queue management (`queue_add`, `queue_manage`), and stock monitor subscriptions. **`auto_pay=false` and `quantity=1` are hardcoded.** |
 | **L3 Reversible Operations** | `operations` | **OFF** | **4 Tools**: Hardware reboot (`baremetal_reboot`, `vps_reboot`), stuck IPMI session reset (`baremetal_ipmi_reset`), and IP Edge Firewall / Anti-DDoS mitigation updates (`baremetal_firewall_update`). Requires 2FA enabled to unlock. |
 | **L4 Destructive & Financial** | *Hard-Blocked* | **LOCKED** | **0 Tools (Permanently Blocked in Code)**: Automatic payment (`autoPayWithPreferredPaymentMethod`), OS reinstallation / disk wipe, service termination, raw IPMI KVM URLs, and SSH/API key mutations are never exposed. |
@@ -60,7 +60,8 @@ When **L2 Unpaid Procurement** (`procurement`) is enabled:
 ## Connecting AI Clients
 
 1. Open **WebUI → MCP AI Gateway (`/mcp`)**, toggle **Enable Gateway**, and copy your `nxs_mcp_...` Bearer Token.
-2. Add the endpoint to your preferred AI client (replace `http://localhost:20000` with your HTTPS reverse proxy domain if accessing remotely):
+2. In the **Client Configuration Generator**, choose between **Full Config File** (creates a standalone `mcp.json` / `mcp_config.json`) or **Server Entry Only** (copies only the `"ovh-nexus": { ... }` object with a reminder to add a trailing comma `,` after the preceding entry when pasting into an existing `mcpServers` block).
+3. Add the endpoint to your preferred AI client (replace `http://localhost:20000` with your HTTPS reverse proxy domain if accessing remotely):
 
 ### Claude Code (CLI)
 

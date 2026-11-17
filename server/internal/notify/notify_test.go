@@ -106,6 +106,9 @@ func TestTrilingualTemplatesAll8Events(t *testing.T) {
 			if ev.key == EventOrderFailed && strings.Contains(rn.HTMLBody, "<script>") {
 				t.Errorf("XSS payload was not HTML-escaped in HTMLBody")
 			}
+			if (ev.key == EventStockAvailable || ev.key == EventStockUnavailable || ev.key == EventOrderSuccess || ev.key == EventOrderFailed) && !strings.Contains(rn.TelegramText, "🇫🇷") {
+				t.Errorf("event %s (%s) Telegram text missing localized datacenter flag 🇫🇷: %s", ev.key, loc.code, rn.TelegramText)
+			}
 		}
 	}
 }

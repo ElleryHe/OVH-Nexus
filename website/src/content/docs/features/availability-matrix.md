@@ -33,4 +33,12 @@ Total Monthly Price = Base Plan Monthly Price (P1M)
 ```
 
 - When a `planCode` has multiple memory/storage configurations with different prices, the matrix displays the starting price (`From €XX.XX/mo`) on the plan summary card and the **exact monthly price badge** (`€XX.XX/mo` + setup fee if any) on each individual configuration card.
-- Sort the entire availability matrix by **Price: Low to High** or **Price: High to Low**, or filter by product line (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `SGP`, `SYD`, etc.), and stock status (`Available Only` / `1H High` / `72H`).
+- Sort the entire availability matrix by **Price: Low to High** or **Price: High to Low**, or filter by product line (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `TOR`, `SGP`, `SYD`, etc.), and stock status (`Available Only` / `1H High` / `72H`).
+
+## Presale / Unlisted Server Detection & Quick Monitor
+
+OVHcloud technicians often rack new server generations (`2024`–`2027`) and register their `planCode`s in the live availability feed hours or days before publishing commercial pricing in the public catalog:
+
+- **Presale Badges & Generation Tags (`listingState: "presale"`)**: Both the **Live Availability Matrix (`/availability`)** and **Server Catalog (`/servers`)** automatically detect unlisted/presale SKUs, display a **Presale** badge alongside the inferred hardware generation (`2024`–`2027`), and provide a **Presale Only** filter toggle.
+- **One-Click Quick Monitor (`QuickMonitorDialog`)**: Click **Quick Monitor** on any row in `/availability` or `/servers` to open a unified modal where you can select target datacenters (with live per-datacenter stock badges), toggle restock/out-of-stock notifications, filter specific `memory` / `storage` configurations, and pre-arm automated ordering (for presale models, notifications fire immediately while auto-ordering activates automatically once public catalog pricing goes live).
+- **Tri-Lingual Datacenter Geolocation Labels**: All datacenter badges and filters across the console and notification templates render localized city, country, and flag emoji labels (`en` / `fr` / `zh-CN`), such as `BHS (Beauharnois, Canada 🇨🇦)` and `TOR (Toronto, Canada 🇨🇦)` in full views or compact `🇨🇦 BHS` / `🇨🇦 TOR` pills with hover tooltips.

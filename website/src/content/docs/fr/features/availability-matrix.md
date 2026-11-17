@@ -33,4 +33,12 @@ Prix Mensuel Total = Prix Mensuel du Plan de Base (P1M)
 ```
 
 - Lorsqu'un `planCode` propose plusieurs combinaisons RAM/stockage à des tarifs différents, la carte principale indique le prix de départ (`À partir de XX,XX €/mois`) et chaque sous-configuration affiche son **badge de prix mensuel exact** (`XX,XX €/mois` + frais d'installation éventuels).
-- Triez l'ensemble de la matrice par **Prix croissant** ou **Prix décroissant**, ou filtrez par gamme (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `SGP`, `SYD`, etc.) et état de stock (`Disponible uniquement`).
+- Triez l'ensemble de la matrice par **Prix croissant** ou **Prix décroissant**, ou filtrez par gamme (`KS`, `SYS`, `RISE`, `ADV`, `SCALE`, `HGR`), datacenter (`GRA`, `SBG`, `RBX`, `FRA`, `BHS`, `TOR`, `SGP`, `SYD`, etc.) et état de stock (`Disponible uniquement`).
+
+## Détection des Serveurs en Prévente & Surveillance Rapide
+
+Les équipes techniques d'OVHcloud mettent régulièrement en baie de nouvelles générations de serveurs (`2024`–`2027`) et inscrivent leurs `planCode` dans le flux de disponibilité en direct plusieurs heures ou jours avant leur publication tarifaire dans le catalogue public :
+
+- **Badges Prévente & Génération Matérielle (`listingState: "presale"`)** : La **Matrice de Disponibilité en Direct (`/availability`)** et le **Catalogue Serveurs (`/servers`)** identifient automatiquement ces modèles non listés, affichent un badge **Prévente** (`Presale`) ainsi que la génération matérielle déduite (`2024`–`2027`), et proposent un filtre **Prévente uniquement** (`Presale Only`).
+- **Surveillance Rapide en Un Clic (`QuickMonitorDialog`)** : Cliquez sur **Surveillance rapide** (`Quick Monitor`) depuis n'importe quelle ligne de `/availability` ou `/servers` pour configurer les datacenters cibles (avec état du stock en direct), les alertes de réapprovisionnement/rupture, le filtrage par `mémoire` / `stockage` et l'achat automatique (pour les modèles en prévente, les notifications fonctionnent immédiatement et la commande automatique s'active dès la publication du tarif public).
+- **Dictionnaire Géographique Trilingue des Datacenters** : Tous les badges et filtres de datacenters affichent la ville, le pays et le drapeau localisés (`en` / `fr` / `zh-CN`), par exemple `BHS (Beauharnois, Canada 🇨🇦)` et `TOR (Toronto, Canada 🇨🇦)` en vue détaillée ou `🇨🇦 BHS` / `🇨🇦 TOR` en badge compact avec info-bulle au survol.

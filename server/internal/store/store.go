@@ -173,6 +173,8 @@ func (s *Store) migrate() error {
 			next_attempt_at INTEGER NOT NULL DEFAULT 0,
 			auto_pay INTEGER NOT NULL DEFAULT 0,
 			waive_retractation_period INTEGER NOT NULL DEFAULT 0,
+			source TEXT NOT NULL DEFAULT 'manual',
+			source_ref TEXT NOT NULL DEFAULT '',
 			last_error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -313,6 +315,18 @@ func (s *Store) migrate() error {
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("store: migration failed: %w", err)
+		}
+	}
+
+	alterStmts := []string{
+		`ALTER TABLE order_queue ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';`,
+		`ALTER TABLE order_queue ADD COLUMN source_ref TEXT NOT NULL DEFAULT '';`,
+	}
+	for _, stmt := range alterStmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return fmt.Errorf("store: alter migration failed: %w", err)
+			}
 		}
 	}
 	return nil

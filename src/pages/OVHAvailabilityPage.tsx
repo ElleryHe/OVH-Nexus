@@ -2,11 +2,18 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, Search, Database, Filter, Download, TrendingUp, ChevronLeft, ChevronRight, Sparkles, ChevronDown, ChevronUp, History } from 'lucide-react';
+import { RefreshCw, Search, Database, Filter, Download, TrendingUp, ChevronLeft, ChevronRight, Sparkles, ChevronDown, ChevronUp, History, Bell } from 'lucide-react';
 import axios from 'axios';
 import apiClient from '@/utils/apiClient';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useLocale } from '@/context/LocaleContext';
+import { DCLabel } from '@/components/DCLabel';
+import { QuickMonitorDialog } from '@/components/QuickMonitorDialog';
+import {
+  formatDatacenter,
+  normalizeDatacenterCode,
+  inferPlanGeneration,
+} from '@/config/ovhConstants';
 import {
   useCatalogDictionary,
   resolvePlanDisplay,
@@ -38,12 +45,17 @@ interface AvailabilityItem {
   storage: string;
   systemStorage?: string;
   gpu?: string;
+  listingState?: 'listed' | 'presale' | 'delisted' | string;
+  catalogSource?: string;
+  orderable?: boolean;
+  generation?: number;
   datacenters: DatacenterInfo[];
 }
 
 interface SkuChangeRecord {
   id: string;
-  type: 'added' | 'removed' | 'config_changed';
+  type: 'added' | 'removed' | 'config_changed' | 'presale' | 'listed';
+  listingState?: 'listed' | 'presale' | string;
   timestamp: string;
   skuKey: string;
   planCodes?: string[];
@@ -59,11 +71,13 @@ interface SkuChangeRecord {
 
 const OVHAvailabilityPage = () => {
   const isMobile = useIsMobile();
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
   const catalogDict = useCatalogDictionary();
   const [availabilities, setAvailabilities] = useState<AvailabilityItem[]>([]);
   const [skuChanges, setSkuChanges] = useState<SkuChangeRecord[]>([]);
   const [recentSkuMap, setRecentSkuMap] = useState<Record<string, string>>({});
+  const [presaleSkuMap, setPresaleSkuMap] = useState<Record<string, string>>({});
+  const [serverListingMap, setServerListingMap] = useState<Record<string, { listingState?: string; orderable?: boolean; catalogSource?: string }>>({});
   const [skuTotalIndexed, setSkuTotalIndexed] = useState<number>(0);
   const [showSkuTimeline, setShowSkuTimeline] = useState<boolean>(false);
   const [isCheckingSku, setIsCheckingSku] = useState<boolean>(false);
@@ -81,6 +95,15 @@ const OVHAvailabilityPage = () => {
   const [filterDatacenter, setFilterDatacenter] = useState('all');
   const [filterAvailability, setFilterAvailability] = useState('all');
   const [filterMemory, setFilterMemory] = useState('all');
+  const [filterPresaleOnly, setFilterPresaleOnly] = useState(false);
+  const [quickMonitorTarget, setQuickMonitorTarget] = useState<{
+    planCode: string;
+    serverName?: string;
+    isPresale?: boolean;
+    datacenters?: DatacenterInfo[];
+    memory?: string;
+    storage?: string;
+  } | null>(null);
   
   // 排序
   const [sortBy, setSortBy] = useState<'planCode' | 'memory' | 'availability' | 'price'>('planCode');
@@ -102,7 +125,7 @@ const OVHAvailabilityPage = () => {
   // 过滤条件改变时重置页码
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterDatacenter, filterAvailability, filterMemory, sortBy, sortOrder]);
+  }, [filterDatacenter, filterAvailability, filterMemory, filterPresaleOnly, sortBy, sortOrder]);
 
   // 根据 endpoint 获取对应的 API 基础地址
   const getApiBaseUrl = (endpoint: string): string => {
@@ -138,14 +161,23 @@ const OVHAvailabilityPage = () => {
       
       console.log(`正在从 ${apiUrl} 获取数据...`);
       
-      // 直接调用 OVH 公开 API（无需认证）
-      const response = await axios.get(apiUrl, {
-        timeout: 30000
-      });
-      
-      console.log('OVH API 返回数据:', response.data);
-      // 先更新状态，确保数据立即可用
-      const newData = Array.isArray(response.data) ? response.data : [];
+      // 优先尝试后端代理接口（支持单飞合并与预售状态标注），若不可用则直接回退到 OVH 公开 API
+      let newData: AvailabilityItem[] = [];
+      try {
+        const backendRes = await apiClient.get('/availability', { timeout: 30000 });
+        if (Array.isArray(backendRes.data) && backendRes.data.length > 0) {
+          newData = backendRes.data;
+        }
+      } catch {
+        // Fallback to direct OVH API below
+      }
+      if (newData.length === 0) {
+        const response = await axios.get(apiUrl, {
+          timeout: 30000
+        });
+        console.log('OVH API 返回数据:', response.data);
+        newData = Array.isArray(response.data) ? response.data : [];
+      }
       
       // 保存到ref，用于渲染时的备用检查
       prevAvailabilitiesRef.current = newData;
@@ -203,10 +235,33 @@ const OVHAvailabilityPage = () => {
       if (res.data) {
         setSkuChanges(res.data.changes || []);
         setRecentSkuMap(res.data.status?.recentFirstSeen || {});
+        setPresaleSkuMap(res.data.status?.presaleSkus || {});
         setSkuTotalIndexed(res.data.status?.totalSkus || 0);
       }
     } catch {
       // ignore if backend not reachable
+    }
+  }, []);
+
+  const fetchServerListingStates = useCallback(async () => {
+    try {
+      const res = await apiClient.get('/servers');
+      const list = Array.isArray(res.data) ? res.data : res.data?.servers || [];
+      if (Array.isArray(list) && list.length > 0) {
+        const map: Record<string, { listingState?: string; orderable?: boolean; catalogSource?: string }> = {};
+        list.forEach((srv: any) => {
+          if (srv && srv.planCode) {
+            map[srv.planCode] = {
+              listingState: srv.listingState,
+              orderable: srv.orderable,
+              catalogSource: srv.catalogSource,
+            };
+          }
+        });
+        setServerListingMap(map);
+      }
+    } catch {
+      // ignore if unauthenticated or offline
     }
   }, []);
 
@@ -217,6 +272,7 @@ const OVHAvailabilityPage = () => {
       if (res.data) {
         setSkuChanges(res.data.changes || []);
         setRecentSkuMap(res.data.status?.recentFirstSeen || {});
+        setPresaleSkuMap(res.data.status?.presaleSkus || {});
         setSkuTotalIndexed(res.data.status?.totalSkus || 0);
       }
       toast.success('已同步最新货架 SKU 基线与变动');
@@ -231,7 +287,8 @@ const OVHAvailabilityPage = () => {
   useEffect(() => {
     fetchEndpointConfig();
     fetchSkuChanges();
-  }, [fetchEndpointConfig, fetchSkuChanges]);
+    fetchServerListingStates();
+  }, [fetchEndpointConfig, fetchSkuChanges, fetchServerListingStates]);
 
   // 当 apiBaseUrl 改变时，获取数据
   useEffect(() => {
@@ -240,9 +297,60 @@ const OVHAvailabilityPage = () => {
     }
   }, [apiBaseUrl, fetchAvailabilities]);
 
+  // 判定单条可用性记录是否属于预售/待上架机型
+  const isItemPresale = useCallback(
+    (item: AvailabilityItem): boolean => {
+      if (
+        item.listingState === 'presale' ||
+        item.catalogSource === 'presale' ||
+        item.orderable === false
+      ) {
+        return true;
+      }
+      if (item.listingState === 'listed' || item.orderable === true) {
+        return false;
+      }
+      const srvMeta = serverListingMap[item.planCode];
+      if (srvMeta) {
+        return (
+          srvMeta.listingState === 'presale' ||
+          srvMeta.catalogSource === 'presale' ||
+          srvMeta.orderable === false
+        );
+      }
+      if (presaleSkuMap[item.planCode]) {
+        return true;
+      }
+      if (catalogDict && catalogDict.plans && Object.keys(catalogDict.plans).length > 0) {
+        const directPlan = catalogDict.plans[item.planCode];
+        if (!directPlan || directPlan.catalogSource === 'presale') {
+          return true;
+        }
+      }
+      return false;
+    },
+    [serverListingMap, presaleSkuMap, catalogDict]
+  );
+
+  // 统计预售/待上架机型的去重型号数（与服务器目录页口径一致）
+  const presaleModelCount = useMemo(() => {
+    const set = new Set<string>();
+    availabilities.forEach((item) => {
+      if (isItemPresale(item)) {
+        set.add(item.planCode);
+      }
+    });
+    return set.size;
+  }, [availabilities, isItemPresale]);
+
   // 使用useMemo优化过滤和排序
   const filteredData = useMemo(() => {
     let filtered = [...availabilities];
+
+    // 仅看预售过滤
+    if (filterPresaleOnly) {
+      filtered = filtered.filter((item) => isItemPresale(item));
+    }
     
     // 搜索过滤（支持按消费者友好型号名如 KS-A、CPU 型号、转换后的内存/硬盘以及原始 SKU 搜索）
     if (debouncedSearch) {
@@ -267,8 +375,9 @@ const OVHAvailabilityPage = () => {
     
     // 数据中心过滤
     if (filterDatacenter !== 'all') {
+      const targetDc = normalizeDatacenterCode(filterDatacenter);
       filtered = filtered.filter(item =>
-        item.datacenters.some(dc => dc.datacenter.toLowerCase() === filterDatacenter.toLowerCase())
+        item.datacenters.some(dc => normalizeDatacenterCode(dc.datacenter) === targetDc)
       );
     }
     
@@ -349,7 +458,7 @@ const OVHAvailabilityPage = () => {
     });
     
     return filtered;
-  }, [availabilities, debouncedSearch, filterDatacenter, filterAvailability, filterMemory, sortBy, sortOrder, locale, catalogDict]);
+  }, [availabilities, filterPresaleOnly, isItemPresale, debouncedSearch, filterDatacenter, filterAvailability, filterMemory, sortBy, sortOrder, locale, catalogDict]);
   
   // 分页数据
   const paginatedData = useMemo(() => {
@@ -538,15 +647,19 @@ const OVHAvailabilityPage = () => {
                     <div className="flex flex-wrap items-center gap-2">
                       <span
                         className={`px-2 py-0.5 rounded font-semibold ${
-                          chg.type === 'added'
+                          chg.type === 'presale' || (chg.type === 'added' && chg.listingState === 'presale')
+                            ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                            : chg.type === 'added' || chg.type === 'listed'
                             ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
                             : chg.type === 'removed'
                             ? 'bg-red-500/15 text-red-500 border border-red-500/30'
                             : 'bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30'
                         }`}
                       >
-                        {chg.type === 'added'
-                          ? '🆕 新上架'
+                        {chg.type === 'presale' || (chg.type === 'added' && chg.listingState === 'presale')
+                          ? t('presale.skuAdded')
+                          : chg.type === 'added' || chg.type === 'listed'
+                          ? t('sku.newListed')
                           : chg.type === 'removed'
                           ? '📤 已下架'
                           : '🔧 配置更新'}
@@ -632,25 +745,26 @@ const OVHAvailabilityPage = () => {
               className="cyber-input w-full"
             >
               <option value="all">所有数据中心</option>
-              <optgroup label="🇪🇺 欧洲">
-                <option value="rbx">RBX - 法国鲁贝</option>
-                <option value="sbg">SBG - 法国斯特拉斯堡</option>
-                <option value="gra">GRA - 法国格拉沃利纳</option>
-                <option value="waw">WAW - 波兰华沙</option>
-                <option value="fra">FRA - 德国法兰克福</option>
-                <option value="lon">LON - 英国伦敦</option>
+              <optgroup label="🇪🇺 欧洲 (Europe)">
+                {['rbx', 'sbg', 'gra', 'par', 'mrs', 'lim', 'fra', 'lon', 'eri', 'waw'].map((dc) => (
+                  <option key={dc} value={dc}>
+                    {formatDatacenter(dc, locale, 'full')}
+                  </option>
+                ))}
               </optgroup>
-              <optgroup label="🇺🇸 美国">
-                <option value="hil">HIL - 美国俄勒冈州</option>
-                <option value="vin">VIN - 美国弗吉尼亚州</option>
+              <optgroup label="🇨🇦 🇺🇸 北美 (North America)">
+                {['bhs', 'tor', 'hil', 'vin'].map((dc) => (
+                  <option key={dc} value={dc}>
+                    {formatDatacenter(dc, locale, 'full')}
+                  </option>
+                ))}
               </optgroup>
-              <optgroup label="🇨🇦 加拿大">
-                <option value="bhs">BHS - 加拿大蒙特利尔</option>
-              </optgroup>
-              <optgroup label="🌏 亚太">
-                <option value="sgp">SGP - 新加坡</option>
-                <option value="syd">SYD - 澳大利亚悉尼</option>
-                <option value="ynm">YNM - 印度孟买</option>
+              <optgroup label="🌏 亚太 (Asia Pacific)">
+                {['sgp', 'syd', 'mum'].map((dc) => (
+                  <option key={dc} value={dc}>
+                    {formatDatacenter(dc, locale, 'full')}
+                  </option>
+                ))}
               </optgroup>
             </select>
             
@@ -680,69 +794,87 @@ const OVHAvailabilityPage = () => {
             </select>
           </div>
           
-          {/* 排序选项 */}
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-cyber-muted">排序：</span>
-            <Button
-              onClick={() => {
-                if (sortBy === 'planCode') {
-                  setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                } else {
-                  setSortBy('planCode');
-                  setSortOrder('asc');
-                }
-              }}
-              variant="cyber"
-              size="sm"
-              className={`text-xs ${sortBy === 'planCode' ? 'bg-cyber-accent/20' : ''}`}
+          {/* 排序选项与预售筛选 */}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-cyber-muted">排序：</span>
+              <Button
+                onClick={() => {
+                  if (sortBy === 'planCode') {
+                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                  } else {
+                    setSortBy('planCode');
+                    setSortOrder('asc');
+                  }
+                }}
+                variant="cyber"
+                size="sm"
+                className={`text-xs ${sortBy === 'planCode' ? 'bg-cyber-accent/20' : ''}`}
+              >
+                型号 {sortBy === 'planCode' && (sortOrder === 'asc' ? '↑' : '↓')}
+              </Button>
+              <Button
+                onClick={() => {
+                  if (sortBy === 'memory') {
+                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                  } else {
+                    setSortBy('memory');
+                    setSortOrder('asc');
+                  }
+                }}
+                variant="cyber"
+                size="sm"
+                className={`text-xs ${sortBy === 'memory' ? 'bg-cyber-accent/20' : ''}`}
+              >
+                内存 {sortBy === 'memory' && (sortOrder === 'asc' ? '↑' : '↓')}
+              </Button>
+              <Button
+                onClick={() => {
+                  if (sortBy === 'availability') {
+                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                  } else {
+                    setSortBy('availability');
+                    setSortOrder('desc');
+                  }
+                }}
+                variant="cyber"
+                size="sm"
+                className={`text-xs ${sortBy === 'availability' ? 'bg-cyber-accent/20' : ''}`}
+              >
+                可用性 {sortBy === 'availability' && (sortOrder === 'asc' ? '↑' : '↓')}
+              </Button>
+              <Button
+                onClick={() => {
+                  if (sortBy === 'price') {
+                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                  } else {
+                    setSortBy('price');
+                    setSortOrder('asc');
+                  }
+                }}
+                variant="cyber"
+                size="sm"
+                className={`text-xs ${sortBy === 'price' ? 'bg-cyber-accent/20' : ''}`}
+              >
+                价格 {sortBy === 'price' && (sortOrder === 'asc' ? '↑' : '↓')}
+              </Button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setFilterPresaleOnly((prev) => !prev)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
+                filterPresaleOnly
+                  ? 'bg-purple-500/20 text-purple-300 border-purple-500/50 shadow-sm'
+                  : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-purple-300 hover:border-purple-500/35'
+              }`}
             >
-              型号 {sortBy === 'planCode' && (sortOrder === 'asc' ? '↑' : '↓')}
-            </Button>
-            <Button
-              onClick={() => {
-                if (sortBy === 'memory') {
-                  setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                } else {
-                  setSortBy('memory');
-                  setSortOrder('asc');
-                }
-              }}
-              variant="cyber"
-              size="sm"
-              className={`text-xs ${sortBy === 'memory' ? 'bg-cyber-accent/20' : ''}`}
-            >
-              内存 {sortBy === 'memory' && (sortOrder === 'asc' ? '↑' : '↓')}
-            </Button>
-            <Button
-              onClick={() => {
-                if (sortBy === 'availability') {
-                  setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                } else {
-                  setSortBy('availability');
-                  setSortOrder('desc');
-                }
-              }}
-              variant="cyber"
-              size="sm"
-              className={`text-xs ${sortBy === 'availability' ? 'bg-cyber-accent/20' : ''}`}
-            >
-              可用性 {sortBy === 'availability' && (sortOrder === 'asc' ? '↑' : '↓')}
-            </Button>
-            <Button
-              onClick={() => {
-                if (sortBy === 'price') {
-                  setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-                } else {
-                  setSortBy('price');
-                  setSortOrder('asc');
-                }
-              }}
-              variant="cyber"
-              size="sm"
-              className={`text-xs ${sortBy === 'price' ? 'bg-cyber-accent/20' : ''}`}
-            >
-              价格 {sortBy === 'price' && (sortOrder === 'asc' ? '↑' : '↓')}
-            </Button>
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>{t('presale.filterOnly')}</span>
+              <span className="px-1.5 py-0.2 rounded-full text-[11px] font-mono bg-purple-500/20 text-purple-300">
+                {presaleModelCount}
+              </span>
+            </button>
           </div>
         </div>
       )}
@@ -768,8 +900,11 @@ const OVHAvailabilityPage = () => {
                 ? formatStorageCode(item.systemStorage, locale, true)
                 : '';
               const friendlyGpu = item.gpu ? formatGpuCode(item.gpu, locale) : '';
+              const isPresale = isItemPresale(item);
+              const generation = inferPlanGeneration(item.planCode, item.generation);
               const isRecentlyAdded = Boolean(
-                recentSkuMap[item.planCode] || recentSkuMap[planMeta.baseCode]
+                !isPresale &&
+                  (recentSkuMap[item.planCode] || recentSkuMap[planMeta.baseCode])
               );
               const hasAddonDelta =
                 priceInfo.memoryDelta > 0 ||
@@ -786,7 +921,7 @@ const OVHAvailabilityPage = () => {
                       (priceInfo.gpuDelta > 0 ? ` + GPU: ${priceInfo.symbol}${priceInfo.gpuDelta.toFixed(2)}` : '') +
                       ' (均不含税)'
                     : `目录月付基础价 (不含税)`
-                  : '该机架型号暂未在公开销售目录中提供定价';
+                  : t('presale.notOrderableHint');
 
               return (
               <div
@@ -805,10 +940,21 @@ const OVHAvailabilityPage = () => {
                           {planMeta.regionLabel}
                         </span>
                       )}
+                      {isPresale && (
+                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3" />
+                          {t('presale.badge')}
+                        </span>
+                      )}
+                      {generation && (
+                        <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                          {t('presale.generation', { year: generation })}
+                        </span>
+                      )}
                       {isRecentlyAdded && (
                         <span className="px-2 py-0.5 text-[11px] font-bold rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
                           <Sparkles className="w-3 h-3" />
-                          新上架
+                          {t('sku.newListed')}
                         </span>
                       )}
                       <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/40 text-cyber-muted">
@@ -821,23 +967,43 @@ const OVHAvailabilityPage = () => {
                         : `内部标识: ${item.server}`}
                     </p>
                   </div>
-                  <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
-                    {priceInfo.totalPrice !== null ? (
-                      <div
-                        title={priceTooltip}
-                        className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-sm sm:text-base leading-none flex items-baseline gap-1"
+                  <div className="text-right flex-shrink-0 flex flex-col items-end gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setQuickMonitorTarget({
+                            planCode: item.planCode,
+                            serverName: planMeta.name,
+                            isPresale,
+                            datacenters: item.datacenters,
+                            memory: item.memory,
+                            storage: item.storage,
+                          })
+                        }
+                        className="px-2.5 py-1 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 border border-cyber-accent/40 text-cyber-accent text-xs font-semibold flex items-center gap-1 transition-colors"
                       >
-                        <span>{priceInfo.formattedTotal}</span>
-                        <span className="text-[11px] font-normal text-cyber-muted">/ 月</span>
-                      </div>
-                    ) : (
-                      <div
-                        title={priceTooltip}
-                        className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-xs"
-                      >
-                        未公开定价
-                      </div>
-                    )}
+                        <Bell className="w-3.5 h-3.5" />
+                        <span>{t('quickMonitor.button')}</span>
+                      </button>
+
+                      {priceInfo.totalPrice !== null && !isPresale ? (
+                        <div
+                          title={priceTooltip}
+                          className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-sm sm:text-base leading-none flex items-baseline gap-1"
+                        >
+                          <span>{priceInfo.formattedTotal}</span>
+                          <span className="text-[11px] font-normal text-cyber-muted">/ 月</span>
+                        </div>
+                      ) : (
+                        <div
+                          title={priceTooltip}
+                          className="px-2 py-1 rounded bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs font-medium"
+                        >
+                          {t('presale.pricingTbd')}
+                        </div>
+                      )}
+                    </div>
                     {!isMobile && (
                       <div className="font-mono text-[11px] text-cyber-muted opacity-80">{item.fqn}</div>
                     )}
@@ -903,7 +1069,9 @@ const OVHAvailabilityPage = () => {
                         key={dc.datacenter}
                         className={`${availInfo.bg} ${availInfo.border} border rounded px-1.5 sm:px-2 py-1 sm:py-1.5 text-xs`}
                       >
-                        <div className="font-semibold text-slate-200 text-[10px] sm:text-xs">{dc.datacenter.toUpperCase()}</div>
+                        <div className="font-semibold text-slate-200 text-[10px] sm:text-xs">
+                          <DCLabel code={dc.datacenter} mode="compact" />
+                        </div>
                         <div className={`${availInfo.color} text-[9px] sm:text-[10px] font-medium`}>
                           {availInfo.text}
                         </div>
@@ -985,6 +1153,19 @@ const OVHAvailabilityPage = () => {
           )}
         </>
       ) : null}
+
+      <QuickMonitorDialog
+        open={Boolean(quickMonitorTarget)}
+        onOpenChange={(open) => {
+          if (!open) setQuickMonitorTarget(null);
+        }}
+        planCode={quickMonitorTarget?.planCode || ''}
+        serverName={quickMonitorTarget?.serverName}
+        isPresale={quickMonitorTarget?.isPresale}
+        initialDatacenters={quickMonitorTarget?.datacenters}
+        initialMemory={quickMonitorTarget?.memory}
+        initialStorage={quickMonitorTarget?.storage}
+      />
     </div>
   );
 };

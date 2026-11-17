@@ -203,7 +203,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 		t.Fatalf("read gunzipped /api/health: %v", err)
 	}
 	healthMap := decodeMap(t, healthBytes)
-	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.0" {
+	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.1" {
 		t.Fatalf("unexpected health payload: %+v", healthMap)
 	}
 
@@ -740,6 +740,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		checkoutPayload map[string]any
 		cartItemQty     int
 		rebootCalled    bool
+		includeNewSKU   bool
 	)
 
 	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -749,7 +750,10 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		case r.Method == http.MethodGet && p == "/auth/time":
 			_ = json.NewEncoder(w).Encode(time.Now().Unix())
 		case r.Method == http.MethodGet && p == "/dedicated/server/datacenter/availabilities":
-			_ = json.NewEncoder(w).Encode([]map[string]any{
+			mu.Lock()
+			withNew := includeNewSKU
+			mu.Unlock()
+			avails := []map[string]any{
 				{
 					"planCode": "24ska01",
 					"server":   "Intel Xeon E3-1245v2",
@@ -760,16 +764,41 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 						{"datacenter": "rbx", "availability": "unavailable"},
 					},
 				},
-			})
+				{
+					"planCode": "27ska01",
+					"server":   "AMD EPYC 4244P",
+					"memory":   "ram-64g-ecc-5200",
+					"storage":  "softraid-2x960nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "ca-east-tor", "availability": "unavailable"},
+					},
+				},
+			}
+			if withNew {
+				avails = append(avails, map[string]any{
+					"planCode": "27rise01",
+					"server":   "AMD EPYC 4344P",
+					"memory":   "ram-64g-ecc-5200",
+					"storage":  "softraid-2x960nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "72H"},
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(avails)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, "/order/catalog/public/"):
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"locale": map[string]any{"currencyCode": "EUR"},
-				"plans": []map[string]any{
+			plans := []map[string]any{}
+			if strings.HasSuffix(p, "/eco") || strings.HasSuffix(p, "/baremetalServers") {
+				plans = []map[string]any{
 					{
 						"planCode":    "24ska01",
 						"invoiceName": "KS-A | Intel Xeon E3-1245v2",
 					},
-				},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale":   map[string]any{"currencyCode": "EUR"},
+				"plans":    plans,
 				"products": []any{},
 				"addons":   []any{},
 			})
@@ -992,7 +1021,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"Authorization": "Bearer " + mcpToken,
 	}
 
-	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.0"
+	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.1"
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1006,7 +1035,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}
 	initRes := decodeMap(t, body)["result"].(map[string]any)
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.0" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.1" {
 		t.Fatalf("unexpected MCP serverInfo: %+v", srvInfo)
 	}
 
@@ -1054,6 +1083,109 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}, mcpHeaders)
 	if code != http.StatusOK || !strings.Contains(string(body), "24ska01") {
 		t.Fatalf("catalog_availability failed: %d body=%s", code, string(body))
+	}
+	availText := decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	availJSON := decodeMap(t, []byte(availText))
+	availItems := availJSON["items"].([]any)
+	if len(availItems) != 1 {
+		t.Fatalf("expected 1 item for 24ska01, got %d", len(availItems))
+	}
+	firstAvail := availItems[0].(map[string]any)
+	if firstAvail["listingState"] != "listed" || firstAvail["orderable"] != true || int(firstAvail["generation"].(float64)) != 2024 {
+		t.Fatalf("expected listed orderable 2024 item for 24ska01, got %+v", firstAvail)
+	}
+
+	// 8b. catalog_availability offset pagination + presale_only filtering via httpx catalogAdapter.
+	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      41,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "catalog_availability",
+			"arguments": map[string]any{"offset": 0, "limit": 1},
+		},
+	}, mcpHeaders)
+	if code != http.StatusOK {
+		t.Fatalf("catalog_availability offset=0 failed: %d body=%s", code, string(body))
+	}
+	page1JSON := decodeMap(t, []byte(decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)))
+	if int(page1JSON["totalMatched"].(float64)) != 2 || int(page1JSON["returned"].(float64)) != 1 || int(page1JSON["nextOffset"].(float64)) != 1 {
+		t.Fatalf("unexpected page1 catalog_availability pagination: %+v", page1JSON)
+	}
+
+	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      42,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "catalog_availability",
+			"arguments": map[string]any{"offset": 1, "limit": 1},
+		},
+	}, mcpHeaders)
+	if code != http.StatusOK {
+		t.Fatalf("catalog_availability offset=1 failed: %d body=%s", code, string(body))
+	}
+	page2JSON := decodeMap(t, []byte(decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)))
+	if int(page2JSON["totalMatched"].(float64)) != 2 || int(page2JSON["returned"].(float64)) != 1 || page2JSON["nextOffset"] != nil {
+		t.Fatalf("unexpected page2 catalog_availability pagination: %+v", page2JSON)
+	}
+
+	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      43,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "catalog_availability",
+			"arguments": map[string]any{"presale_only": true},
+		},
+	}, mcpHeaders)
+	if code != http.StatusOK {
+		t.Fatalf("catalog_availability presale_only failed: %d body=%s", code, string(body))
+	}
+	presaleJSON := decodeMap(t, []byte(decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)))
+	if int(presaleJSON["totalMatched"].(float64)) != 1 || int(presaleJSON["returned"].(float64)) != 1 {
+		t.Fatalf("expected 1 presale item in catalog_availability presale_only=true, got %+v", presaleJSON)
+	}
+	presaleEntry := presaleJSON["items"].([]any)[0].(map[string]any)
+	if presaleEntry["planCode"] != "27ska01" || presaleEntry["listingState"] != "presale" || presaleEntry["orderable"] != false || int(presaleEntry["generation"].(float64)) != 2027 {
+		t.Fatalf("unexpected presale catalog_availability entry: %+v", presaleEntry)
+	}
+
+	// 8c. catalog_sku_changes backed by monitor.Service.GetSKUStatusAndChanges via httpx monitorAdapter.
+	if _, err := svcs.Monitor.CheckSKUOnce(ctx, true); err != nil {
+		t.Fatalf("CheckSKUOnce baseline: %v", err)
+	}
+	mu.Lock()
+	includeNewSKU = true
+	mu.Unlock()
+	if _, err := svcs.Monitor.CheckSKUOnce(ctx, true); err != nil {
+		t.Fatalf("CheckSKUOnce diff: %v", err)
+	}
+
+	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      44,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "catalog_sku_changes",
+			"arguments": map[string]any{"limit": 10, "change_type": "ADDED"},
+		},
+	}, mcpHeaders)
+	if code != http.StatusOK {
+		t.Fatalf("catalog_sku_changes failed: %d body=%s", code, string(body))
+	}
+	skuChangesJSON := decodeMap(t, []byte(decodeMap(t, body)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)))
+	skuStatus := skuChangesJSON["status"].(map[string]any)
+	if skuStatus["initialized"] != true || int(skuStatus["totalSkus"].(float64)) != 3 || int(skuStatus["presaleCount"].(float64)) < 2 {
+		t.Fatalf("unexpected catalog_sku_changes status: %+v", skuStatus)
+	}
+	skuChangesList := skuChangesJSON["changes"].([]any)
+	if len(skuChangesList) != 1 {
+		t.Fatalf("expected 1 added SKU change event from catalog_sku_changes, got %+v", skuChangesList)
+	}
+	skuCh := skuChangesList[0].(map[string]any)
+	if skuCh["planCode"] != "27rise01" || skuCh["skuKey"] == "" || skuCh["modelName"] == "" || skuCh["listingState"] != "presale" || int(skuCh["generation"].(float64)) != 2027 || skuCh["detectedAt"] == "" {
+		t.Fatalf("unexpected catalog_sku_changes item: %+v", skuCh)
 	}
 
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{

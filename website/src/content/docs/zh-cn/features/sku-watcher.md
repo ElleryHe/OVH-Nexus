@@ -11,8 +11,9 @@ description: 免 API Key 实时追踪 OVHcloud 全量货架（含未开售预上
 
 由于 OVHcloud 公共接口偶尔会出现 CDN 缓存回退或临时返回残缺数据，为避免产生大量“假下架/假上新”刷屏告警，监控引擎内置了四层防误报机制：
 
-1. **首轮基线静默初始化 (`initialized: false → true`)**：
-   - 首次启动（或切换监控的 OVH 区域端点）时，系统仅将当前货架上的全部 SKU 记录到 `/data/nexus.db`（`sku_watcher_state`）作为基准快照，**绝不发送首轮刷屏通知**。
+1. **首轮存量基线静默 (`baseline: true`) 与两阶段上架追踪 (`presale -> listed`)**：
+   - 首次部署初始化（或切换监控的 OVH 区域端点）时，系统将当前已存在的全部机型写入 `/data/nexus.db`（`sku_watcher_state`）并标记为存量 `baseline: true`，**既不发送首轮刷屏通知，也不会将存量机型误标为“新上架”**。
+   - 对于基线建立后新发现的机型，系统分别记录两个生命周期时间点：`presaleSince`（首次以未公开预售状态出现在库存接口的时间，触发 `sku.presale` 事件）与 `listedAt`（从预售转为公开目录正式上架 `presale -> listed` 的时间，触发 `sku.listed` 新上架通知并在界面展示**新上架**徽标）。
 2. **连续 2 轮缺失确认下架 (`missingCounts >= 2`)**：
    - 当某个已知 SKU 在单次扫描中消失时，不会立即判定为下架，而是将其缺失计数 `missingCounts` 记为 `1`。
    - 只有当该 SKU **连续第 2 轮扫描仍然缺失**（`missingCounts >= 2`）时，才会正式触发 `sku.changed`（`SKU 下架`）事件；若次轮恢复出现，则计数自动归零。

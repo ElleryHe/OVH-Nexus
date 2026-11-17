@@ -338,7 +338,7 @@ func TestQuickOrderNoPricedConfigAndCooldown(t *testing.T) {
 	}
 	var okResp QuickOrderResult
 	_ = json.Unmarshal(rec.Body.Bytes(), &okResp)
-	if !okResp.Success || okResp.Item == nil || okResp.Item.AutoPay || okResp.Item.WaiveRetractationPeriod {
+	if !okResp.Success || okResp.Item == nil || okResp.Item.AutoPay || okResp.Item.WaiveRetractationPeriod || okResp.Item.Source != "manual" {
 		t.Fatalf("unexpected quick-order response: %+v", okResp)
 	}
 
@@ -351,6 +351,19 @@ func TestQuickOrderNoPricedConfigAndCooldown(t *testing.T) {
 	env.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 duplicate guard, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 4. Direct QuickOrder with Source="stock-monitor" and SourceRef="24ska01" persists source linkage.
+	monRes, monStatus, monErr := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
+		AccountID:          "acc-1",
+		PlanCode:           "24ska01",
+		Datacenter:         "gra",
+		SkipDuplicateCheck: true,
+		Source:             "stock-monitor",
+		SourceRef:          "24ska01",
+	})
+	if monErr != nil || monStatus != http.StatusOK || monRes.Item == nil || monRes.Item.Source != "stock-monitor" || monRes.Item.SourceRef != "24ska01" {
+		t.Fatalf("expected stock-monitor source linkage on QuickOrder, got status=%d err=%v item=%+v", monStatus, monErr, monRes.Item)
 	}
 }
 

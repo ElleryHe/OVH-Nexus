@@ -5,8 +5,8 @@ description: 配置无人值守的独立服务器自动采购队列与精确硬�
 
 针对 OVHcloud 热门机型（如 `KS-LE` 限量版、`KS-A` 或大促闪购机型）补货往往仅持续数秒的场景，OVH Nexus 提供了两套互补的自动化采购引擎：
 
-1. **采购队列（Purchase Queue，`/queue`）**：按目标 `planCode`、优先机房列表与可选附加组件进行持续轮询下单。
-2. **精确配置监控（Configuration Monitor，`/monitor` & `/ovh-availability`）**：直接从实时库存矩阵锁定某一个特定的 `planCode + 内存代码 + 存储代码 + 机房` 组合（`FQN`）进行定点监控并支持一键快捷下单（`POST /api/orders/quick-order`）。
+1. **采购队列（Purchase Queue，`/queue`）**：按目标 `planCode`、优先机房列表与可选附加组件进行持续轮询下单，并清晰标记每条任务的创建来源（`source: "manual" | "stock-monitor" | "mcp"`）。
+2. **独服库存与配置监控（Stock Monitor，`/monitor`、`/availability`、`/servers`）**：支持通过任意机型行的**快速监控（`QuickMonitorDialog`）**弹窗订阅多机房与特定 `内存 + 硬盘` 子配置库存变动。开启 `autoOrder` 自动下单后，统一由后端 `internal/monitor/stock.go` 单点触发（消除浏览器前端重复发起的 `quick-order` 请求），自动关联写入 `source: "stock-monitor"` 来源标识，并支持在**库存监控（`/monitor`）**与**采购队列（`/queue`）**之间双向一键跳转定位。
 
 ## 自动下单执行流程
 

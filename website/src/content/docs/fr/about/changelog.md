@@ -3,11 +3,37 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.3.0]
+:::note[Dernière version : v1.3.1]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.3.1] - 2026-11-17 — Détection des Modèles en Prévente, Surveillance Rapide, Datacenters Trilingues & Améliorations MCP
+
+### Ajouté (Added)
+
+- **Détection & Filtrage des Serveurs en Prévente / Non Listés** :
+  - Identifie automatiquement les `planCode` pré-rackés ou en prévente présents dans les flux de disponibilité OVHcloud en direct avant leur publication dans le catalogue public, avec badges **Prévente** (`Presale`), étiquettes de génération matérielle (`2024`–`2027`) et filtre **Prévente uniquement** (`Presale Only`) sur la Matrice de Disponibilité en Direct (`/availability`) et le Catalogue Serveurs (`/servers`).
+- **Fenêtre de Surveillance Rapide en Un Clic (`QuickMonitorDialog`)** :
+  - Configurez les alertes de stock par datacenter, le filtrage de sous-configurations matérielles et les règles d'achat automatisé directement depuis n'importe quelle ligne de `/availability` ou `/servers`.
+- **Dictionnaire Géographique Trilingue des Datacenters** :
+  - Ajout des libellés localisés ville, pays et drapeau (`en` / `fr` / `zh-CN`, ex. `BHS (Beauharnois, Canada 🇨🇦)`, ainsi que des badges compacts `🇨🇦 BHS` avec info-bulle au survol) sur l'ensemble des vues WebUI et modèles de notification, incluant la prise en charge du datacenter de Toronto (`TOR` / `ca-east-tor`).
+- **Liaison de Source entre Surveillance de Stock & File d'Achat Auto** :
+  - Les tâches créées dans la file d'attente par le moniteur de stock enregistrent désormais `source: "stock-monitor"` avec liens de navigation bidirectionnels entre `/monitor` et `/queue`, et déclenchement unifié côté serveur (suppression des appels `quick-order` redondants côté navigateur).
+- **Améliorations de la Passerelle MCP** :
+  - Ajout des modes de copie **Entrée Serveur Uniquement** (`Server Entry Only`) et **Fichier Complet** (`Full Config File`) avec conseils de fusion JSON sur `/mcp`, ajout de la pagination `offset` et du filtre `presale_only` sur `catalog_availability`, et alignement de `catalog_sku_changes` sur la chronologie réelle de la Veille SKU.
+
+### Corrigé (Fixed)
+
+- **Suivi Silencieux de l'État Initial des SKU (`baseline: true`)** :
+  - Les SKU présents lors du premier déploiement sont désormais marqués comme inventaire existant (`baseline: true`) au lieu de nouveaux ajouts, avec suivi distinct des horodatages `presaleSince` et `listedAt` afin que seules les vraies mises en vente post-initialisation et les transitions `presale -> listed` apparaissent comme **Nouveau**.
+- **Inférence de Région Panier pour Toronto (`ca-east-tor`)** :
+  - Correction de `InferCartRegion` pour associer les datacenters `tor` / `ca-east-tor*` à la région `"canada"`.
+- **Dépendances de Sécurité** :
+  - Mise à niveau de `golang.org/x/oauth2` vers `v0.38.0` et nettoyage de la dépendance transitive inutilisée `google.golang.org/protobuf` dans `server/go.mod` (`CVE-2025-22868`, `CVE-2024-24786`).
+
+---
 
 ## [1.3.0] - Binaire Statique Unique Go 1.27, SQLite WAL & Journaux Structurés SSE
 

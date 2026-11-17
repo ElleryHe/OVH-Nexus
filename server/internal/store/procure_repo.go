@@ -28,6 +28,8 @@ type QueueItem struct {
 	NextAttemptAt           int64    `json:"nextAttemptAt"`
 	AutoPay                 bool     `json:"auto_pay"`
 	WaiveRetractationPeriod bool     `json:"waive_retractation_period"`
+	Source                  string   `json:"source"`
+	SourceRef               string   `json:"sourceRef,omitempty"`
 	LastError               string   `json:"lastError,omitempty"`
 	CreatedAt               string   `json:"createdAt"`
 	UpdatedAt               string   `json:"updatedAt"`
@@ -160,6 +162,8 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 		&item.NextAttemptAt,
 		&autoPayInt,
 		&waiveInt,
+		&item.Source,
+		&item.SourceRef,
 		&item.LastError,
 		&item.CreatedAt,
 		&item.UpdatedAt,
@@ -174,6 +178,9 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 	if item.Options == nil {
 		item.Options = []string{}
 	}
+	if strings.TrimSpace(item.Source) == "" {
+		item.Source = "manual"
+	}
 	item.AutoPay = autoPayInt == 1
 	item.WaiveRetractationPeriod = waiveInt == 1
 	return &item, nil
@@ -185,7 +192,7 @@ func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, e
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
-		       auto_pay, waive_retractation_period, last_error, created_at, updated_at
+		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
 		FROM order_queue`
 	var args []any
 	if strings.TrimSpace(accountID) != "" {
@@ -217,7 +224,7 @@ func (s *Store) GetQueueItem(ctx context.Context, id string) (*QueueItem, error)
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
-		       auto_pay, waive_retractation_period, last_error, created_at, updated_at
+		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
 		FROM order_queue WHERE id = ?
 	`, id)
 	it, err := scanQueueItem(row)
@@ -256,6 +263,12 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	if strings.TrimSpace(item.Status) == "" {
 		item.Status = "running"
 	}
+	if strings.TrimSpace(item.Source) == "" {
+		item.Source = "manual"
+	} else {
+		item.Source = strings.TrimSpace(item.Source)
+	}
+	item.SourceRef = strings.TrimSpace(item.SourceRef)
 	now := nowUTC()
 	if item.CreatedAt == "" {
 		item.CreatedAt = now
@@ -270,13 +283,13 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 			id, account_id, plan_code, datacenters_json, options_json,
 			quantity, purchased, failure_count, max_retry_count, status,
 			retry_interval, retry_count, last_check_time, next_attempt_at,
-			auto_pay, waive_retractation_period, last_error, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		item.ID, item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
-		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.LastError,
+		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError,
 		item.CreatedAt, item.UpdatedAt,
 	)
 	if err != nil {
@@ -294,6 +307,12 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	if item.Options == nil {
 		item.Options = []string{}
 	}
+	if strings.TrimSpace(item.Source) == "" {
+		item.Source = "manual"
+	} else {
+		item.Source = strings.TrimSpace(item.Source)
+	}
+	item.SourceRef = strings.TrimSpace(item.SourceRef)
 	item.UpdatedAt = nowUTC()
 	dcsJSON, _ := json.Marshal(item.Datacenters)
 	optsJSON, _ := json.Marshal(item.Options)
@@ -303,13 +322,13 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 			account_id = ?, plan_code = ?, datacenters_json = ?, options_json = ?,
 			quantity = ?, purchased = ?, failure_count = ?, max_retry_count = ?, status = ?,
 			retry_interval = ?, retry_count = ?, last_check_time = ?, next_attempt_at = ?,
-			auto_pay = ?, waive_retractation_period = ?, last_error = ?, updated_at = ?
+			auto_pay = ?, waive_retractation_period = ?, source = ?, source_ref = ?, last_error = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
-		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.LastError, item.UpdatedAt,
+		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError, item.UpdatedAt,
 		item.ID,
 	)
 	if err != nil {

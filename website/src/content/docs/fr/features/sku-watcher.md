@@ -11,8 +11,9 @@ La **Veille Publique des Changements SKU** (`internal/monitor`) surveille l'int�
 
 Les API publiques de disponibilité pouvant parfois subir des anomalies temporaires de cache CDN, le moteur intègre 4 mécanismes de protection :
 
-1. **Initialisation Silencieuse de la Référence (`initialized: false → true`)** :
-   - Lors du tout premier scan (ou après un changement d'endpoint OVH), tous les SKU existants sont enregistrés dans `/data/nexus.db` (`sku_watcher_state`) comme état de référence **sans envoyer aucune alerte**.
+1. **Initialisation Silencieuse (`baseline: true`) & Suivi en Deux Étapes (`presale -> listed`)** :
+   - Lors du premier déploiement (ou après un changement d'endpoint OVH), tous les SKU existants sont enregistrés dans `/data/nexus.db` (`sku_watcher_state`) avec `baseline: true` **sans envoyer d'alerte ni marquer l'inventaire existant comme nouveau**.
+   - Pour les modèles découverts après l'initialisation, le moteur suit deux horodatages distincts : `presaleSince` (première apparition en prévente dans le flux de disponibilité, émettant `sku.presale`) et `listedAt` (passage `presale -> listed` lors de la publication au catalogue public, émettant `sku.listed` et affichant le badge **Nouveau**).
 2. **Confirmation de Retrait sur 2 Cycles Consécutifs (`missingCounts >= 2`)** :
    - Lorsqu'un SKU connu disparaît lors d'une vérification, il n'est **pas** immédiatement signalé comme retiré ; son compteur `missingCounts` passe à `1`.
    - Ce n'est que s'il reste absent lors du **cycle consécutif suivant** (`missingCounts >= 2`) qu'un événement `sku.changed` (`SKU Retiré`) est émis. S'il réapparaît entre-temps, le compteur est remis à `0`.

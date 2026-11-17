@@ -35,7 +35,7 @@ Lorsque l'IA appelle un outil avec un alias (par ex. `baremetal_get(server="bm-0
 
 | Niveau | Clé Scope | Défaut | Capacités & Lignes Rouges |
 | :--- | :---: | :---: | :--- |
-| **L1 Lecture Seule** | `read` | **ACTIF** | **11 Outils** : Inventaire des comptes, serveurs dédiés, VPS, pare-feu IP, échéances d'expiration, suivi des commandes, disponibilité temps réel et changements de SKU. |
+| **L1 Lecture Seule** | `read` | **ACTIF** | **11 Outils** : Inventaire des comptes, serveurs dédiés, VPS, pare-feu IP, échéances d'expiration, suivi des commandes, disponibilité temps réel (`catalog_availability` avec pagination `offset`, `nextOffset`, `listingState`, `generation` et filtre `presale_only`) et chronologie des changements SKU (`catalog_sku_changes`). |
 | **L2 Commande Non Payée** | `procurement` | **INACTIF** | **5 Outils** : Devis et création de commande non payée en 2 étapes (`order_quote` → `order_create_unpaid`), gestion de la file d'attente (`queue_add`, `queue_manage`) et alertes de stock. **`auto_pay=false` et `quantity=1` sont verrouillés en dur.** |
 | **L3 Opérations Réversibles** | `operations` | **INACTIF** | **4 Outils** : Redémarrage matériel (`baremetal_reboot`, `vps_reboot`), réinitialisation IPMI (`baremetal_ipmi_reset`) et règles du pare-feu IP Edge / Anti-DDoS (`baremetal_firewall_update`). Nécessite le 2FA activé. |
 | **L4 Destructif & Financier** | *Bloqué en dur* | **VERROUILLÉ** | **0 Outil (Bloqué définitivement dans le code)** : Paiement automatique (`autoPay`), réinstallation d'OS, résiliation de service, URL KVM brutes et modification des clés SSH/API ne sont jamais exposés. |
@@ -43,6 +43,8 @@ Lorsque l'IA appelle un outil avec un alias (par ex. `baremetal_get(server="bm-0
 ---
 
 ## Configuration des Clients IA
+
+Dans **WebUI → Passerelle IA MCP (`/mcp`)**, le générateur de configuration propose deux modes de copie : **Fichier Complet** (`Full Config File`) pour un fichier `mcp.json` / `mcp_config.json` vierge, ou **Entrée Serveur Uniquement** (`Server Entry Only`, copiant uniquement l'objet `"ovh-nexus": { ... }` avec rappel d'ajouter une virgule `,` après l'entrée précédente lors de l'insertion dans un bloc `mcpServers` existant).
 
 ### Claude Code (CLI)
 
