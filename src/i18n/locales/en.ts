@@ -60,6 +60,28 @@ export const enV132Translations: Record<string, string> = {
   'monitor.targetCountBadge': '{count} targets',
   'monitor.priceCapBadge': 'Cap: {price}/mo (ex-VAT)',
   'monitor.autoOrderQtyBadge': 'Auto-Order ×{qty}',
+
+  // Login & 3-Column Fixed Server Catalog Cards + Configuration Modal (v1.3.3)
+  'auth.usernameLabel': 'Username',
+  'auth.passwordLabel': 'Access Key',
+  'auth.usernamePlaceholder': 'Username (default: Nexus)',
+  'catalog.configureAndOrder': 'Configure & Order',
+  'catalog.configCount': '{count} configs',
+  'catalog.multiOptionBadge': '{count} options',
+  'catalog.quickOrderNow': 'Order Now',
+  'catalog.quickOrdering': 'Ordering...',
+  'catalog.modalTitle': 'Select Configuration & Order',
+  'catalog.specCpu': 'Processor / CPU',
+  'catalog.specRam': 'Memory / RAM',
+  'catalog.specStorage': 'Storage',
+  'catalog.specBandwidth': 'Bandwidth',
+  'catalog.dcSelectionTitle': 'Target Datacenters (for Queue or Direct Order)',
+  'catalog.selectAllInStockDcs': 'Select All In-Stock DCs',
+  'catalog.clearSelectedDcs': 'Clear',
+  'catalog.selectedConfigSummary': 'Selected Configuration',
+  'catalog.monitorThisConfig': 'Monitor This Config',
+  'catalog.addToQueueBtn': 'Add to Queue',
+  'catalog.allOutOfStock': 'All Out of Stock',
 };
 
 export default enV132Translations;

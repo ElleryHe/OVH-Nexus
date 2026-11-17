@@ -60,6 +60,28 @@ export const frV132Translations: Record<string, string> = {
   'monitor.targetCountBadge': '{count} cibles',
   'monitor.priceCapBadge': 'Plafond : {price}/mois (HT)',
   'monitor.autoOrderQtyBadge': 'Commande auto ×{qty}',
+
+  // Login & 3-Column Fixed Server Catalog Cards + Configuration Modal (v1.3.3)
+  'auth.usernameLabel': 'Nom d\'utilisateur',
+  'auth.passwordLabel': 'Clé d\'accès',
+  'auth.usernamePlaceholder': 'Nom d\'utilisateur (par défaut : Nexus)',
+  'catalog.configureAndOrder': 'Configurer & Commander',
+  'catalog.configCount': '{count} configs',
+  'catalog.multiOptionBadge': '{count} options',
+  'catalog.quickOrderNow': 'Commander',
+  'catalog.quickOrdering': 'Commande...',
+  'catalog.modalTitle': 'Choisir la configuration & commander',
+  'catalog.specCpu': 'Processeur / CPU',
+  'catalog.specRam': 'Mémoire / RAM',
+  'catalog.specStorage': 'Stockage',
+  'catalog.specBandwidth': 'Bande passante',
+  'catalog.dcSelectionTitle': 'Datacenters cibles (pour file d\'attente ou commande directe)',
+  'catalog.selectAllInStockDcs': 'Sélectionner les DC en stock',
+  'catalog.clearSelectedDcs': 'Effacer',
+  'catalog.selectedConfigSummary': 'Configuration sélectionnée',
+  'catalog.monitorThisConfig': 'Surveiller cette config',
+  'catalog.addToQueueBtn': 'Ajouter à la file',
+  'catalog.allOutOfStock': 'Rupture totale',
 };
 
 export default frV132Translations;

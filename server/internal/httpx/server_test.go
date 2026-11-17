@@ -203,7 +203,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 		t.Fatalf("read gunzipped /api/health: %v", err)
 	}
 	healthMap := decodeMap(t, healthBytes)
-	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.2" {
+	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.3" {
 		t.Fatalf("unexpected health payload: %+v", healthMap)
 	}
 
@@ -242,6 +242,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 
 	// 4. Login and verify forbidden legacy routes and unknown /api/* return 404 JSON
 	code, _, _ = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 	}, nil)
 	if code != http.StatusOK {
@@ -333,6 +334,7 @@ func TestE2EAuth2FAStrictSudoRecoveryAndEncryptionAtRest(t *testing.T) {
 
 	// 1. Login -> session cookie
 	code, _, body := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": "wrong-password",
 	}, nil)
 	if code != http.StatusUnauthorized {
@@ -340,6 +342,7 @@ func TestE2EAuth2FAStrictSudoRecoveryAndEncryptionAtRest(t *testing.T) {
 	}
 
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 	}, nil)
 	if code != http.StatusOK || decodeMap(t, body)["authenticated"] != true {
@@ -571,6 +574,7 @@ func TestE2EAuth2FAStrictSudoRecoveryAndEncryptionAtRest(t *testing.T) {
 		t.Fatalf("logout failed: %d", code)
 	}
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 	}, nil)
 	if code != http.StatusOK || decodeMap(t, body)["requireTotp"] != true {
@@ -578,6 +582,7 @@ func TestE2EAuth2FAStrictSudoRecoveryAndEncryptionAtRest(t *testing.T) {
 	}
 
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 		"totpCode": recoveryCode0,
 	}, nil)
@@ -596,6 +601,7 @@ func TestE2EAuth2FAStrictSudoRecoveryAndEncryptionAtRest(t *testing.T) {
 	// Reusing the consumed recovery code must be rejected.
 	_, _, _ = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/logout", nil, nil)
 	code, _, _ = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 		"totpCode": recoveryCode0,
 	}, nil)
@@ -616,6 +622,7 @@ func TestE2ELogsSSEAndExportAndDeadlines(t *testing.T) {
 
 	client := newCookieClient(t)
 	code, _, _ := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 	}, nil)
 	if code != http.StatusOK {
@@ -937,6 +944,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 
 	// 1. Login to WebUI
 	code, _, _ := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{
+		"username": "Nexus",
 		"password": testSecretKey,
 	}, nil)
 	if code != http.StatusOK {
@@ -1021,7 +1029,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"Authorization": "Bearer " + mcpToken,
 	}
 
-	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.2"
+	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.3"
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1035,7 +1043,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}
 	initRes := decodeMap(t, body)["result"].(map[string]any)
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.2" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.3" {
 		t.Fatalf("unexpected MCP serverInfo: %+v", srvInfo)
 	}
 
@@ -1490,7 +1498,7 @@ func TestE2EV132AnnouncedModelsListedAtAndSKUChanges(t *testing.T) {
 	client := newCookieClient(t)
 
 	// Login + enable 2FA + enable MCP
-	code, _, _ := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{"password": testSecretKey}, nil)
+	code, _, _ := doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/auth/login", map[string]any{"username": "Nexus", "password": testSecretKey}, nil)
 	if code != http.StatusOK {
 		t.Fatalf("login failed: %d", code)
 	}

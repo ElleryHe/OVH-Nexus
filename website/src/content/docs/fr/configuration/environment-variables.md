@@ -11,6 +11,7 @@ OVH Nexus se configure au démarrage du conteneur via les variables d'environnem
 | :--- | :---: | :--- | :--- |
 | `API_SECRET_KEY` | **Oui** | *(aucun)* | Mot de passe de connexion WebUI et clé API locale (loopback). Doit comporter **au moins 12 caractères** et ne correspondre à aucun exemple faible connu. |
 | `DATA_ENCRYPTION_KEY` | **Oui** | *(aucun)* | Clé maîtresse indépendante de chiffrement au repos `HKDF-SHA256` + `AES-256-GCM` pour les secrets dans `/data/nexus.db` (`appKey`, `appSecret`, `consumerKey`, jetons Telegram, mots de passe SMTP, graines TOTP). Doit comporter **au moins 16 caractères** et être **différente de `API_SECRET_KEY`**. |
+| `ADMIN_USERNAME` | Non | `Nexus` | Nom d'utilisateur de connexion à la console pour la saisie automatique (`username` + `current-password`) par les navigateurs et gestionnaires de mots de passe (1Password, Bitwarden, Mots de passe Apple). Vérifié en temps constant avec `API_SECRET_KEY`, strictement **sensible à la casse** (alias pris en charge : `NEXUS_USERNAME`). |
 | `PORT` | Non | `8080` | Port d'écoute TCP du serveur HTTP Go dans le conteneur (mappé sur `20000:8080` dans `docker-compose.yml`). |
 | `DATA_DIR` | Non | `/data` | Répertoire hébergeant la base SQLite WAL (`nexus.db`, répertoire `0700`, fichier `0600`). |
 | `TZ` | Non | `UTC` | Fuseau horaire IANA appliqué via `time.LoadLocation` aux tâches planifiées et aux horodatages des notifications (ex. `UTC`, `Europe/Paris`, `Asia/Shanghai`). |

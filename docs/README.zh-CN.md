@@ -55,6 +55,9 @@ API_SECRET_KEY=$(openssl rand -hex 24)
 # 必填：独立的静态数据加密主密钥（AES-256-GCM 落盘加密，至少 16 位字符，且不得与 API_SECRET_KEY 相同）
 DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
+# 可选：Web 控制台登录用户名，兼容浏览器与密码管理器自动填充（默认 Nexus，严格区分大小写）
+ADMIN_USERNAME=Nexus
+
 # 可选：若通过 HTTPS 反向代理访问请设为 true
 COOKIE_SECURE=false
 
@@ -90,6 +93,7 @@ services:
     environment:
       - API_SECRET_KEY=${API_SECRET_KEY:?请在 .env 中设置至少 12 位的强口令 API_SECRET_KEY}
       - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?请在 .env 中设置至少 16 位的独立加密密钥 DATA_ENCRYPTION_KEY}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-Nexus}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-zh-CN}
       - TZ=${TZ:-UTC}
@@ -108,7 +112,7 @@ services:
 docker compose up -d
 ```
 
-浏览器访问 `http://localhost:20000`，输入 `.env` 中生成的 `API_SECRET_KEY`（可通过 `grep API_SECRET_KEY .env` 查看）即可登录控制台。
+浏览器访问 `http://localhost:20000`，输入登录用户名 `Nexus`（或自定义的 `ADMIN_USERNAME`，严格区分大小写）以及 `.env` 中生成的 `API_SECRET_KEY`（可通过 `grep API_SECRET_KEY .env` 查看）即可登录控制台。
 
 ---
 

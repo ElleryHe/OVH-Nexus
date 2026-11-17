@@ -9,6 +9,22 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.3.3] - 2026-11-17
+
+### Added
+- **Password Manager-Compatible Console Login (`ADMIN_USERNAME`)**:
+  - Added the `ADMIN_USERNAME` environment variable (compatible alias `NEXUS_USERNAME`, default `Nexus`, strictly case-sensitive and verified in constant time alongside `API_SECRET_KEY`) and upgraded the WebUI login gate to a standard `<form autoComplete="on">` with `username` (`autoComplete="username"`) and `password` (`autoComplete="current-password"`) fields for seamless browser and password manager (1Password, Bitwarden, Apple Passwords) auto-fill.
+- **Dedicated Server Configuration & Ordering Modal (`/servers`)**:
+  - Added a dedicated **Server Configuration & Ordering Modal** in the Server Catalog for inspecting merged default and optional hardware configurations (`标配` / `Default` badge), ex-VAT monthly pricing, datacenter stock filters (**Show all inventory (including out-of-stock)** toggle), collapsible **Advanced Options** (Bandwidth / vRack), and one-click actions for **Quick Monitor**, **Add to Queue**, and **Direct Order**.
+
+### Changed
+- **3-Column Fixed-Height Modular Server Catalog Grid (`/servers`)**:
+  - Redesigned the Server Catalog into a 3-column fixed-height card grid (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`) featuring a 4-tier uniform layout: 2-line model/pricing & badge header, a 2×2 modular hardware specification grid (**CPU**, **Memory**, **Storage**, **Bandwidth** with full hover tooltips), a dedicated fixed-height datacenter availability row, and a fixed bottom action bar.
+- **Unified Liquid Glass "N" Brand Identity & Social Assets**:
+  - Unified the brand logo, site icons (`favicon.svg`, `favicon.ico`, `apple-touch-icon.png`), and OpenGraph social preview banner (`og-image.jpg`) across the WebUI and documentation portal to the new translucent blue Liquid Glass "N" design.
+
+---
+
 ## [1.3.2] - 2026-11-17
 
 ### Added

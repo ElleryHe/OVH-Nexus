@@ -3,11 +3,29 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.3.2]
+:::note[Dernière version : v1.3.3]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.3.3] - 2026-11-17 — Connexion Compatible Gestionnaire de Mots de Passe (`ADMIN_USERNAME`), Grille Modulaire 3 Colonnes & Fenêtre de Configuration
+
+### Ajouté (Added)
+
+- **Connexion Console Compatible avec les Gestionnaires de Mots de Passe (`ADMIN_USERNAME`)** :
+  - Ajout de la variable d'environnement `ADMIN_USERNAME` (alias compatible `NEXUS_USERNAME`, par défaut `Nexus`, strictement sensible à la casse et vérifiée en temps constant avec `API_SECRET_KEY`) et des champs standards `username` + `current-password` (`autoComplete="on"`) sur le formulaire de connexion pour la saisie automatique par les navigateurs et gestionnaires de mots de passe (1Password, Bitwarden, Mots de passe Apple).
+- **Fenêtre Dédiée de Configuration & Commande de Serveur (`/servers`)** :
+  - Ajout d'une **Fenêtre de Configuration & Commande de Serveur** dans le Catalogue Serveurs permettant d'inspecter les configurations matérielles (badge `Par défaut`), la tarification mensuelle HT, la disponibilité par datacenter (option **Afficher tout l'inventaire (y compris hors stock)**), les **Options avancées** repliables (Bande passante / vRack), la surveillance rapide, l'ajout à la file d'attente et la commande directe.
+
+### Modifié (Changed)
+
+- **Grille Modulaire 3 Colonnes à Hauteur Fixe dans le Catalogue Serveurs (`/servers`)** :
+  - Refonte du Catalogue Serveurs en une grille de 3 colonnes à hauteur fixe avec disposition modulaire 2×2 des spécifications matérielles (**CPU**, **Mémoire**, **Stockage**, **Bande passante**), ligne dédiée à la disponibilité des datacenters et alignement uniforme des cartes.
+- **Identité Visuelle « N » Liquid Glass & Icônes Unifiées** :
+  - Unification du logo, des icônes de site (`favicon.svg`, `favicon.ico`, `apple-touch-icon.png`) et de la bannière d'aperçu social OpenGraph avec le nouveau design « N » bleu translucide Liquid Glass.
+
+---
 
 ## [1.3.2] - 2026-11-17 — État SKU Annoncé & Remplacé, Surveillance Multi-Cibles par Configuration & Interface Compacte
 

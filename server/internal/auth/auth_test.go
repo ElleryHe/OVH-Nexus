@@ -193,20 +193,29 @@ func TestAuthLoginRateLimitAndTrustedProxy(t *testing.T) {
 
 	// Untrusted peer cannot spoof X-Forwarded-For to evade rate limiting
 	for i := range LoginMaxAttempts {
-		rec := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"password": "wrong-password"},
+		rec := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": "wrong-password"},
 			nil, map[string]string{"X-Forwarded-For": "203.0.113." + string(rune('1'+i))}, "198.51.100.77:5555")
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("attempt %d expected 401, got %d", i+1, rec.Code)
 		}
 	}
-	recLimited := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"password": "wrong-password"},
+	recLimited := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": "wrong-password"},
 		nil, map[string]string{"X-Forwarded-For": "203.0.113.99"}, "198.51.100.77:5555")
 	if recLimited.Code != http.StatusTooManyRequests || recLimited.Header().Get("Retry-After") == "" {
 		t.Fatalf("expected 429 rate limited for untrusted peer spoofing XFF, got %d", recLimited.Code)
 	}
 
+	// Wrong or case-mismatched username must fail with 401 INVALID_CREDENTIALS even when password is valid
+	for _, badUser := range []string{"", "nexus", "NEXUS", "admin"} {
+		recBadUser := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": badUser, "password": cfg.APISecretKey},
+			nil, map[string]string{"X-Forwarded-For": "203.0.113.210"}, "127.0.0.1:4444")
+		if recBadUser.Code != http.StatusUnauthorized || !strings.Contains(recBadUser.Body.String(), "INVALID_CREDENTIALS") {
+			t.Fatalf("expected 401 INVALID_CREDENTIALS for username %q, got %d body=%s", badUser, recBadUser.Code, recBadUser.Body.String())
+		}
+	}
+
 	// Trusted proxy peer extracts distinct client IP from XFF
-	recTrusted := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"password": cfg.APISecretKey},
+	recTrusted := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey},
 		nil, map[string]string{"X-Forwarded-For": "203.0.113.200"}, "127.0.0.1:4444")
 	if recTrusted.Code != http.StatusOK {
 		t.Fatalf("expected 200 login via trusted proxy, got %d body=%s", recTrusted.Code, recTrusted.Body.String())
@@ -248,7 +257,7 @@ func TestTOTPEnrollmentAntiReplayRecoveryAndGatekeeper(t *testing.T) {
 	router := buildTestRouter(svc)
 
 	// Log in before 2FA is enabled
-	recLogin := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"password": cfg.APISecretKey}, nil, nil, "")
+	recLogin := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
 	if recLogin.Code != http.StatusOK {
 		t.Fatalf("login failed: %d", recLogin.Code)
 	}
@@ -371,14 +380,14 @@ func TestTOTPEnrollmentAntiReplayRecoveryAndGatekeeper(t *testing.T) {
 	}
 
 	// Login requires TOTP prompt when enabled
-	recPassOnly := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"password": cfg.APISecretKey}, nil, nil, "")
+	recPassOnly := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
 	if recPassOnly.Code != http.StatusOK || !strings.Contains(recPassOnly.Body.String(), `"requireTotp":true`) {
 		t.Fatalf("expected requireTotp prompt on password-only login, got %d body=%s", recPassOnly.Code, recPassOnly.Body.String())
 	}
 
 	// Login with regenerated recovery code succeeds and consumes it (8 -> 7)
 	recLoginWithRec := doJSONReq(t, router, http.MethodPost, "/api/auth/login",
-		map[string]string{"password": cfg.APISecretKey, "totpCode": regenResp.RecoveryCodes[0]}, nil, nil, "")
+		map[string]string{"username": "Nexus", "password": cfg.APISecretKey, "totpCode": regenResp.RecoveryCodes[0]}, nil, nil, "")
 	if recLoginWithRec.Code != http.StatusOK || !strings.Contains(recLoginWithRec.Body.String(), `"authenticated":true`) {
 		t.Fatalf("expected login with recovery code to succeed, got %d body=%s", recLoginWithRec.Code, recLoginWithRec.Body.String())
 	}

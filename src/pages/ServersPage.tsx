@@ -15,6 +15,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   Cpu,
+  HardDrive,
+  Database,
   Wifi,
   Settings,
   ArrowRightLeft,
@@ -24,10 +26,11 @@ import {
   List,
   Check,
   Sparkles,
-  ChevronDown,
-  ChevronUp,
   ShoppingCart,
   RefreshCw,
+  SlidersHorizontal,
+  X,
+  Zap,
 } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useLocale } from '@/context/LocaleContext';
@@ -246,10 +249,11 @@ const ServersPage = () => {
     Record<string, Record<string, string>>
   >({});
 
-  // Collapsed by default! expandedCards: planCode -> boolean
-  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>(
-    {}
+  // Focused Configuration & Order Modal server
+  const [configModalServer, setConfigModalServer] = useState<ServerPlan | null>(
+    null
   );
+  const [isQuickOrdering, setIsQuickOrdering] = useState(false);
   // Per-card "Show all inventory (including out-of-stock)" toggle: default false
   const [showAllInventoryMap, setShowAllInventoryMap] = useState<
     Record<string, boolean>
@@ -813,16 +817,21 @@ const ServersPage = () => {
     []
   );
 
-  const toggleExpandCard = (server: ServerPlan) => {
-    const nextExpanded = !expandedCards[server.planCode];
-    setExpandedCards((prev) => ({
-      ...prev,
-      [server.planCode]: nextExpanded,
-    }));
-    if (nextExpanded) {
-      fetchPlanConfigsForCard(server.planCode);
-    }
+  const openConfigModal = (server: ServerPlan) => {
+    setConfigModalServer(server);
+    fetchPlanConfigsForCard(server.planCode);
   };
+
+  useEffect(() => {
+    if (!configModalServer) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !quickMonitorTarget && !pendingQueueTarget) {
+        setConfigModalServer(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [configModalServer, quickMonitorTarget, pendingQueueTarget]);
 
   const toggleDcForServer = (planCode: string, dcCode: string) => {
     const norm = normalizeDatacenterCode(dcCode);
@@ -920,10 +929,10 @@ const ServersPage = () => {
       userSelectedDcs.length > 0 ? userSelectedDcs : inStockDcs;
 
     if (effectiveDcs.length === 0) {
-      setExpandedCards((prev) => ({ ...prev, [server.planCode]: true }));
+      setConfigModalServer(server);
       setShowAllInventoryMap((prev) => ({ ...prev, [server.planCode]: true }));
       fetchPlanConfigsForCard(server.planCode);
-      toast.info('请在展开卡片中选择目标机房后再加入抢购队列');
+      toast.info('请在配置弹窗中选择目标机房后再加入抢购队列');
       return;
     }
 
@@ -935,6 +944,84 @@ const ServersPage = () => {
       selectedConfig: activeConfig,
       extraOptions: selectedAddonOptionsMap[server.planCode] || [],
     });
+  };
+
+  const quickOrderFromModal = async (server: ServerPlan) => {
+    if (!isAuthenticated) {
+      toast.error('请先配置 API 设置');
+      return;
+    }
+
+    const unifiedConfigs = buildUnifiedConfigsForServer(server);
+    const defaultCfg =
+      unifiedConfigs.find((c) => c.isDefault) || unifiedConfigs[0] || null;
+    const activeCfgKey =
+      selectedConfigKeyMap[server.planCode] || defaultCfg?.configKey || '';
+    const activeCfg =
+      unifiedConfigs.find((c) => c.configKey === activeCfgKey) || defaultCfg;
+
+    const allInStockDcSet = new Set<string>();
+    unifiedConfigs.forEach((c) => {
+      c.inStockDcs.forEach((dc) => allInStockDcSet.add(dc));
+    });
+    (server.datacenters || []).forEach((d) => {
+      if (isAvailStatus(d.availability)) {
+        const norm = normalizeDatacenterCode(d.datacenter);
+        if (norm) allInStockDcSet.add(norm);
+      }
+    });
+    const allInStockDcs = Array.from(allInStockDcSet);
+
+    const cfgInStockDcs =
+      activeCfg && activeCfg.inStockDcs.length > 0
+        ? activeCfg.inStockDcs
+        : allInStockDcs;
+    const userSelectedDcs = selectedDcsMap[server.planCode] || [];
+    const selectedInStock = userSelectedDcs.filter((d) =>
+      cfgInStockDcs.includes(d)
+    );
+    const targetDc =
+      selectedInStock[0] || cfgInStockDcs[0] || userSelectedDcs[0] || '';
+
+    if (!targetDc) {
+      toast.error('请先选择至少一个可用机房');
+      return;
+    }
+
+    const configOpts =
+      activeCfg && activeCfg.options.length > 0
+        ? activeCfg.options
+        : (server.defaultOptions || [])
+            .filter((o) => !isLicenseOrSoftwareOption(o))
+            .map((o) => o.value);
+    const extraOptions = selectedAddonOptionsMap[server.planCode] || [];
+    const mergedOptions = Array.from(new Set([...configOpts, ...extraOptions]));
+    const apiDc = convertDisplayDcToApiDc(targetDc);
+
+    setIsQuickOrdering(true);
+    try {
+      const res = await api.post('/orders/quick-order', {
+        planCode: server.planCode,
+        datacenter: apiDc,
+        options: mergedOptions,
+        configKey: activeCfg?.configKey || undefined,
+        configLabel: activeCfg?.label || undefined,
+        currency: activeCfg?.currency || server.currency || undefined,
+      });
+      const cfgLabel = activeCfg?.label ? ` (${activeCfg.label})` : '';
+      toast.success(
+        res.data?.message ||
+          `已提交 ${server.planCode}${cfgLabel} [${targetDc.toUpperCase()}] 快捷下单任务`
+      );
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          '快捷下单失败'
+      );
+    } finally {
+      setIsQuickOrdering(false);
+    }
   };
 
   const confirmAddToQueue = async () => {
@@ -1105,7 +1192,7 @@ const ServersPage = () => {
           服务器目录
         </h1>
         <p className="text-cyber-muted text-xs sm:text-sm">
-          紧凑卡片视图，点击卡片展开可选硬件配置（内存 + 硬盘）与实时机房库存
+          模块化固定规格卡片，点击「选择配置 / 下单」查看完整硬件配置（内存 + 硬盘）、实时库存并一键下单
         </p>
       </div>
 
@@ -1301,11 +1388,16 @@ const ServersPage = () => {
 
       {/* Loading State */}
       {isLoading && !hasLoadedFromCache.current ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {[...Array(8)].map((_, i) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-stretch">
+          {[...Array(6)].map((_, i) => (
             <Card key={i} className="animate-pulse border-cyber-accent/30 p-4">
               <div className="h-5 bg-cyber-grid/30 rounded w-1/2 mb-3"></div>
-              <div className="h-4 bg-cyber-grid/20 rounded w-3/4 mb-2"></div>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+                <div className="h-12 bg-cyber-grid/20 rounded"></div>
+              </div>
               <div className="h-4 bg-cyber-grid/20 rounded w-2/3"></div>
             </Card>
           ))}
@@ -1330,7 +1422,7 @@ const ServersPage = () => {
         <div
           className={
             viewMode === 'grid'
-              ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 items-start'
+              ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-stretch'
               : 'space-y-3'
           }
         >
@@ -1349,10 +1441,6 @@ const ServersPage = () => {
                     Date.now() - Date.parse(server.listedAt) <=
                       7 * 24 * 3600 * 1000))
             );
-            const isExpanded = Boolean(expandedCards[server.planCode]);
-            const showAllInventory = Boolean(
-              showAllInventoryMap[server.planCode]
-            );
 
             const unifiedConfigs = buildUnifiedConfigsForServer(server);
             const defaultCfg =
@@ -1365,7 +1453,7 @@ const ServersPage = () => {
               unifiedConfigs.find((c) => c.configKey === activeCfgKey) ||
               defaultCfg;
 
-            // Aggregate all in-stock DCs across configs for the collapsed badge preview
+            // Aggregate all in-stock DCs across configs for the card badge row
             const allInStockDcSet = new Set<string>();
             unifiedConfigs.forEach((c) => {
               c.inStockDcs.forEach((dc) => allInStockDcSet.add(dc));
@@ -1377,13 +1465,6 @@ const ServersPage = () => {
               }
             });
             const allInStockDcs = Array.from(allInStockDcSet);
-            const hasAnyStock = allInStockDcs.length > 0;
-
-            // Configs visible in the expanded list (in-stock only by default unless showAllInventory or 0 stock)
-            const visibleConfigs =
-              showAllInventory || !hasAnyStock
-                ? unifiedConfigs
-                : unifiedConfigs.filter((c) => c.inStockDcs.length > 0);
 
             const startingPrice =
               typeof server.startingPrice === 'number' &&
@@ -1398,550 +1479,961 @@ const ServersPage = () => {
               activeCfg?.currency || server.currency
             );
 
-            // 1-line default spec summary: RAM · Storage · Bandwidth
+            const cpuShort = formatServerSpec(server.cpu, 'CPU');
             const ramShort = formatServerSpec(server.memory, '内存');
             const stoShort = formatServerSpec(server.storage, '存储');
             const bwShort = formatServerSpec(server.bandwidth, '带宽');
-            const oneLineSpecSummary = [ramShort, stoShort, bwShort]
-              .filter((s) => s && s !== '暂无数据')
-              .join(' · ');
-
             const selectedDcsForCard = selectedDcsMap[server.planCode] || [];
-            const advOptions = getAdvancedOptionsForServer(server);
-            const hasAdvOptions =
-              advOptions.bandwidth.length > 0 || advOptions.vrack.length > 0;
-            const selectedAdvOpts =
-              selectedAddonOptionsMap[server.planCode] || [];
 
             return (
               <Card
                 key={server.planCode}
-                className={`overflow-hidden transition-all ${
-                  isExpanded && viewMode === 'grid'
-                    ? 'md:col-span-2 xl:col-span-2 ring-1 ring-cyber-accent/50'
-                    : ''
-                } ${
+                className={`h-full flex flex-col justify-between overflow-hidden transition-all ${
                   isPresale
-                    ? 'border-purple-500/40'
+                    ? 'border-purple-500/40 hover:border-purple-500/60'
                     : isAnnounced
-                    ? 'border-amber-500/40'
-                    : 'border-cyber-accent/30 hover:border-cyber-accent/50'
+                    ? 'border-amber-500/40 hover:border-amber-500/60'
+                    : 'border-cyber-accent/30 hover:border-cyber-accent/55'
                 }`}
               >
-                <div className="p-3.5 space-y-2.5">
-                  {/* Top Row: Model Name, planCode, Status Badge & Starting Price */}
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
+                <div className="p-4 h-full flex flex-col justify-between gap-3">
+                  {/* Zone 1: Header & Badges (Fixed 2-Row Structure) */}
+                  <div className="space-y-1.5">
+                    {/* Row 1: Model Name + planCode badge on Left, Starting Monthly Price on Right */}
+                    <div className="flex items-center justify-between gap-2 h-6">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
                         <span
                           className="font-bold text-sm text-cyber-accent truncate"
                           title={server.name}
                         >
                           {server.name}
                         </span>
-                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-cyber-grid/40 text-cyber-muted">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-cyber-grid/40 text-cyber-muted flex-shrink-0">
                           {server.planCode}
                         </span>
-                        {isAnnounced && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
-                            {t('announced.badge')}
-                          </span>
-                        )}
-                        {isPresale && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
-                            {t('presale.badge')}
-                          </span>
-                        )}
-                        {!isPresale && !isAnnounced && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                            {t('listed.badge')}
-                          </span>
-                        )}
-                        {generation && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
-                            {t('presale.generation', { year: generation })}
-                          </span>
-                        )}
-                        {isRecentlyAdded && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                            {t('sku.newListed')}
-                          </span>
-                        )}
-                        {subscribedServers.has(server.planCode) && (
+                      </div>
+
+                      <div className="flex-shrink-0 text-right">
+                        {isPresale ? (
                           <span
-                            className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1"
-                            title="已订阅监控"
+                            title={t('presale.notOrderableHint')}
+                            className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30 whitespace-nowrap"
                           >
-                            <Bell size={10} />
+                            {t('presale.pricingTbd')}
+                          </span>
+                        ) : startingPrice !== null && startingPrice > 0 ? (
+                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
+                            {t('catalog.fromPrice', {
+                              price: `${symbol}${startingPrice.toFixed(2)}`,
+                            })}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-cyber-grid/30 text-cyber-muted border border-cyber-grid whitespace-nowrap">
+                            {t('presale.pricingTbd')}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Starting Monthly Price */}
-                    <div className="flex-shrink-0 text-right">
-                      {isPresale ? (
+                    {/* Row 2: Status + Generation + Newly Listed + Subscribed Badges */}
+                    <div className="flex items-center gap-1.5 h-6 overflow-hidden">
+                      {isAnnounced && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 flex-shrink-0">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          {t('announced.badge')}
+                        </span>
+                      )}
+                      {isPresale && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1 flex-shrink-0">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          {t('presale.badge')}
+                        </span>
+                      )}
+                      {!isPresale && !isAnnounced && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 flex-shrink-0">
+                          {t('listed.badge')}
+                        </span>
+                      )}
+                      {generation && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex-shrink-0">
+                          {t('presale.generation', { year: generation })}
+                        </span>
+                      )}
+                      {isRecentlyAdded && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex-shrink-0">
+                          {t('sku.newListed')}
+                        </span>
+                      )}
+                      {subscribedServers.has(server.planCode) && (
                         <span
-                          title={t('presale.notOrderableHint')}
-                          className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30 whitespace-nowrap"
+                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 flex-shrink-0"
+                          title="已订阅监控"
                         >
-                          {t('presale.pricingTbd')}
+                          <Bell size={10} />
                         </span>
-                      ) : startingPrice !== null && startingPrice > 0 ? (
-                        <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
-                          {t('catalog.fromPrice', {
-                            price: `${symbol}${startingPrice.toFixed(2)}`,
-                          })}
-                        </span>
-                      ) : null}
+                      )}
                     </div>
                   </div>
 
-                  {/* CPU & 1-Line Default Spec Summary */}
-                  <div className="space-y-1 text-xs">
-                    <div className="flex items-center gap-1.5 text-cyber-text font-medium truncate">
-                      <Cpu
-                        size={13}
-                        className="text-cyber-accent flex-shrink-0"
-                      />
-                      <span
-                        className="truncate"
-                        title={formatServerSpec(server.cpu, 'CPU')}
-                      >
-                        {formatServerSpec(server.cpu, 'CPU')}
-                      </span>
-                    </div>
+                  {/* Zone 2: 2x2 Modular Hardware Spec Grid */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* 1. CPU */}
                     <div
-                      className="text-[11px] text-cyber-muted truncate pl-5"
-                      title={oneLineSpecSummary}
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={cpuShort}
                     >
-                      {oneLineSpecSummary}
+                      <div className="flex items-center gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <Cpu
+                          size={11}
+                          className="text-cyber-accent flex-shrink-0"
+                        />
+                        <span className="truncate">{t('catalog.specCpu')}</span>
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {cpuShort}
+                      </div>
+                    </div>
+
+                    {/* 2. RAM */}
+                    <div
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={ramShort}
+                    >
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <span className="flex items-center gap-1 min-w-0 truncate">
+                          <Database
+                            size={11}
+                            className="text-cyber-accent flex-shrink-0"
+                          />
+                          <span className="truncate">
+                            {t('catalog.specRam')}
+                          </span>
+                        </span>
+                        {unifiedConfigs.length > 1 && (
+                          <span className="px-1 py-0.2 rounded bg-cyber-accent/15 text-cyber-accent text-[9px] font-semibold flex-shrink-0">
+                            {t('catalog.multiOptionBadge', {
+                              count: unifiedConfigs.length,
+                            })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {ramShort}
+                      </div>
+                    </div>
+
+                    {/* 3. Storage */}
+                    <div
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={stoShort}
+                    >
+                      <div className="flex items-center gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <HardDrive
+                          size={11}
+                          className="text-cyber-accent flex-shrink-0"
+                        />
+                        <span className="truncate">
+                          {t('catalog.specStorage')}
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {stoShort}
+                      </div>
+                    </div>
+
+                    {/* 4. Bandwidth */}
+                    <div
+                      className="bg-cyber-bg/60 border border-cyber-grid/50 rounded-lg px-2.5 py-2 flex flex-col justify-center min-h-[54px]"
+                      title={bwShort}
+                    >
+                      <div className="flex items-center gap-1 text-[10px] text-cyber-muted mb-0.5">
+                        <Wifi
+                          size={11}
+                          className="text-cyber-accent flex-shrink-0"
+                        />
+                        <span className="truncate">
+                          {t('catalog.specBandwidth')}
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-cyber-text truncate">
+                        {bwShort}
+                      </div>
                     </div>
                   </div>
 
-                  {/* Compact In-Stock DC Badges Row */}
-                  <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-cyber-grid/30">
-                    <div className="flex flex-wrap items-center gap-1 min-w-0">
+                  {/* Zone 3: Dedicated Datacenter Availability Row */}
+                  <div className="min-h-[30px] flex items-center justify-between gap-2 px-1">
+                    <div className="flex items-center gap-1 min-w-0 overflow-hidden">
                       {isAnnounced ? (
-                        <span className="text-[11px] text-amber-300/90">
+                        <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[10px] font-medium truncate">
                           {t('announced.badge')}
                         </span>
                       ) : allInStockDcs.length > 0 ? (
                         <>
-                          {allInStockDcs.slice(0, 4).map((dc) => (
+                          {allInStockDcs.slice(0, 5).map((dc) => (
                             <span
                               key={dc}
-                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold"
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold flex-shrink-0"
                             >
                               <DCLabel code={dc} mode="compact" />
                             </span>
                           ))}
-                          {allInStockDcs.length > 4 && (
-                            <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono">
-                              +{allInStockDcs.length - 4}
+                          {allInStockDcs.length > 5 && (
+                            <span className="px-1.5 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
+                              +{allInStockDcs.length - 5}
                             </span>
                           )}
                         </>
                       ) : (
-                        <span className="px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400/80 text-[10px]">
-                          {t('catalog.outOfStockBadge')}
+                        <span className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400/80 text-[10px] font-medium flex-shrink-0">
+                          {t('catalog.allOutOfStock')}
                         </span>
                       )}
                     </div>
 
-                    {/* Quick Action Buttons + Expand Toggle */}
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setQuickMonitorTarget({
-                            server,
-                            initialConfig: activeCfg
-                              ? {
-                                  configKey: activeCfg.configKey,
-                                  options: activeCfg.options,
-                                  label: activeCfg.label,
-                                  estimatedMonthlyPrice:
-                                    activeCfg.estimatedMonthlyPrice ??
-                                    undefined,
-                                  currency: activeCfg.currency,
-                                  memory: activeCfg.memory,
-                                  storage: activeCfg.storage,
-                                }
-                              : null,
-                            initialConfigs: unifiedConfigs.map((c) => ({
-                              configKey: c.configKey,
-                              label: c.label,
-                              memory: c.memory,
-                              storage: c.storage,
-                              options: c.options,
-                              isDefault: c.isDefault,
-                              estimatedMonthlyPrice:
-                                c.estimatedMonthlyPrice ?? undefined,
-                              currency: c.currency,
-                              datacenters: c.dcStatuses,
-                              inStockCount: c.inStockDcs.length,
-                            })),
-                            initialSelectedDcs: selectedDcsForCard,
-                          })
-                        }
-                        disabled={!isAuthenticated}
-                        className="px-2 py-1 rounded bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-[11px] font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors"
-                        title={t('quickMonitor.button')}
-                      >
-                        <Bell size={11} />
-                        <span>{t('quickMonitor.button')}</span>
-                      </button>
-
-                      {!isPresale && !isAnnounced && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleOpenAddToQueue(
-                              server,
-                              activeCfg,
-                              activeCfg?.inStockDcs || allInStockDcs
-                            )
-                          }
-                          disabled={!isAuthenticated}
-                          className="px-2 py-1 rounded bg-cyber-accent/20 hover:bg-cyber-accent/30 text-cyber-accent border border-cyber-accent/40 text-[11px] font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors"
-                        >
-                          <ShoppingCart size={11} />
-                          <span>{t('catalog.addToQueue')}</span>
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => toggleExpandCard(server)}
-                        className="px-2 py-1 rounded bg-cyber-grid/30 hover:bg-cyber-grid/50 text-cyber-text border border-cyber-grid text-[11px] font-medium flex items-center gap-1 transition-colors"
-                      >
-                        <span>
-                          {isExpanded
-                            ? t('catalog.collapseCard')
-                            : t('catalog.expandCard')}
-                        </span>
-                        {isExpanded ? (
-                          <ChevronUp size={12} />
-                        ) : (
-                          <ChevronDown size={12} />
-                        )}
-                      </button>
-                    </div>
+                    <span className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
+                      {t('catalog.configCount', {
+                        count: unifiedConfigs.length,
+                      })}
+                    </span>
                   </div>
 
-                  {/* Expanded Panel: Unified Selectable Configuration List + In-Stock Filter + Advanced Options */}
-                  {isExpanded && (
-                    <div className="pt-3 mt-2 border-t border-cyber-accent/30 space-y-3">
-                      {/* Header bar of expanded panel: Title, Show All Inventory toggle, Check Availability */}
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-cyber-accent">
-                            {t('catalog.unifiedConfigsTitle')}
-                          </span>
-                          <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyber-accent/15 text-cyber-accent">
-                            {visibleConfigs.length}/{unifiedConfigs.length}
-                          </span>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <label className="flex items-center gap-1.5 text-[11px] text-cyber-muted hover:text-cyber-text cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={showAllInventory}
-                              onChange={(e) =>
-                                setShowAllInventoryMap((prev) => ({
-                                  ...prev,
-                                  [server.planCode]: e.target.checked,
-                                }))
+                  {/* Zone 4: Dedicated Bottom Action Footer */}
+                  <div className="pt-2.5 border-t border-cyber-grid/40 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQuickMonitorTarget({
+                          server,
+                          initialConfig: activeCfg
+                            ? {
+                                configKey: activeCfg.configKey,
+                                options: activeCfg.options,
+                                label: activeCfg.label,
+                                estimatedMonthlyPrice:
+                                  activeCfg.estimatedMonthlyPrice ?? undefined,
+                                currency: activeCfg.currency,
+                                memory: activeCfg.memory,
+                                storage: activeCfg.storage,
                               }
-                              className="h-3.5 w-3.5 accent-cyber-accent"
-                            />
-                            <span>{t('catalog.showAllInventory')}</span>
-                          </label>
+                            : null,
+                          initialConfigs: unifiedConfigs.map((c) => ({
+                            configKey: c.configKey,
+                            label: c.label,
+                            memory: c.memory,
+                            storage: c.storage,
+                            options: c.options,
+                            isDefault: c.isDefault,
+                            estimatedMonthlyPrice:
+                              c.estimatedMonthlyPrice ?? undefined,
+                            currency: c.currency,
+                            datacenters: c.dcStatuses,
+                            inStockCount: c.inStockDcs.length,
+                          })),
+                          initialSelectedDcs: selectedDcsForCard,
+                        })
+                      }
+                      disabled={!isAuthenticated}
+                      className="px-2.5 py-1.5 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                      title={t('quickMonitor.button')}
+                    >
+                      <Bell size={12} />
+                      <span>{t('quickMonitor.button')}</span>
+                    </button>
 
-                          <button
-                            type="button"
-                            onClick={() =>
-                              checkAvailability(server.planCode, activeCfg)
-                            }
-                            disabled={
-                              isCheckingAvailability || !isAuthenticated
-                            }
-                            className="px-2 py-0.5 rounded bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 text-[11px] font-medium flex items-center gap-1 disabled:opacity-50"
-                          >
-                            <RefreshCw
-                              size={10}
-                              className={
-                                isCheckingAvailability &&
-                                selectedServer === server.planCode
-                                  ? 'animate-spin'
-                                  : ''
-                              }
-                            />
-                            <span>实时检测</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {!hasAnyStock && !isAnnounced && (
-                        <div className="p-2 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
-                          {t('catalog.noInStockConfigsNotice')}
-                        </div>
-                      )}
-
-                      {isAnnounced && (
-                        <div className="p-2 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
-                          {t('announced.noStockFeedHint')}
-                        </div>
-                      )}
-
-                      {/* Unified Selectable Configuration List */}
-                      <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
-                        {visibleConfigs.map((cfg) => {
-                          const isSelectedCfg =
-                            activeCfg?.configKey === cfg.configKey;
-                          const cfgSymbol = getCurrencySymbol(cfg.currency);
-
-                          // Datacenter pills for this configuration:
-                          // By default show in-stock DCs only (unless showAllInventory or 0 in stock)
-                          const allCfgDcEntries = Object.entries(
-                            cfg.dcStatuses
-                          );
-                          const visibleDcEntries =
-                            showAllInventory || cfg.inStockDcs.length === 0
-                              ? allCfgDcEntries.length > 0
-                                ? allCfgDcEntries
-                                : OVH_DATACENTERS.filter((dc) => {
-                                    const low = server.planCode.toLowerCase();
-                                    if (low.includes('-sgp'))
-                                      return dc.code === 'sgp';
-                                    if (low.includes('-syd'))
-                                      return dc.code === 'syd';
-                                    if (low.includes('-mum'))
-                                      return dc.code === 'mum';
-                                    return true;
-                                  }).map(
-                                    (dc) =>
-                                      [
-                                        dc.code,
-                                        cfg.dcStatuses[dc.code] || 'unavailable',
-                                      ] as [string, string]
-                                  )
-                              : allCfgDcEntries.filter(([_, st]) =>
-                                  isAvailStatus(st)
-                                );
-
-                          return (
-                            <div
-                              key={cfg.configKey}
-                              onClick={() =>
-                                setSelectedConfigKeyMap((prev) => ({
-                                  ...prev,
-                                  [server.planCode]: cfg.configKey,
-                                }))
-                              }
-                              className={`p-2.5 rounded-lg border cursor-pointer transition-all space-y-2 ${
-                                isSelectedCfg
-                                  ? 'bg-cyber-accent/12 border-cyber-accent/60'
-                                  : 'bg-cyber-bg/40 border-cyber-grid hover:border-cyber-accent/30'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span
-                                    className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
-                                      isSelectedCfg
-                                        ? 'border-cyber-accent bg-cyber-accent text-white'
-                                        : 'border-cyber-grid bg-cyber-bg'
-                                    }`}
-                                  >
-                                    {isSelectedCfg && (
-                                      <Check size={10} strokeWidth={3} />
-                                    )}
-                                  </span>
-                                  <span className="text-xs font-semibold text-cyber-text truncate">
-                                    {cfg.label}
-                                  </span>
-                                  {cfg.isDefault && (
-                                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40 flex-shrink-0">
-                                      {t('catalog.defaultConfigBadge')}
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  {cfg.estimatedMonthlyPrice !== null &&
-                                    cfg.estimatedMonthlyPrice > 0 && (
-                                      <span className="text-xs font-bold text-emerald-400 font-mono">
-                                        {cfgSymbol}
-                                        {cfg.estimatedMonthlyPrice.toFixed(2)}
-                                        {t('availability.perMonth')}
-                                      </span>
-                                    )}
-                                </div>
-                              </div>
-
-                              {/* Datacenter Availability Pills inside the configuration item */}
-                              {visibleDcEntries.length > 0 && (
-                                <div className="flex flex-wrap items-center gap-1.5 pl-6">
-                                  {visibleDcEntries.map(([dcCode, st]) => {
-                                    const norm =
-                                      normalizeDatacenterCode(dcCode) || dcCode;
-                                    const inStock = isAvailStatus(st);
-                                    const isDcSelected =
-                                      selectedDcsForCard.includes(norm);
-
-                                    return (
-                                      <button
-                                        key={norm}
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setSelectedConfigKeyMap((prev) => ({
-                                            ...prev,
-                                            [server.planCode]: cfg.configKey,
-                                          }));
-                                          toggleDcForServer(
-                                            server.planCode,
-                                            norm
-                                          );
-                                        }}
-                                        className={`px-2 py-0.5 rounded border text-[10px] font-medium flex items-center gap-1 transition-all ${
-                                          isDcSelected
-                                            ? 'bg-cyber-accent/25 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/50'
-                                            : inStock
-                                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:border-emerald-400'
-                                            : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-500'
-                                        }`}
-                                      >
-                                        {isDcSelected && (
-                                          <Check size={9} strokeWidth={3} />
-                                        )}
-                                        <DCLabel code={norm} mode="compact" />
-                                        <span
-                                          className={
-                                            inStock
-                                              ? 'text-emerald-400 font-semibold'
-                                              : 'text-red-400/70'
-                                          }
-                                        >
-                                          {inStock
-                                            ? st
-                                            : locale === 'zh-CN'
-                                            ? '无'
-                                            : 'Out'}
-                                        </span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Collapsed <details> for Advanced Options (Bandwidth / vRack) */}
-                      {hasAdvOptions && (
-                        <details className="rounded-lg border border-cyber-grid bg-cyber-bg/30 text-xs">
-                          <summary className="px-3 py-2 cursor-pointer font-semibold text-cyber-muted hover:text-cyber-text flex items-center gap-1.5 select-none">
-                            <Settings size={12} className="text-cyber-accent" />
-                            <span>{t('catalog.advancedOptions')}</span>
-                            {selectedAdvOpts.length > 0 && (
-                              <span className="px-1.5 py-0.2 rounded-full bg-cyber-accent/20 text-cyber-accent text-[10px] font-mono">
-                                +{selectedAdvOpts.length}
-                              </span>
-                            )}
-                          </summary>
-                          <div className="p-3 pt-1 border-t border-cyber-grid/50 space-y-2.5">
-                            {advOptions.bandwidth.length > 0 && (
-                              <div>
-                                <div className="text-[11px] font-semibold text-cyber-accent mb-1 flex items-center gap-1">
-                                  <Wifi size={11} />
-                                  <span>公网带宽 / 流量</span>
-                                </div>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {advOptions.bandwidth.map((opt) => {
-                                    const sel = selectedAdvOpts.includes(
-                                      opt.value
-                                    );
-                                    return (
-                                      <button
-                                        key={opt.value}
-                                        type="button"
-                                        onClick={() =>
-                                          toggleAdvancedOptionForServer(
-                                            server,
-                                            opt.value,
-                                            'bandwidth'
-                                          )
-                                        }
-                                        className={`px-2 py-1 rounded border text-[11px] transition-colors ${
-                                          sel
-                                            ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
-                                            : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
-                                        }`}
-                                      >
-                                        {formatServerSpec(opt.value, '带宽')}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-
-                            {advOptions.vrack.length > 0 && (
-                              <div>
-                                <div className="text-[11px] font-semibold text-cyber-accent mb-1 flex items-center gap-1">
-                                  <ArrowRightLeft size={11} />
-                                  <span>vRack 内网带宽</span>
-                                </div>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {advOptions.vrack.map((opt) => {
-                                    const sel = selectedAdvOpts.includes(
-                                      opt.value
-                                    );
-                                    return (
-                                      <button
-                                        key={opt.value}
-                                        type="button"
-                                        onClick={() =>
-                                          toggleAdvancedOptionForServer(
-                                            server,
-                                            opt.value,
-                                            'vrack'
-                                          )
-                                        }
-                                        className={`px-2 py-1 rounded border text-[11px] transition-colors ${
-                                          sel
-                                            ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
-                                            : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
-                                        }`}
-                                      >
-                                        {formatServerSpec(
-                                          opt.value,
-                                          '内网带宽'
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </details>
-                      )}
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => openConfigModal(server)}
+                      className="flex-1 sm:flex-initial px-3 py-1.5 rounded-md bg-cyber-accent/20 hover:bg-cyber-accent/30 text-cyber-accent border border-cyber-accent/50 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <SlidersHorizontal size={12} />
+                      <span>{t('catalog.configureAndOrder')}</span>
+                    </button>
+                  </div>
                 </div>
               </Card>
             );
           })}
         </div>
       )}
+
+      {/* Focused Configuration & Order Modal */}
+      {(() => {
+        if (!configModalServer) return null;
+        const modalServer =
+          servers.find((s) => s.planCode === configModalServer.planCode) ||
+          configModalServer;
+        const listingState = resolveServerListingState(modalServer);
+        const isPresale = listingState === 'presale';
+        const isAnnounced = listingState === 'announced';
+        const generation = inferPlanGeneration(
+          modalServer.planCode,
+          modalServer.generation
+        );
+        const showAllInventory = Boolean(
+          showAllInventoryMap[modalServer.planCode]
+        );
+
+        const unifiedConfigs = buildUnifiedConfigsForServer(modalServer);
+        const defaultCfg =
+          unifiedConfigs.find((c) => c.isDefault) || unifiedConfigs[0] || null;
+        const activeCfgKey =
+          selectedConfigKeyMap[modalServer.planCode] ||
+          defaultCfg?.configKey ||
+          '';
+        const activeCfg =
+          unifiedConfigs.find((c) => c.configKey === activeCfgKey) ||
+          defaultCfg;
+
+        const allInStockDcSet = new Set<string>();
+        unifiedConfigs.forEach((c) => {
+          c.inStockDcs.forEach((dc) => allInStockDcSet.add(dc));
+        });
+        (modalServer.datacenters || []).forEach((d) => {
+          if (isAvailStatus(d.availability)) {
+            const norm = normalizeDatacenterCode(d.datacenter);
+            if (norm) allInStockDcSet.add(norm);
+          }
+        });
+        const allInStockDcs = Array.from(allInStockDcSet);
+        const hasAnyStock = allInStockDcs.length > 0;
+
+        const visibleConfigs =
+          showAllInventory || !hasAnyStock
+            ? unifiedConfigs
+            : unifiedConfigs.filter((c) => c.inStockDcs.length > 0);
+
+        const startingPrice =
+          typeof modalServer.startingPrice === 'number' &&
+          modalServer.startingPrice > 0
+            ? modalServer.startingPrice
+            : typeof modalServer.monthlyPrice === 'number' &&
+              modalServer.monthlyPrice > 0
+            ? modalServer.monthlyPrice
+            : defaultCfg?.estimatedMonthlyPrice ?? null;
+
+        const symbol = getCurrencySymbol(
+          activeCfg?.currency || modalServer.currency
+        );
+
+        const selectedDcsForModal =
+          selectedDcsMap[modalServer.planCode] || [];
+        const advOptions = getAdvancedOptionsForServer(modalServer);
+        const hasAdvOptions =
+          advOptions.bandwidth.length > 0 || advOptions.vrack.length > 0;
+        const selectedAdvOpts =
+          selectedAddonOptionsMap[modalServer.planCode] || [];
+
+        const activeCfgDcEntries = activeCfg
+          ? Object.entries(activeCfg.dcStatuses)
+          : [];
+        const allCandidateDcs: [string, string][] =
+          activeCfgDcEntries.length > 0
+            ? activeCfgDcEntries
+            : OVH_DATACENTERS.filter((dc) => {
+                const low = modalServer.planCode.toLowerCase();
+                if (low.includes('-sgp')) return dc.code === 'sgp';
+                if (low.includes('-syd')) return dc.code === 'syd';
+                if (low.includes('-mum')) return dc.code === 'mum';
+                return true;
+              }).map(
+                (dc) =>
+                  [
+                    dc.code,
+                    activeCfg?.dcStatuses[dc.code] || 'unavailable',
+                  ] as [string, string]
+              );
+
+        const visibleDcForActiveCfg =
+          showAllInventory || (activeCfg?.inStockDcs.length ?? 0) === 0
+            ? allCandidateDcs
+            : allCandidateDcs.filter(([_, st]) => isAvailStatus(st));
+
+        const canQuickOrder =
+          !isPresale &&
+          !isAnnounced &&
+          isAuthenticated &&
+          ((activeCfg?.inStockDcs.length ?? 0) > 0 ||
+            allInStockDcs.length > 0 ||
+            selectedDcsForModal.length > 0);
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+            onClick={() => setConfigModalServer(null)}
+          >
+            <div
+              className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-xl bg-cyber-surface border border-cyber-accent/40 shadow-2xl overflow-hidden text-cyber-text"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className="px-5 py-4 border-b border-cyber-grid/60 flex items-center justify-between gap-3 bg-cyber-bg/40">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base sm:text-lg font-bold text-cyber-accent truncate">
+                      {modalServer.name}
+                    </h2>
+                    <span className="px-2 py-0.5 text-xs font-mono rounded bg-cyber-grid/50 text-cyber-muted">
+                      {modalServer.planCode}
+                    </span>
+                    {isAnnounced && (
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        {t('announced.badge')}
+                      </span>
+                    )}
+                    {isPresale && (
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        {t('presale.badge')}
+                      </span>
+                    )}
+                    {!isPresale && !isAnnounced && (
+                      <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                        {t('listed.badge')}
+                      </span>
+                    )}
+                    {generation && (
+                      <span className="px-2 py-0.5 text-[11px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                        {t('presale.generation', { year: generation })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 flex-shrink-0">
+                  {startingPrice !== null && startingPrice > 0 && !isPresale && (
+                    <span className="px-2.5 py-1 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
+                      {t('catalog.fromPrice', {
+                        price: `${symbol}${startingPrice.toFixed(2)}`,
+                      })}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setConfigModalServer(null)}
+                    className="p-1.5 rounded-lg bg-cyber-bg hover:bg-cyber-grid/50 text-cyber-muted hover:text-cyber-text border border-cyber-grid transition-colors"
+                    aria-label="Close"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Default Spec Summary Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-5 py-3 bg-cyber-bg/60 border-b border-cyber-grid/50">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Cpu size={14} className="text-cyber-accent flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specCpu')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.cpu, 'CPU')}
+                    >
+                      {formatServerSpec(modalServer.cpu, 'CPU')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Database
+                    size={14}
+                    className="text-cyber-accent flex-shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specRam')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.memory, '内存')}
+                    >
+                      {formatServerSpec(modalServer.memory, '内存')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <HardDrive
+                    size={14}
+                    className="text-cyber-accent flex-shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specStorage')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.storage, '存储')}
+                    >
+                      {formatServerSpec(modalServer.storage, '存储')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Wifi size={14} className="text-cyber-accent flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-cyber-muted">
+                      {t('catalog.specBandwidth')}
+                    </div>
+                    <div
+                      className="text-xs font-medium text-cyber-text truncate"
+                      title={formatServerSpec(modalServer.bandwidth, '带宽')}
+                    >
+                      {formatServerSpec(modalServer.bandwidth, '带宽')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Scrollable Modal Body */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                {/* Unified Configuration Selector Section */}
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-cyber-accent">
+                        {t('catalog.unifiedConfigsTitle')}
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyber-accent/15 text-cyber-accent">
+                        {visibleConfigs.length}/{unifiedConfigs.length}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="flex items-center gap-1.5 text-xs text-cyber-muted hover:text-cyber-text cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showAllInventory}
+                          onChange={(e) =>
+                            setShowAllInventoryMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: e.target.checked,
+                            }))
+                          }
+                          className="h-3.5 w-3.5 accent-cyber-accent"
+                        />
+                        <span>{t('catalog.showAllInventory')}</span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          checkAvailability(modalServer.planCode, activeCfg)
+                        }
+                        disabled={isCheckingAvailability || !isAuthenticated}
+                        className="px-2.5 py-1 rounded bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 text-xs font-medium flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <RefreshCw
+                          size={11}
+                          className={
+                            isCheckingAvailability &&
+                            selectedServer === modalServer.planCode
+                              ? 'animate-spin'
+                              : ''
+                          }
+                        />
+                        <span>实时检测</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {!hasAnyStock && !isAnnounced && (
+                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs">
+                      {t('catalog.noInStockConfigsNotice')}
+                    </div>
+                  )}
+
+                  {isAnnounced && (
+                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs">
+                      {t('announced.noStockFeedHint')}
+                    </div>
+                  )}
+
+                  {/* Configuration Cards */}
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {visibleConfigs.map((cfg) => {
+                      const isSelectedCfg =
+                        activeCfg?.configKey === cfg.configKey;
+                      const cfgSymbol = getCurrencySymbol(cfg.currency);
+                      const allCfgDcEntries = Object.entries(cfg.dcStatuses);
+                      const cfgVisibleDcs =
+                        showAllInventory || cfg.inStockDcs.length === 0
+                          ? allCfgDcEntries
+                          : allCfgDcEntries.filter(([_, st]) =>
+                              isAvailStatus(st)
+                            );
+
+                      return (
+                        <div
+                          key={cfg.configKey}
+                          onClick={() =>
+                            setSelectedConfigKeyMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: cfg.configKey,
+                            }))
+                          }
+                          className={`p-3 rounded-lg border cursor-pointer transition-all space-y-2 ${
+                            isSelectedCfg
+                              ? 'bg-cyber-accent/12 border-cyber-accent/70 ring-1 ring-cyber-accent/30'
+                              : 'bg-cyber-bg/40 border-cyber-grid hover:border-cyber-accent/30'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                              <span
+                                className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 ${
+                                  isSelectedCfg
+                                    ? 'border-cyber-accent bg-cyber-accent text-white'
+                                    : 'border-cyber-grid bg-cyber-bg'
+                                }`}
+                              >
+                                {isSelectedCfg && (
+                                  <Check size={10} strokeWidth={3} />
+                                )}
+                              </span>
+                              <span className="text-xs sm:text-sm font-semibold text-cyber-text">
+                                {cfg.label}
+                              </span>
+                              {cfg.isDefault && (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/40 flex-shrink-0">
+                                  {t('catalog.defaultConfigBadge')}
+                                </span>
+                              )}
+                              {(cfg.memory || cfg.storage) && (
+                                <span className="text-[10px] font-mono text-cyber-muted">
+                                  {[cfg.memory, cfg.storage]
+                                    .filter(Boolean)
+                                    .join(' + ')}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {cfg.estimatedMonthlyPrice !== null &&
+                                cfg.estimatedMonthlyPrice > 0 && (
+                                  <span className="text-xs sm:text-sm font-bold text-emerald-400 font-mono">
+                                    {cfgSymbol}
+                                    {cfg.estimatedMonthlyPrice.toFixed(2)}
+                                    {t('availability.perMonth')}
+                                  </span>
+                                )}
+                            </div>
+                          </div>
+
+                          {cfgVisibleDcs.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pl-6">
+                              {cfgVisibleDcs.map(([dcCode, st]) => {
+                                const norm =
+                                  normalizeDatacenterCode(dcCode) || dcCode;
+                                const inStock = isAvailStatus(st);
+                                return (
+                                  <span
+                                    key={norm}
+                                    className={`px-2 py-0.5 rounded border text-[10px] font-medium inline-flex items-center gap-1 ${
+                                      inStock
+                                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                        : 'bg-slate-800/50 border-slate-700 text-slate-400'
+                                    }`}
+                                  >
+                                    <DCLabel code={norm} mode="compact" />
+                                    <span
+                                      className={
+                                        inStock
+                                          ? 'text-emerald-400 font-semibold'
+                                          : 'text-red-400/70'
+                                      }
+                                    >
+                                      {inStock
+                                        ? st
+                                        : locale === 'zh-CN'
+                                        ? '无'
+                                        : 'Out'}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Datacenter Selection Section (for the selected configuration) */}
+                {visibleDcForActiveCfg.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-cyber-grid/40">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-cyber-accent">
+                        {t('catalog.dcSelectionTitle')}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const inStockList =
+                              activeCfg && activeCfg.inStockDcs.length > 0
+                                ? activeCfg.inStockDcs
+                                : allInStockDcs;
+                            setSelectedDcsMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: inStockList,
+                            }));
+                          }}
+                          className="text-[11px] text-cyber-accent hover:underline"
+                        >
+                          {t('catalog.selectAllInStockDcs')}
+                        </button>
+                        <span className="text-cyber-grid">|</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSelectedDcsMap((prev) => ({
+                              ...prev,
+                              [modalServer.planCode]: [],
+                            }))
+                          }
+                          className="text-[11px] text-cyber-muted hover:text-cyber-text"
+                        >
+                          {t('catalog.clearSelectedDcs')}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                      {visibleDcForActiveCfg.map(([dcCode, st]) => {
+                        const norm = normalizeDatacenterCode(dcCode) || dcCode;
+                        const inStock = isAvailStatus(st);
+                        const isDcSelected =
+                          selectedDcsForModal.includes(norm);
+
+                        return (
+                          <button
+                            key={norm}
+                            type="button"
+                            onClick={() =>
+                              toggleDcForServer(modalServer.planCode, norm)
+                            }
+                            className={`px-3 py-2 rounded-lg border text-xs font-medium flex items-center justify-between gap-2 transition-all ${
+                              isDcSelected
+                                ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-text ring-1 ring-cyber-accent/50'
+                                : inStock
+                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:border-emerald-400'
+                                : 'bg-cyber-bg/50 border-cyber-grid text-cyber-muted hover:border-cyber-accent/30'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0 truncate">
+                              {isDcSelected && (
+                                <Check
+                                  size={12}
+                                  strokeWidth={3}
+                                  className="text-cyber-accent flex-shrink-0"
+                                />
+                              )}
+                              <DCLabel code={norm} mode="full" />
+                            </span>
+                            <span
+                              className={`text-[10px] font-mono px-1.5 py-0.5 rounded flex-shrink-0 ${
+                                inStock
+                                  ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
+                                  : 'bg-red-500/15 text-red-400/80'
+                              }`}
+                            >
+                              {inStock
+                                ? st
+                                : locale === 'zh-CN'
+                                ? '无货'
+                                : 'Out'}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Collapsible Advanced Options (<details>) */}
+                {hasAdvOptions && (
+                  <details className="rounded-lg border border-cyber-grid bg-cyber-bg/30 text-xs">
+                    <summary className="px-3.5 py-2.5 cursor-pointer font-semibold text-cyber-muted hover:text-cyber-text flex items-center gap-1.5 select-none">
+                      <Settings size={13} className="text-cyber-accent" />
+                      <span>{t('catalog.advancedOptions')}</span>
+                      {selectedAdvOpts.length > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-cyber-accent/20 text-cyber-accent text-[10px] font-mono">
+                          +{selectedAdvOpts.length}
+                        </span>
+                      )}
+                    </summary>
+                    <div className="p-3.5 pt-2 border-t border-cyber-grid/50 space-y-3">
+                      {advOptions.bandwidth.length > 0 && (
+                        <div>
+                          <div className="text-[11px] font-semibold text-cyber-accent mb-1.5 flex items-center gap-1">
+                            <Wifi size={12} />
+                            <span>公网带宽 / 流量</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {advOptions.bandwidth.map((opt) => {
+                              const sel = selectedAdvOpts.includes(opt.value);
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  onClick={() =>
+                                    toggleAdvancedOptionForServer(
+                                      modalServer,
+                                      opt.value,
+                                      'bandwidth'
+                                    )
+                                  }
+                                  className={`px-2.5 py-1 rounded border text-xs transition-colors ${
+                                    sel
+                                      ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
+                                      : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
+                                  }`}
+                                >
+                                  {formatServerSpec(opt.value, '带宽')}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {advOptions.vrack.length > 0 && (
+                        <div>
+                          <div className="text-[11px] font-semibold text-cyber-accent mb-1.5 flex items-center gap-1">
+                            <ArrowRightLeft size={12} />
+                            <span>vRack 内网带宽</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {advOptions.vrack.map((opt) => {
+                              const sel = selectedAdvOpts.includes(opt.value);
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  onClick={() =>
+                                    toggleAdvancedOptionForServer(
+                                      modalServer,
+                                      opt.value,
+                                      'vrack'
+                                    )
+                                  }
+                                  className={`px-2.5 py-1 rounded border text-xs transition-colors ${
+                                    sel
+                                      ? 'bg-cyber-accent/20 border-cyber-accent text-cyber-accent font-semibold'
+                                      : 'bg-cyber-bg border-cyber-grid text-cyber-muted hover:text-cyber-text'
+                                  }`}
+                                >
+                                  {formatServerSpec(opt.value, '内网带宽')}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-5 py-3.5 border-t border-cyber-grid/60 bg-cyber-bg/60 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2 text-xs">
+                  <span className="text-cyber-muted flex-shrink-0">
+                    {t('catalog.selectedConfigSummary')}:
+                  </span>
+                  <span className="font-semibold text-cyber-text truncate">
+                    {activeCfg?.label || modalServer.planCode}
+                  </span>
+                  {activeCfg?.estimatedMonthlyPrice !== null &&
+                    activeCfg?.estimatedMonthlyPrice !== undefined &&
+                    activeCfg.estimatedMonthlyPrice > 0 && (
+                      <span className="font-mono font-bold text-emerald-400 flex-shrink-0">
+                        {symbol}
+                        {activeCfg.estimatedMonthlyPrice.toFixed(2)}
+                        {t('availability.perMonth')}
+                      </span>
+                    )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQuickMonitorTarget({
+                        server: modalServer,
+                        initialConfig: activeCfg
+                          ? {
+                              configKey: activeCfg.configKey,
+                              options: activeCfg.options,
+                              label: activeCfg.label,
+                              estimatedMonthlyPrice:
+                                activeCfg.estimatedMonthlyPrice ?? undefined,
+                              currency: activeCfg.currency,
+                              memory: activeCfg.memory,
+                              storage: activeCfg.storage,
+                            }
+                          : null,
+                        initialConfigs: unifiedConfigs.map((c) => ({
+                          configKey: c.configKey,
+                          label: c.label,
+                          memory: c.memory,
+                          storage: c.storage,
+                          options: c.options,
+                          isDefault: c.isDefault,
+                          estimatedMonthlyPrice:
+                            c.estimatedMonthlyPrice ?? undefined,
+                          currency: c.currency,
+                          datacenters: c.dcStatuses,
+                          inStockCount: c.inStockDcs.length,
+                        })),
+                        initialSelectedDcs: selectedDcsForModal,
+                      })
+                    }
+                    disabled={!isAuthenticated}
+                    className="px-3 py-1.5 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-400 border border-blue-500/35 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                  >
+                    <Bell size={13} />
+                    <span>{t('catalog.monitorThisConfig')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleOpenAddToQueue(
+                        modalServer,
+                        activeCfg,
+                        activeCfg?.inStockDcs || allInStockDcs
+                      )
+                    }
+                    disabled={!isAuthenticated || isPresale || isAnnounced}
+                    className="px-3 py-1.5 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 text-cyber-accent border border-cyber-accent/40 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                  >
+                    <ShoppingCart size={13} />
+                    <span>{t('catalog.addToQueueBtn')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => quickOrderFromModal(modalServer)}
+                    disabled={!canQuickOrder || isQuickOrdering}
+                    className="px-3.5 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-sm"
+                  >
+                    <Zap size={13} />
+                    <span>
+                      {isQuickOrdering
+                        ? t('catalog.quickOrdering')
+                        : t('catalog.quickOrderNow')}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <QuickMonitorDialog
         open={Boolean(quickMonitorTarget)}

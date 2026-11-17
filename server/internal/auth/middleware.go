@@ -291,21 +291,24 @@ func (s *Service) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
+		Username     string `json:"username"`
 		Password     string `json:"password"`
 		TOTPCode     string `json:"totpCode"`
 		TOTPCodeSnak string `json:"totp_code"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&payload)
 
-	if !s.cfg.VerifyAPISecretKey(payload.Password) {
+	userOK := s.cfg.VerifyAdminUsername(payload.Username)
+	passOK := s.cfg.VerifyAPISecretKey(payload.Password)
+	if !userOK || !passOK {
 		s.loginLimiter.RecordFailure(ip)
 		if s.log != nil {
 			s.log.Warn(logger.SourceAuth, "Rejected login attempt: invalid credentials", "ip", ip)
 		}
 		writeAuthJSON(w, http.StatusUnauthorized, map[string]any{
 			"error":   "Invalid credentials",
-			"code":    "INVALID_PASSWORD",
-			"message": "Invalid password.",
+			"code":    "INVALID_CREDENTIALS",
+			"message": "Invalid username or password.",
 		})
 		return
 	}

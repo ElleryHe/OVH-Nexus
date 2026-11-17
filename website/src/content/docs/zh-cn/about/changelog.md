@@ -3,11 +3,29 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.3.2]
+:::note[当前最新版本：v1.3.3]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.3.3] - 2026-11-17 — 密码管理器兼容登录 (`ADMIN_USERNAME`)、服务器目录 3 列固定卡片与独立配置下单弹窗
+
+### 新增功能 (Added)
+
+- **密码管理器兼容的登录用户名机制 (`ADMIN_USERNAME`)**：
+  - 新增 `ADMIN_USERNAME` 环境变量（兼容别名 `NEXUS_USERNAME`，默认值 `Nexus`，严格区分大小写并与 `API_SECRET_KEY` 一同执行恒定时间校验），并将登录表单升级为包含标准 `username` + `current-password` 字段的 `<form autoComplete="on">` 结构，完美支持浏览器与密码管理器（1Password、Bitwarden、Apple 密码）自动保存与填充。
+- **服务器配置选择与下单独立弹窗 (`/servers`)**：
+  - 在服务器目录中新增独立的**服务器配置与下单弹窗**，集中展示合并后的标配（带 `标配` 徽章并默认选中）与可选配置、不含税预估月价、机房实时库存筛选（「显示全部库存（含无货）」勾选框）及折叠的「高级选项（带宽 / vRack）」，并在弹窗底栏直接联动「快速监控此配置」「加入抢购队列」与「立即下单」。
+
+### 变更与优化 (Changed)
+
+- **服务器目录 3 列固定高度模块化卡片网格 (`/servers`)**：
+  - 将服务器目录重构为 3 列固定高度卡片网格（`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`），采用 2×2 模块化硬件规格宫格（**CPU**、**内存**、**存储**、**带宽**）、独立固定行高的机房库存状态行与固定底部操作栏，确保全列表卡片高度与视觉基线严丝合缝。
+- **全新蓝色半透明流体玻璃 “N” 品牌视觉统一**：
+  - 将全站品牌 Logo、站点图标（`favicon.svg`、`favicon.ico`、`apple-touch-icon.png`）与 OpenGraph 社交预览横幅统一升级为全新的蓝色半透明流体玻璃（Liquid Glass）“N” 视觉设计。
+
+---
 
 ## [1.3.2] - 2026-11-17 — 已公布未开售机型追踪、按配置精确监控、价格保护上限与紧凑视图重塑
 

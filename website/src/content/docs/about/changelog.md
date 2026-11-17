@@ -3,11 +3,29 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.3.2]
+:::note[Latest Release: v1.3.3]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.3.3] - 2026-11-17 — Password Manager Login (`ADMIN_USERNAME`), 3-Column Modular Server Catalog & Configuration Modal
+
+### Added
+
+- **Password Manager-Compatible Console Login (`ADMIN_USERNAME`)**:
+  - Added the `ADMIN_USERNAME` environment variable (compatible alias `NEXUS_USERNAME`, default `Nexus`, strictly case-sensitive and verified in constant time alongside `API_SECRET_KEY`) and standard `username` + `current-password` login form fields (`autoComplete="on"`) for seamless browser and password manager (1Password, Bitwarden, Apple Passwords) auto-fill.
+- **Dedicated Server Configuration & Ordering Modal (`/servers`)**:
+  - Added a dedicated **Server Configuration & Ordering Modal** in the Server Catalog for inspecting hardware configurations (`Default` badge), ex-VAT monthly pricing, datacenter availability (**Show all inventory (including out-of-stock)** toggle), collapsible **Advanced Options** (Bandwidth / vRack), quick monitoring, queue submission, and direct ordering.
+
+### Changed
+
+- **3-Column Fixed-Height Modular Server Catalog Grid (`/servers`)**:
+  - Redesigned the Server Catalog into a 3-column fixed-height card grid with a 2×2 modular hardware specification layout (**CPU**, **Memory**, **Storage**, **Bandwidth**), dedicated datacenter stock row, and uniform card alignment.
+- **Unified Liquid Glass "N" Brand Identity & Social Assets**:
+  - Unified the brand logo, site icons (`favicon.svg`, `favicon.ico`, `apple-touch-icon.png`), and OpenGraph social preview banner to the new translucent blue Liquid Glass "N" design.
+
+---
 
 ## [1.3.2] - 2026-11-17 — Announced & Replaced SKU Tracking, Configuration-Level Stock Targets & Compact UI
 

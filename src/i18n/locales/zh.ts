@@ -60,6 +60,28 @@ export const zhV132Translations: Record<string, string> = {
   'monitor.targetCountBadge': '{count} 个目标',
   'monitor.priceCapBadge': '上限 {price}/月 (不含税)',
   'monitor.autoOrderQtyBadge': '自动下单 ×{qty}',
+
+  // Login & 3-Column Fixed Server Catalog Cards + Configuration Modal (v1.3.3)
+  'auth.usernameLabel': '用户名',
+  'auth.passwordLabel': '访问密钥',
+  'auth.usernamePlaceholder': '用户名（默认 Nexus）',
+  'catalog.configureAndOrder': '选择配置 / 下单',
+  'catalog.configCount': '{count} 套配置',
+  'catalog.multiOptionBadge': '{count} 款可选配置',
+  'catalog.quickOrderNow': '立即下单',
+  'catalog.quickOrdering': '下单中...',
+  'catalog.modalTitle': '选择配置与下单',
+  'catalog.specCpu': '处理器 / CPU',
+  'catalog.specRam': '内存 / RAM',
+  'catalog.specStorage': '存储 / Storage',
+  'catalog.specBandwidth': '带宽 / Bandwidth',
+  'catalog.dcSelectionTitle': '目标机房选择（用于排队抢购或直接下单）',
+  'catalog.selectAllInStockDcs': '全选有货机房',
+  'catalog.clearSelectedDcs': '清空',
+  'catalog.selectedConfigSummary': '当前已选配置',
+  'catalog.monitorThisConfig': '快速监控此配置',
+  'catalog.addToQueueBtn': '加入抢购队列',
+  'catalog.allOutOfStock': '全部无货',
 };
 
 export default zhV132Translations;

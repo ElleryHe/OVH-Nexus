@@ -49,6 +49,7 @@ var weakEncryptionKeys = map[string]struct{}{
 
 // Config holds validated runtime configuration loaded from environment variables.
 type Config struct {
+	AdminUsername         string
 	APISecretKey          string
 	DataEncryptionKey     string
 	Port                  string
@@ -65,6 +66,7 @@ type Config struct {
 	SessionSecretOverride string
 	InternalToken         string
 
+	adminUsernameDigest [32]byte
 	apiSecretDigest     [32]byte
 	internalTokenDigest [32]byte
 }
@@ -91,6 +93,15 @@ func LoadFromEnv(lookup func(string) (string, bool)) (*Config, error) {
 		v, _ := lookup(key)
 		return strings.TrimSpace(v)
 	}
+
+	adminUsername := get("ADMIN_USERNAME")
+	if adminUsername == "" {
+		adminUsername = get("NEXUS_USERNAME")
+	}
+	if adminUsername == "" {
+		adminUsername = "Nexus"
+	}
+	adminUsernameDigest := sha256.Sum256([]byte(adminUsername))
 
 	apiSecret := get("API_SECRET_KEY")
 	if apiSecret == "" {
@@ -206,6 +217,7 @@ func LoadFromEnv(lookup func(string) (string, bool)) (*Config, error) {
 	}
 
 	return &Config{
+		AdminUsername:         adminUsername,
 		APISecretKey:          apiSecret,
 		DataEncryptionKey:     encKey,
 		Port:                  strconv.Itoa(portNum),
@@ -221,6 +233,7 @@ func LoadFromEnv(lookup func(string) (string, bool)) (*Config, error) {
 		CORSOrigins:           corsOrigins,
 		SessionSecretOverride: get("SECRET_KEY"),
 		InternalToken:         internalToken,
+		adminUsernameDigest:   adminUsernameDigest,
 		apiSecretDigest:       apiDigest,
 		internalTokenDigest:   sha256.Sum256([]byte(internalToken)),
 	}, nil
@@ -232,6 +245,16 @@ func (c *Config) WipeEncryptionKey() {
 	if c != nil {
 		c.DataEncryptionKey = ""
 	}
+}
+
+// VerifyAdminUsername checks a candidate admin username in constant time (case-sensitive).
+func (c *Config) VerifyAdminUsername(candidate string) bool {
+	cand := strings.TrimSpace(candidate)
+	if c == nil || cand == "" {
+		return false
+	}
+	candDigest := sha256.Sum256([]byte(cand))
+	return subtle.ConstantTimeCompare(candDigest[:], c.adminUsernameDigest[:]) == 1
 }
 
 // VerifyAPISecretKey checks a candidate password or API key in constant time.

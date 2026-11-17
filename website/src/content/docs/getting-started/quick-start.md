@@ -25,6 +25,9 @@ API_SECRET_KEY=$(openssl rand -hex 24)
 # Required: Independent master key for AES-256-GCM at-rest secret encryption (at least 16 characters)
 DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
+# Optional: Console login username for password manager auto-fill (default Nexus, case-sensitive)
+ADMIN_USERNAME=Nexus
+
 # Optional: Set to true when serving behind an HTTPS reverse proxy
 COOKIE_SECURE=false
 
@@ -63,6 +66,7 @@ services:
     environment:
       - API_SECRET_KEY=${API_SECRET_KEY:?Please set a strong API_SECRET_KEY (at least 12 characters) in .env}
       - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:?Please set an independent DATA_ENCRYPTION_KEY (at least 16 characters) in .env}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-Nexus}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - DEFAULT_LOCALE=${DEFAULT_LOCALE:-en}
       - TZ=${TZ:-UTC}
@@ -91,7 +95,7 @@ curl -s http://localhost:20000/api/health
 ## 4. Sign In to the Web Console
 
 1. Open `http://localhost:20000` in your browser.
-2. Enter the `API_SECRET_KEY` from your `.env` file (run `grep API_SECRET_KEY .env` to view it).
+2. Enter username `Nexus` (or your configured `ADMIN_USERNAME`, case-sensitive) and the `API_SECRET_KEY` from your `.env` file (run `grep API_SECRET_KEY .env` to view it).
 3. Switch languages (`EN` / `FR` / `中文`) or theme (`System` / `Light` / `Dark`) anytime from the login header or sidebar.
 
 :::tip[No OVHcloud API Key Needed for Public Monitoring]
