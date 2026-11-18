@@ -601,15 +601,20 @@ const ServersPage = () => {
           : typeof planMeta.originalSetupFee === 'number'
           ? planMeta.originalSetupFee
           : null;
+      const baseFreeSetupPromo =
+        baseSetupFee === 0 && (baseOrigSetupFee ?? 0) > 0;
       const baseFreeSetup = Boolean(
         server.freeSetup ||
           planMeta.freeSetup ||
-          (baseSetupFee === 0 && (baseOrigSetupFee ?? 0) > 0)
+          baseSetupFee === 0 ||
+          baseFreeSetupPromo
       );
       const baseHasPromo = Boolean(
         server.hasPromo ||
           planMeta.hasPromo ||
-          baseFreeSetup ||
+          (server.pricingModes || []).some((m) => m.hasPromo) ||
+          (planMeta.pricingModes || []).some((m) => m.hasPromo) ||
+          baseFreeSetupPromo ||
           (baseOrigMonthly && basePrice && baseOrigMonthly > basePrice + 0.01)
       );
       const basePricingModes =
@@ -739,28 +744,31 @@ const ServersPage = () => {
               : typeof c.price === 'number' && c.price > 0
               ? c.price
               : priceCalc.totalPrice ?? basePrice;
+          const isDefCfg = Boolean(c.isDefault || key === defaultKey);
           const origMonthly =
             typeof c.originalMonthlyPrice === 'number' &&
             c.originalMonthlyPrice > 0
               ? c.originalMonthlyPrice
               : typeof c.originalPrice === 'number' && c.originalPrice > 0
               ? c.originalPrice
-              : baseOrigMonthly;
+              : isDefCfg || apiConfigs.length === 1
+              ? baseOrigMonthly
+              : null;
           const setupFee =
             typeof c.setupFee === 'number' ? c.setupFee : baseSetupFee;
           const origSetupFee =
             typeof c.originalSetupFee === 'number'
               ? c.originalSetupFee
               : baseOrigSetupFee;
+          const freeSetupPromo =
+            setupFee === 0 && (origSetupFee ?? 0) > 0;
           const freeSetup = Boolean(
-            c.freeSetup ||
-              baseFreeSetup ||
-              (setupFee === 0 && (origSetupFee ?? 0) > 0)
+            c.freeSetup || setupFee === 0 || freeSetupPromo
           );
           const hasPromo = Boolean(
             c.hasPromo ||
-              baseHasPromo ||
-              freeSetup ||
+              (c.pricingModes || []).some((m) => m.hasPromo) ||
+              freeSetupPromo ||
               (origMonthly && estPrice && origMonthly > estPrice + 0.01)
           );
           const promoCode = c.promoCode || server.promoCode || planMeta.promoCode;
@@ -844,28 +852,31 @@ const ServersPage = () => {
             : typeof row.price === 'number' && row.price > 0
             ? row.price
             : priceCalc.totalPrice ?? basePrice;
+        const isDefRow = Boolean(row.isDefault || key === defaultKey);
         const origMonthly =
           typeof row.originalMonthlyPrice === 'number' &&
           row.originalMonthlyPrice > 0
             ? row.originalMonthlyPrice
             : typeof row.originalPrice === 'number' && row.originalPrice > 0
             ? row.originalPrice
-            : baseOrigMonthly;
+            : isDefRow || matchingAvailRows.length === 1
+            ? baseOrigMonthly
+            : null;
         const setupFee =
           typeof row.setupFee === 'number' ? row.setupFee : baseSetupFee;
         const origSetupFee =
           typeof row.originalSetupFee === 'number'
             ? row.originalSetupFee
             : baseOrigSetupFee;
+        const freeSetupPromo =
+          setupFee === 0 && (origSetupFee ?? 0) > 0;
         const freeSetup = Boolean(
-          row.freeSetup ||
-            baseFreeSetup ||
-            (setupFee === 0 && (origSetupFee ?? 0) > 0)
+          row.freeSetup || setupFee === 0 || freeSetupPromo
         );
         const hasPromo = Boolean(
           row.hasPromo ||
-            baseHasPromo ||
-            freeSetup ||
+            (row.pricingModes || []).some((m) => m.hasPromo) ||
+            freeSetupPromo ||
             (origMonthly && estPrice && origMonthly > estPrice + 0.01)
         );
         const promoCode =
@@ -1603,35 +1614,35 @@ const ServersPage = () => {
                 label: t('listing.filter.listed'),
                 count: tabCounts.listed,
                 activeCls:
-                  'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
+                  'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/50',
               },
               {
                 id: 'promo',
                 label: t('listing.filter.promo'),
                 count: tabCounts.promo,
                 activeCls:
-                  'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
+                  'bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
               },
               {
                 id: 'announced',
                 label: t('listing.filter.announced'),
                 count: tabCounts.announced,
                 activeCls:
-                  'bg-amber-500/20 text-amber-300 border-amber-500/50',
+                  'bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/50',
               },
               {
                 id: 'presale',
                 label: t('listing.filter.presale'),
                 count: tabCounts.presale,
                 activeCls:
-                  'bg-purple-500/20 text-purple-300 border-purple-500/50',
+                  'bg-purple-500/20 text-purple-700 dark:text-purple-300 border-purple-500/50',
               },
               {
                 id: 'new',
                 label: t('listing.filter.new'),
                 count: tabCounts.new,
                 activeCls:
-                  'bg-cyan-500/20 text-cyan-300 border-cyan-500/50',
+                  'bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border-cyan-500/50',
               },
             ] as const
           ).map((tab) => {
@@ -1641,16 +1652,16 @@ const ServersPage = () => {
                 key={tab.id}
                 type="button"
                 onClick={() => setListingFilterTab(tab.id)}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   isActive
                     ? tab.activeCls
                     : tab.id === 'promo'
-                    ? 'bg-rose-500/10 text-rose-300/90 border-rose-500/30 hover:bg-rose-500/20'
+                    ? 'bg-rose-500/10 text-rose-600 dark:text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
                     : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-cyber-text'
                 }`}
               >
                 <span>{tab.label}</span>
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/10 dark:bg-black/25 text-current">
                   {tab.count}
                 </span>
               </button>
@@ -1769,10 +1780,13 @@ const ServersPage = () => {
                 : typeof defaultCfg?.originalSetupFee === 'number'
                 ? defaultCfg.originalSetupFee
                 : null;
+            const cardFreeSetupPromo =
+              cardSetupFee === 0 && (cardOrigSetupFee ?? 0) > 0;
             const cardFreeSetup = Boolean(
               server.freeSetup ||
                 defaultCfg?.freeSetup ||
-                (cardSetupFee === 0 && (cardOrigSetupFee ?? 0) > 0)
+                cardSetupFee === 0 ||
+                cardFreeSetupPromo
             );
             const cardPricingModes =
               (server.pricingModes && server.pricingModes.length > 0
@@ -1787,7 +1801,7 @@ const ServersPage = () => {
               server.hasPromo ||
                 defaultCfg?.hasPromo ||
                 cardPricingModes.some((m) => m.hasPromo) ||
-                cardFreeSetup ||
+                cardFreeSetupPromo ||
                 (originalMonthlyPrice !== null &&
                   startingPrice !== null &&
                   originalMonthlyPrice > startingPrice + 0.01)
@@ -1845,12 +1859,12 @@ const ServersPage = () => {
                         {isPresale ? (
                           <span
                             title={t('presale.notOrderableHint')}
-                            className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-300 border border-purple-500/30 whitespace-nowrap"
+                            className="px-2 py-0.5 rounded text-[10px] font-medium bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/30 whitespace-nowrap"
                           >
                             {t('presale.pricingTbd')}
                           </span>
                         ) : startingPrice !== null && startingPrice > 0 ? (
-                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 whitespace-nowrap inline-flex items-center">
+                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 whitespace-nowrap inline-flex items-center">
                             <span>
                               {t('catalog.fromPrice', {
                                 price: `${symbol}${startingPrice.toFixed(2)}`,
@@ -1877,41 +1891,41 @@ const ServersPage = () => {
                       {cardHasPromo && (
                         <span
                           title={cardPromoDescription}
-                          className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40 flex items-center gap-0.5 flex-shrink-0"
+                          className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/40 whitespace-nowrap shrink-0 inline-flex items-center gap-0.5"
                         >
                           <span>🔥 {cardPromoBadge || t('promo.badge')}</span>
                         </span>
                       )}
                       {isAnnounced && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1 flex-shrink-0">
-                          <Sparkles className="w-2.5 h-2.5" />
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                          <Sparkles className="w-2.5 h-2.5 shrink-0" />
                           {t('announced.badge')}
                         </span>
                       )}
                       {isPresale && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1 flex-shrink-0">
-                          <Sparkles className="w-2.5 h-2.5" />
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                          <Sparkles className="w-2.5 h-2.5 shrink-0" />
                           {t('presale.badge')}
                         </span>
                       )}
                       {!isPresale && !isAnnounced && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 flex-shrink-0">
+                        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 whitespace-nowrap shrink-0 inline-flex items-center">
                           {t('listed.badge')}
                         </span>
                       )}
                       {generation && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex-shrink-0">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
                           {t('presale.generation', { year: generation })}
                         </span>
                       )}
                       {isRecentlyAdded && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex-shrink-0">
+                        <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
                           {t('sku.newListed')}
                         </span>
                       )}
                       {subscribedServers.has(server.planCode) && (
                         <span
-                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 flex-shrink-0"
+                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border border-cyan-500/40 whitespace-nowrap shrink-0 inline-flex items-center gap-1"
                           title="已订阅监控"
                         >
                           <Bell size={10} />
@@ -2010,7 +2024,7 @@ const ServersPage = () => {
                   <div className="min-h-[30px] flex items-center justify-between gap-2 px-1">
                     <div className="flex items-center gap-1 min-w-0 overflow-hidden">
                       {isAnnounced ? (
-                        <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[10px] font-medium truncate">
+                        <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-700 dark:text-amber-300 text-[10px] font-medium truncate">
                           {t('announced.badge')}
                         </span>
                       ) : allInStockDcs.length > 0 ? (
@@ -2018,7 +2032,7 @@ const ServersPage = () => {
                           {allInStockDcs.slice(0, 4).map((dc) => (
                             <span
                               key={dc}
-                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold flex-shrink-0"
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold shrink-0 whitespace-nowrap"
                             >
                               <DCLabel code={dc} mode="compact" />
                             </span>
@@ -2030,7 +2044,7 @@ const ServersPage = () => {
                           )}
                         </>
                       ) : (
-                        <span className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400/80 text-[10px] font-medium flex-shrink-0">
+                        <span className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-rose-600 dark:text-red-400/80 text-[10px] font-medium flex-shrink-0 whitespace-nowrap">
                           {t('catalog.allOutOfStock')}
                         </span>
                       )}
@@ -2039,7 +2053,7 @@ const ServersPage = () => {
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {!isPresale &&
                         (cardSetupFee === 0 || cardFreeSetup ? (
-                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-400 text-[10px] font-semibold inline-flex items-center">
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-[10px] font-semibold inline-flex items-center whitespace-nowrap">
                             <span>{t('promo.freeSetup')}</span>
                             {cardOrigSetupFee !== null &&
                               cardOrigSetupFee > 0 && (
@@ -2056,7 +2070,7 @@ const ServersPage = () => {
                                 ? t('promo.annualWaivesSetupHint')
                                 : undefined
                             }
-                            className="px-1.5 py-0.5 rounded bg-cyber-grid/40 border border-cyber-grid text-cyber-muted text-[10px] font-mono inline-flex items-center gap-1"
+                            className="px-1.5 py-0.5 rounded bg-cyber-grid/40 border border-cyber-grid text-cyber-muted text-[10px] font-mono inline-flex items-center gap-1 whitespace-nowrap"
                           >
                             <span>
                               {t('promo.setupFee', {
@@ -2064,13 +2078,13 @@ const ServersPage = () => {
                               })}
                             </span>
                             {hasAnnualFreeSetup && (
-                              <span className="text-emerald-400 font-sans">
+                              <span className="text-emerald-700 dark:text-emerald-400 font-sans">
                                 · {t('promo.annualFreeSetupShort')}
                               </span>
                             )}
                           </span>
                         ) : null)}
-                      <span className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0">
+                      <span className="px-2 py-0.5 rounded bg-cyber-grid/40 text-cyber-muted text-[10px] font-mono flex-shrink-0 whitespace-nowrap">
                         {t('catalog.configCount', {
                           count: unifiedConfigs.length,
                         })}
@@ -2373,30 +2387,30 @@ const ServersPage = () => {
                           activeModeEntry?.promoDescription ||
                           modalServer.promoDescription
                         }
-                        className="px-2 py-0.5 text-[11px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40"
+                        className="px-2 py-0.5 text-[11px] font-bold rounded bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/40 whitespace-nowrap shrink-0 inline-flex items-center"
                       >
                         🔥 {modalPromoBadge || t('promo.badge')}
                       </span>
                     )}
                     {isAnnounced && (
-                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                        <Sparkles className="w-3 h-3" />
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 shrink-0" />
                         {t('announced.badge')}
                       </span>
                     )}
                     {isPresale && (
-                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
-                        <Sparkles className="w-3 h-3" />
+                      <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 shrink-0" />
                         {t('presale.badge')}
                       </span>
                     )}
                     {!isPresale && !isAnnounced && (
-                      <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                      <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 whitespace-nowrap shrink-0 inline-flex items-center">
                         {t('listed.badge')}
                       </span>
                     )}
                     {generation && (
-                      <span className="px-2 py-0.5 text-[11px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                      <span className="px-2 py-0.5 text-[11px] font-mono rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
                         {t('presale.generation', { year: generation })}
                       </span>
                     )}

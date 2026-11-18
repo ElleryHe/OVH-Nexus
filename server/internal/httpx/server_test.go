@@ -203,7 +203,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 		t.Fatalf("read gunzipped /api/health: %v", err)
 	}
 	healthMap := decodeMap(t, healthBytes)
-	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.3" {
+	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.4" {
 		t.Fatalf("unexpected health payload: %+v", healthMap)
 	}
 
@@ -1029,7 +1029,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"Authorization": "Bearer " + mcpToken,
 	}
 
-	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.3"
+	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.4"
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1043,7 +1043,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}
 	initRes := decodeMap(t, body)["result"].(map[string]any)
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.3" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.4" {
 		t.Fatalf("unexpected MCP serverInfo: %+v", srvInfo)
 	}
 

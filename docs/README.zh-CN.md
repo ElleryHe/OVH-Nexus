@@ -18,6 +18,7 @@
 <p align="center">
   <a href="https://ovh-nexus.ellery.me/zh-cn/" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/文档-ovh--nexus.ellery.me%2Fzh--cn-0050D7?logo=read-the-docs&logoColor=white" alt="Documentation" /></a>
   <a href="https://hub.docker.com/r/elleryhe/ovh-nexus" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Docker-elleryhe%2Fovh--nexus-2496ED?logo=docker&logoColor=white" alt="Docker Hub" /></a>
+  <a href="https://ovh-nexus.ellery.me/zh-cn/rss.xml" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-RSS-FFA500?logo=rss&logoColor=white" alt="更新日志 RSS 订阅" /></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3.0-blue.svg" alt="License: AGPL v3.0" /></a>
 </p>
 
@@ -130,6 +131,6 @@ docker compose up -d
 
 ## 开源协议与免责声明
 
-本项目基于 **GNU Affero General Public License v3.0 (AGPL-3.0)** 协议开源，详见 [LICENSE](../LICENSE)、[CHANGELOG.md](../CHANGELOG.md)、[CONTRIBUTING.md](../CONTRIBUTING.md) 与 [SECURITY.md](../SECURITY.md)。
+本项目基于 **GNU Affero General Public License v3.0 (AGPL-3.0)** 协议开源，详见 [LICENSE](../LICENSE)、[版本更新日志](https://ovh-nexus.ellery.me/zh-cn/about/changelog/)（[RSS 订阅](https://ovh-nexus.ellery.me/zh-cn/rss.xml)）、[贡献指南](https://ovh-nexus.ellery.me/zh-cn/about/contributing/) 与 [安全加固与漏洞披露策略](https://ovh-nexus.ellery.me/zh-cn/operations/security/)。
 
 > **OVH Nexus** 是独立的第三方开源工具，**与 OVH SAS / OVHcloud 官方无任何隶属、合作或背书关系**。“OVH”与“OVHcloud”均为 OVH SAS 的注册商标。

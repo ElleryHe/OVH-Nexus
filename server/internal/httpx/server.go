@@ -25,7 +25,7 @@ import (
 )
 
 // Version identifies the OVH Nexus Go backend release version.
-const Version = "1.3.3"
+const Version = "1.3.4"
 
 // Services holds all wired OVH Nexus domain services and shared infrastructure.
 type Services struct {

@@ -1,7 +1,7 @@
 {
   "name": "ovh-nexus-docs",
   "type": "module",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "private": true,
   "scripts": {
     "dev": "astro dev",
@@ -9,7 +9,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "preview:worker": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "indexnow": "node ./scripts/indexnow.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.43.1",

@@ -427,12 +427,13 @@ export function synthesizePricingModes(input: {
     typeof input.originalSetupFee === "number" && input.originalSetupFee >= 0
       ? input.originalSetupFee
       : setup;
+  const freeSetupPromo = setup === 0 && origSetup > 0;
   const freeSetup = Boolean(
-    input.freeSetup || (setup === 0 && origSetup > 0)
+    input.freeSetup || setup === 0 || freeSetupPromo
   );
   const hasPromo = Boolean(
     input.hasPromo ||
-      freeSetup ||
+      freeSetupPromo ||
       (origMonthly > 0 && monthly > 0 && origMonthly > monthly + 0.01)
   );
   if (monthly <= 0 && setup <= 0 && origSetup <= 0) {

@@ -3,11 +3,40 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.3.3]
+:::note[Dernière version : v1.3.4]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
+:::tip[Flux RSS du Journal des Modifications]
+Abonnez-vous aux notes de version d'OVH Nexus depuis votre lecteur RSS (Feedly, Inoreader, NetNewsWire, Follow, etc.) : **[`/fr/rss.xml`](https://ovh-nexus.ellery.me/fr/rss.xml)** (Anglais : [`/rss.xml`](https://ovh-nexus.ellery.me/rss.xml) · [`/feed.xml`](https://ovh-nexus.ellery.me/feed.xml) · Chinois : [`/zh-cn/rss.xml`](https://ovh-nexus.ellery.me/zh-cn/rss.xml)).
+:::
+
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.3.4] - 2026-11-18 — Correctifs de Disposition & Promotions de la Matrice de Stock, Restauration Auto de la Base SKU & Optimisation IA `/llms.txt`
+
+### Ajouté (Added)
+
+- **Flux RSS 2.0 Multilingues du Journal des Modifications (`/rss.xml`, `/feed.xml`, `/zh-cn/rss.xml`, `/fr/rss.xml`)** :
+  - Génération automatique à la compilation des flux RSS 2.0 standards en anglais (`/rss.xml` et `/feed.xml`), chinois simplifié (`/zh-cn/rss.xml`) et français (`/fr/rss.xml`) avec notes de version HTML complètes et balises d'auto-découverte `<link rel="alternate" type="application/rss+xml">` dans `<head>`.
+- **Standard de Contexte IA & LLM (`/llms.txt` & `/llms-full.txt`)** :
+  - Génération automatique à la compilation de `dist/llms.txt` (index structuré conforme à [llmstxt.org](https://llmstxt.org) avec résumé du projet, URL canoniques et points d'entrée multilingues) et `dist/llms-full.txt` (documentation Markdown complète nettoyée en un seul fichier), accompagnée d'en-têtes `text/plain; charset=utf-8` et de règles `Allow: /` explicites dans `robots.txt` pour `GPTBot`, `OAI-SearchBot`, `ChatGPT-User`, `ClaudeBot`, `Claude-Web`, `PerplexityBot`, `Google-Extended` et `Applebot-Extended`.
+- **Indexation Automatique IndexNow & Protection des Domaines de Prévisualisation** :
+  - Ajout de la clé de vérification IndexNow, du script `website/scripts/indexnow.mjs` et du workflow `.github/workflows/docs-indexnow.yml` pour notifier automatiquement `https://api.indexnow.org/indexnow` après chaque déploiement en production.
+  - Ajout d'un middleware Cloudflare Worker/Pages (`website/src/worker.ts` et `website/functions/_middleware.ts`), de l'injection `X-Robots-Tag: noindex, nofollow` sur tout domaine différent de `ovh-nexus.ellery.me` (`*.pages.dev`, `*.workers.dev`) et de l'isolation automatique des routes d'archives/anciennes versions (`noindex, follow` + URL canonique récente).
+
+### Corrigé (Fixed)
+
+- **Disposition Anti-Compression de la Matrice de Disponibilité (`/availability`) & Contraste en Mode Clair** :
+  - Refonte des lignes de la matrice : le nom du modèle, les badges d'état/promo/génération (`whitespace-nowrap shrink-0`) et le CPU restent alignés à gauche sans retour à la ligne vertical, tandis que le sélecteur de configuration (`sm:w-[260px] lg:w-[300px]`), les frais d'installation, le tarif mensuel et le bouton de surveillance rapide s'alignent proprement à droite.
+  - Élargissement des cellules datacenter (`min-w-[116px]` avec drapeau et code `shrink-0 whitespace-nowrap`) pour éliminer la troncature des codes (ex. `SBG` tronqué en `S`) lors de l'affichage du compteur de configurations (`1H-Low · 6 cfg`).
+  - Amélioration du contraste des textes de filtres et de badges en mode clair (`text-rose-600`, `text-emerald-700`, `text-amber-700`, `text-purple-700`, `text-cyan-700`) sur `/availability` et `/servers`.
+- **Précision du Prix d'Appel par Configuration & Détection des Vraies Promotions (`hasPromo`)** :
+  - Correction d'un bogue dans `MergedPlanRow` qui comparait le prix de la configuration la moins chère au prix initial d'une configuration supérieure ou interprétait les modèles sans frais de mise en service (`originalSetupFee === 0`) comme des promotions `FREE SETUP` ; le prix d'appel et le prix barré proviennent désormais strictement de la même configuration la moins chère.
+- **Préservation & Auto-Réparation de la Base Initiale SKU (`baseline: true`)** :
+  - Correction de `normalizeLoadedSKUs` dans `server/internal/monitor/sku.go` afin de ne jamais écraser les entrées `Baseline: true` existantes, avec migration automatique au démarrage restaurant `Baseline: true` (et vidant `ListedAt`) pour les SKU historiques n'ayant jamais fait l'objet d'un événement `"added"` ou `"replaced"` dans `ChangesJSON`.
+
+---
 
 ## [1.3.3] - 2026-11-17 — Connexion Gestionnaire de Mots de Passe (`ADMIN_USERNAME`), Frais d'Installation, Promotions, Engagements Annuels & Codes Promo
 

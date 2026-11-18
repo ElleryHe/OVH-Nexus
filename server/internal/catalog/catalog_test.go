@@ -1113,4 +1113,166 @@ func TestBlackFridayPromotionsSetupFeesPricingModesAndCartHelpers(t *testing.T) 
 	}
 }
 
+func TestZeroSetupFeeWithoutPromoAndMultiConfigIsolation(t *testing.T) {
+	svc, _, _, _ := newTestCatalog(t)
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/order/catalog/public/baremetalServers":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "21hcisap01-v1",
+						"invoiceName": "HGR-SAP-1 | Dual Intel Xeon Gold 6226R",
+						"product":     "21hcisap01",
+						"blobs":       map[string]any{"commercial": map[string]any{"name": "HGR-SAP-1"}},
+						"pricings": []map[string]any{
+							{
+								"mode":       "default",
+								"capacities": []string{"installation"},
+								"price":      0,
+							},
+							{
+								"mode":       "default",
+								"capacities": []string{"renew"},
+								"interval":   1,
+								"commitment": 0,
+								"price":      160799000000,
+							},
+						},
+						"addonFamilies": []map[string]any{
+							{
+								"name":    "memory",
+								"default": "ram-384g-ecc-2933-21hcisap01",
+								"addons":  []string{"ram-384g-ecc-2933-21hcisap01", "ram-768g-ecc-2933-21hcisap01"},
+							},
+							{
+								"name":    "storage",
+								"default": "softraid-2x960nvme-21hcisap01",
+								"addons":  []string{"softraid-2x960nvme-21hcisap01", "softraid-4x960nvme-21hcisap01"},
+							},
+						},
+					},
+					{
+						// Another plan whose addon shares product "softraid-2x960nvme" and has a promo
+						"planCode":    "24adv01-promo",
+						"invoiceName": "ADVANCE-1",
+						"product":     "24adv01",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "interval": 1, "price": 9900000000},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-24adv01", "addons": []string{"ram-32g-24adv01"}},
+							{"name": "storage", "default": "softraid-2x960nvme-24adv01", "addons": []string{"softraid-2x960nvme-24adv01"}},
+						},
+					},
+				},
+				"addons": []map[string]any{
+					{
+						"planCode": "ram-384g-ecc-2933-21hcisap01",
+						"product":  "ram-384g-ecc-2933",
+						"pricings": []map[string]any{{"mode": "default", "capacities": []string{"renew"}, "price": 0}},
+					},
+					{
+						"planCode": "ram-768g-ecc-2933-21hcisap01",
+						"product":  "ram-768g-ecc-2933",
+						"pricings": []map[string]any{{"mode": "default", "capacities": []string{"renew"}, "price": 35000000000}},
+					},
+					{
+						"planCode": "softraid-2x960nvme-21hcisap01",
+						"product":  "softraid-2x960nvme",
+						"pricings": []map[string]any{{"mode": "default", "capacities": []string{"renew"}, "price": 0}},
+					},
+					{
+						"planCode": "softraid-4x960nvme-21hcisap01",
+						"product":  "softraid-4x960nvme",
+						"pricings": []map[string]any{{"mode": "default", "capacities": []string{"renew"}, "price": 12000000000}},
+					},
+					{
+						"planCode": "softraid-2x960nvme-24adv01",
+						"product":  "softraid-2x960nvme",
+						"pricings": []map[string]any{
+							{
+								"mode":       "default",
+								"capacities": []string{"renew"},
+								"price":      5000000000,
+								"promotions": []map[string]any{
+									{"name": "BF26_STORAGE", "value": 20, "type": "percentage", "total": map[string]any{"value": 4000000000}},
+								},
+							},
+						},
+					},
+				},
+			})
+		case "/order/catalog/public/eco", "/order/catalog/public/vps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"locale": map[string]any{"currencyCode": "EUR"}, "plans": []any{}})
+		case "/dedicated/server/datacenter/availabilities":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":         "21hcisap01-v1.ram-768g-ecc-2933.softraid-4x960nvme",
+					"planCode":    "21hcisap01-v1",
+					"server":      "21hcisap01",
+					"memory":      "ram-768g-ecc-2933",
+					"storage":     "softraid-4x960nvme",
+					"datacenters": []map[string]any{{"datacenter": "gra", "availability": "1H-low"}},
+				},
+				{
+					"fqn":         "21hcisap01-v1.ram-384g-ecc-2933.softraid-2x960nvme",
+					"planCode":    "21hcisap01-v1",
+					"server":      "21hcisap01",
+					"memory":      "ram-384g-ecc-2933",
+					"storage":     "softraid-2x960nvme",
+					"datacenters": []map[string]any{{"datacenter": "sbg", "availability": "1H-low"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+
+	listResp, err := svc.ListServers(context.Background(), ListServersOptions{Endpoint: "ovh-eu", Zone: "IE", ForceRefresh: true})
+	if err != nil {
+		t.Fatalf("ListServers failed: %v", err)
+	}
+	var sap *ServerPlan
+	for i := range listResp.Servers {
+		if listResp.Servers[i].PlanCode == "21hcisap01-v1" {
+			sap = &listResp.Servers[i]
+			break
+		}
+	}
+	if sap == nil {
+		t.Fatalf("expected 21hcisap01-v1 in ListServers")
+	}
+	if sap.HasPromo {
+		t.Fatalf("expected 21hcisap01-v1 (originalSetupFee=0, no promotions) to have HasPromo=false, got %+v", sap)
+	}
+	if !sap.FreeSetup || sap.SetupFee != 0 || sap.OriginalSetupFee != 0 {
+		t.Fatalf("expected FreeSetup=true with SetupFee=0, OriginalSetupFee=0, got %+v", sap)
+	}
+	if sap.StartingPrice != 1607.99 || sap.OriginalMonthlyPrice != 1607.99 {
+		t.Fatalf("expected StartingPrice == OriginalMonthlyPrice == 1607.99 from same config, got start=%v orig=%v", sap.StartingPrice, sap.OriginalMonthlyPrice)
+	}
+
+	availItems, err := svc.GetCatalogAvailabilities(context.Background(), "ovh-eu", "IE", "21hcisap01-v1")
+	if err != nil {
+		t.Fatalf("GetCatalogAvailabilities failed: %v", err)
+	}
+	if len(availItems) != 2 {
+		t.Fatalf("expected 2 availability items for 21hcisap01-v1, got %d", len(availItems))
+	}
+	for _, it := range availItems {
+		if it.HasPromo {
+			t.Fatalf("expected AvailabilityItem %s to have HasPromo=false, got %+v", it.ConfigKey, it)
+		}
+		if it.EstimatedMonthlyPrice != it.OriginalMonthlyPrice {
+			t.Fatalf("expected EstimatedMonthlyPrice == OriginalMonthlyPrice on non-promo config %s, got %v vs %v", it.ConfigKey, it.EstimatedMonthlyPrice, it.OriginalMonthlyPrice)
+		}
+	}
+}
+
 

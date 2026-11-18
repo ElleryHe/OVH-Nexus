@@ -239,9 +239,11 @@ func (a *catalogAdapter) QueryAvailabilityFiltered(
 				rec.IsDefault = true
 				if item.EstimatedMonthlyPrice > 0 {
 					rec.EstimatedMonthlyPrice = item.EstimatedMonthlyPrice
-				}
-				if item.OriginalMonthlyPrice > 0 {
-					rec.OriginalMonthlyPrice = item.OriginalMonthlyPrice
+					origMonthly := item.OriginalMonthlyPrice
+					if origMonthly == 0 {
+						origMonthly = item.EstimatedMonthlyPrice
+					}
+					rec.OriginalMonthlyPrice = origMonthly
 				}
 				rec.SetupFee = item.SetupFee
 				rec.OriginalSetupFee = item.OriginalSetupFee
@@ -264,9 +266,11 @@ func (a *catalogAdapter) QueryAvailabilityFiltered(
 				}
 			} else if rec.EstimatedMonthlyPrice == 0 && item.EstimatedMonthlyPrice > 0 {
 				rec.EstimatedMonthlyPrice = item.EstimatedMonthlyPrice
-				if rec.OriginalMonthlyPrice == 0 {
-					rec.OriginalMonthlyPrice = item.OriginalMonthlyPrice
+				origMonthly := item.OriginalMonthlyPrice
+				if origMonthly == 0 {
+					origMonthly = item.EstimatedMonthlyPrice
 				}
+				rec.OriginalMonthlyPrice = origMonthly
 			}
 			if rec.ListedAt == "" && listedAt != "" {
 				rec.ListedAt = listedAt
@@ -403,6 +407,18 @@ func (a *monitorAdapter) GetSKUChangesFiltered(
 		stateFilter = "all"
 	}
 
+	var (
+		skuStatus  *monitor.SKUWatcherStatus
+		allChanges []monitor.SKUChangeRecord
+	)
+	if a.mon != nil {
+		var err error
+		skuStatus, allChanges, err = a.mon.GetSKUStatusAndChanges(ctx)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
 	var rawSKUs map[string]monitor.TrackedSKU
 	if a.store != nil {
 		if st, err := a.store.LoadSKUWatcherState(ctx); err == nil && st != nil && len(st.SKUsJSON) > 0 {
@@ -485,11 +501,7 @@ func (a *monitorAdapter) GetSKUChangesFiltered(
 		}
 	}
 
-	if a.mon != nil {
-		skuStatus, allChanges, err := a.mon.GetSKUStatusAndChanges(ctx)
-		if err != nil {
-			return nil, nil, nil, err
-		}
+	if a.mon != nil && skuStatus != nil {
 		presaleMap := skuStatus.PresaleSKUs
 		if presaleMap == nil {
 			presaleMap = map[string]string{}

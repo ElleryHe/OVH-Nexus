@@ -3,11 +3,40 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.3.3]
+:::note[当前最新版本：v1.3.4]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
+:::tip[RSS 订阅版本更新日志]
+支持在任意 RSS 阅读器（Feedly、Inoreader、NetNewsWire、Follow 等）中订阅 OVH Nexus 版本发布通知：**[`/zh-cn/rss.xml`](https://ovh-nexus.ellery.me/zh-cn/rss.xml)**（英文主源：[`/rss.xml`](https://ovh-nexus.ellery.me/rss.xml) · [`/feed.xml`](https://ovh-nexus.ellery.me/feed.xml) · 法文：[`/fr/rss.xml`](https://ovh-nexus.ellery.me/fr/rss.xml)）。
+:::
+
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.3.4] - 2026-11-18 — 实时库存矩阵防挤压排版与假促销纠偏、SKU 基线自愈迁移及全站 SEO / `/llms.txt` AI 检索增强
+
+### 新增功能 (Added)
+
+- **三语变更日志 RSS 2.0 订阅源 (`/rss.xml`、`/feed.xml`、`/zh-cn/rss.xml`、`/fr/rss.xml`)**：
+  - 在文档站构建期自动解析英、中、法三语 Changelog 并生成标准 RSS 2.0 订阅源（内含完整 HTML 变更明细与版本锚点直达链接），同时在全站 HTML `<head>` 注入 `application/rss+xml` 自动发现标签。
+- **面向 AI 搜索引擎与大模型的 `/llms.txt` 与 `/llms-full.txt` 标准支持**：
+  - 在文档站构建期（`astro:build:done`）自动从英文主文档生成根目录 `/llms.txt`（遵循 [llmstxt.org](https://llmstxt.org) 规范的全站结构化导航摘要与多语言入口）和 `/llms-full.txt`（剥离 MDX 组件标签后的单文件全量纯文本 Markdown 文档），配置 `text/plain; charset=utf-8` 响应头，并在 `robots.txt` 中显式放行 `GPTBot`、`OAI-SearchBot`、`ChatGPT-User`、`ClaudeBot`、`Claude-Web`、`PerplexityBot`、`Google-Extended` 与 `Applebot-Extended`。
+- **IndexNow 自动主动推送与预览环境防收录隔离**：
+  - 新增静态 IndexNow 密钥验证文件、`website/scripts/indexnow.mjs` 推送脚本及 `.github/workflows/docs-indexnow.yml` 工作流，在 `main` 分支文档更新上线后自动向 `https://api.indexnow.org/indexnow` 批量提交最新 URL。
+  - 新增 Cloudflare Worker/Pages 边缘入口（`website/src/worker.ts` 与 `website/functions/_middleware.ts`）、构建期预览分支检测及历史归档路径隔离规则：当访问域名不是 `ovh-nexus.ellery.me`（如 `*.pages.dev`、`*.workers.dev`）时自动注入 `X-Robots-Tag: noindex, nofollow`，防止预览域名或旧版本页面分流正式站搜索排名权重。
+
+### 问题修复 (Fixed)
+
+- **实时库存矩阵 (`/availability`) 双行防挤压布局与浅色模式对比度修复**：
+  - 重构矩阵行顶部布局：左侧型号、状态/促销/代数/新上架徽标（统一强制 `whitespace-nowrap shrink-0 inline-flex` 严禁竖排折字）与 CPU 保持单行舒展展示，右侧配置下拉框（受控宽度 `sm:w-[260px] lg:w-[300px]`）、安装费、月付价格与快速监控按钮紧凑对齐。
+  - 机房单元格升级为自适应最小宽度（`min-w-[116px]`，机房国旗与代码固定 `shrink-0 whitespace-nowrap`），彻底解决显示 `1H-Low · 6配` 时将 `SBG` 等机房代码截断为单个字母的问题。
+  - 修复浅色模式（Light Mode）下 `/availability` 与 `/servers` 筛选按钮及徽标文字对比度过低的问题（升级为 `text-rose-600`、`text-emerald-700`、`text-amber-700`、`text-purple-700`、`text-cyan-700`）。
+- **多配置机型起始价与真实促销 (`hasPromo`) 判定纠偏**：
+  - 修复 `MergedPlanRow` 在汇总多配置机型时将最低配起售价与高配原价跨配置混比、以及将原本无安装费的常规机型（`originalSetupFee === 0`）误判为免安装费促销的缺陷；现在行级起始月价与原价划线严格取自同一套最便宜配置，且仅当目录存在真实折扣或原安装费大于 0 被免除时才标记为 `🔥 促销优惠`。
+- **历史存量 SKU 基线 (`baseline: true`) 保护与自愈迁移**：
+  - 修复 `server/internal/monitor/sku.go` 中 `normalizeLoadedSKUs` 覆盖已有 `Baseline: true` 标记的缺陷，并新增启动期自愈迁移：结合 `ChangesJSON` 变更历史自动将从未作为 `"added"` / `"replaced"` 出现过的历史存量机型恢复为 `Baseline: true, ListedAt: ""`，消除全部非新增机型被误标为「新上架」的问题。
+
+---
 
 ## [1.3.3] - 2026-11-17 — 密码管理器兼容登录 (`ADMIN_USERNAME`)、安装费与黑五促销展示、多周期合约下单与优惠码强校验
 

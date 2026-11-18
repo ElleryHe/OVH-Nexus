@@ -1,4 +1,7 @@
 # OVH Nexus Official Documentation Portal (https://ovh-nexus.ellery.me)
+# LLM Context Files:
+# - Summary & Index: https://ovh-nexus.ellery.me/llms.txt
+# - Full Documentation: https://ovh-nexus.ellery.me/llms-full.txt
 
 User-agent: Googlebot
 Allow: /
@@ -19,6 +22,54 @@ Disallow: /404.html
 Disallow: /pagefind/
 
 User-agent: DuckDuckBot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: GPTBot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: OAI-SearchBot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: ChatGPT-User
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: ClaudeBot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: Claude-Web
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: PerplexityBot
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: Google-Extended
+Allow: /
+Disallow: /404
+Disallow: /404.html
+Disallow: /pagefind/
+
+User-agent: Applebot-Extended
 Allow: /
 Disallow: /404
 Disallow: /404.html

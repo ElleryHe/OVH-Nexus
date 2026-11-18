@@ -742,7 +742,7 @@ func TestMCPStreamableHTTPProtocolAndAudit(t *testing.T) {
 		t.Fatalf("expected negotiated protocolVersion 2024-11-05, got %v", initRes["protocolVersion"])
 	}
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.3" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.4" {
 		t.Fatalf("unexpected serverInfo: %+v", srvInfo)
 	}
 
