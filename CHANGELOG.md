@@ -9,6 +9,27 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.3.4] - 2026-11-18
+
+### Added
+- **AI Search & LLM Context Standard (`/llms.txt` & `/llms-full.txt`)**:
+  - Automatically generates `dist/llms.txt` (structured [llmstxt.org](https://llmstxt.org) index with project summary, canonical URLs, and multi-locale entry points) and `dist/llms-full.txt` (single-file cleaned Markdown documentation bundle) during `astro build`, paired with `text/plain; charset=utf-8` headers and explicit `Allow: /` rules in `robots.txt` for `GPTBot`, `OAI-SearchBot`, `ChatGPT-User`, `ClaudeBot`, `Claude-Web`, `PerplexityBot`, `Google-Extended`, and `Applebot-Extended`.
+- **Automated IndexNow Submission & Non-Production Preview Domain Shield**:
+  - Added static IndexNow verification key, `website/scripts/indexnow.mjs`, and `.github/workflows/docs-indexnow.yml` to automatically push updated canonical URLs to `https://api.indexnow.org/indexnow` after production deployments.
+  - Added Cloudflare Worker/Pages middleware (`website/src/worker.ts` and `website/functions/_middleware.ts`), build-time preview environment detection, and historical version route isolation (`noindex, follow` + latest canonical links) so preview domains (`*.pages.dev`, `*.workers.dev`) and legacy paths never dilute search ranking weight from `https://ovh-nexus.ellery.me`.
+
+### Fixed
+- **Live Availability Matrix (`/availability`) Responsive Two-Row Layout & Light-Mode Contrast**:
+  - Re-architected matrix plan rows so model titles, status/promo/generation badges (`whitespace-nowrap shrink-0`), and CPU names stay on a non-wrapping left block while configuration selectors (`sm:w-[260px] lg:w-[300px]`), setup fees, monthly prices, and Quick Monitor buttons stay aligned on the right without squeezing text vertically.
+  - Widened datacenter cells (`min-w-[116px]` with `shrink-0 whitespace-nowrap` country flag + code labels) to eliminate `SBG` truncation when displaying multi-config availability counters (e.g., `1H-Low · 6 cfg`).
+  - Improved Light Mode text contrast across filter tabs and status/promo badges (`text-rose-600`, `text-emerald-700`, `text-amber-700`, `text-purple-700`, `text-cyan-700`) in `/availability` and `/servers`.
+- **Accurate Per-Configuration Starting Price & Promotion (`hasPromo`) Detection**:
+  - Fixed a bug in `MergedPlanRow` where multi-configuration plans compared the lowest configuration's `startingPrice` against a higher configuration's `originalMonthlyPrice` or treated standard zero-installation-fee plans (`originalSetupFee === 0`) as `FREE SETUP` promotions; row-level `startingPrice` and `originalMonthlyPrice` are now strictly sourced from the same cheapest configuration.
+- **Historical SKU Baseline (`baseline: true`) Preservation & Self-Healing Migration**:
+  - Fixed `normalizeLoadedSKUs` in `server/internal/monitor/sku.go` so existing `Baseline: true` records are never overwritten on reload, and added an automatic startup migration that restores `Baseline: true` (and clears `ListedAt`) for pre-existing catalog SKUs that never appeared as `"added"` or `"replaced"` in `ChangesJSON`.
+
+---
+
 ## [1.3.3] - 2026-11-17
 
 ### Added

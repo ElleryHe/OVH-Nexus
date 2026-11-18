@@ -591,53 +591,19 @@ const OVHAvailabilityPage = () => {
         }
       >();
 
-      let minPrice: number | null =
-        typeof srvMeta?.startingPrice === 'number' && srvMeta.startingPrice > 0
-          ? srvMeta.startingPrice
-          : typeof planMeta.basePrice === 'number' && planMeta.basePrice > 0
-          ? planMeta.basePrice
-          : null;
-      const baseOrigMonthly =
-        typeof first.originalMonthlyPrice === 'number' &&
-        first.originalMonthlyPrice > 0
-          ? first.originalMonthlyPrice
-          : typeof srvMeta?.originalMonthlyPrice === 'number' &&
-            srvMeta.originalMonthlyPrice > 0
-          ? srvMeta.originalMonthlyPrice
-          : planMeta.originalMonthlyPrice ?? null;
-      const baseSetupFee =
-        typeof first.setupFee === 'number'
-          ? first.setupFee
-          : typeof srvMeta?.setupFee === 'number'
+      const fallbackSetupFee =
+        typeof srvMeta?.setupFee === 'number'
           ? srvMeta.setupFee
           : planMeta.setupFee ?? null;
-      const baseOrigSetupFee =
-        typeof first.originalSetupFee === 'number'
-          ? first.originalSetupFee
-          : typeof srvMeta?.originalSetupFee === 'number'
+      const fallbackOrigSetupFee =
+        typeof srvMeta?.originalSetupFee === 'number'
           ? srvMeta.originalSetupFee
           : planMeta.originalSetupFee ?? null;
-      const baseFreeSetup = Boolean(
-        first.freeSetup ||
-          srvMeta?.freeSetup ||
-          planMeta.freeSetup ||
-          (baseSetupFee === 0 && (baseOrigSetupFee ?? 0) > 0)
-      );
       const basePricingModes =
-        (Array.isArray(first.pricingModes) && first.pricingModes.length > 0
-          ? first.pricingModes
-          : Array.isArray(srvMeta?.pricingModes) &&
-            srvMeta.pricingModes.length > 0
+        (Array.isArray(srvMeta?.pricingModes) &&
+          srvMeta.pricingModes.length > 0
           ? srvMeta.pricingModes
           : planMeta.pricingModes) || undefined;
-      const baseHasPromo = Boolean(
-        first.hasPromo ||
-          srvMeta?.hasPromo ||
-          planMeta.hasPromo ||
-          (basePricingModes || []).some((m) => m.hasPromo) ||
-          baseFreeSetup ||
-          (baseOrigMonthly && minPrice && baseOrigMonthly > minPrice + 0.01)
-      );
       const basePromoCode =
         first.promoCode || srvMeta?.promoCode || planMeta.promoCode;
       const basePromoBadge =
@@ -667,29 +633,27 @@ const OVHAvailabilityPage = () => {
             ? it.price
             : priceInfo.totalPrice;
 
-        if (estPrice !== null && estPrice > 0) {
-          if (minPrice === null || estPrice < minPrice) {
-            minPrice = estPrice;
-          }
-        }
-
         const itOrigMonthly =
           typeof it.originalMonthlyPrice === 'number' &&
           it.originalMonthlyPrice > 0
             ? it.originalMonthlyPrice
             : typeof it.originalPrice === 'number' && it.originalPrice > 0
             ? it.originalPrice
-            : baseOrigMonthly;
+            : items.length === 1
+            ? srvMeta?.originalMonthlyPrice ??
+              planMeta.originalMonthlyPrice ??
+              null
+            : null;
         const itSetupFee =
-          typeof it.setupFee === 'number' ? it.setupFee : baseSetupFee;
+          typeof it.setupFee === 'number' ? it.setupFee : fallbackSetupFee;
         const itOrigSetupFee =
           typeof it.originalSetupFee === 'number'
             ? it.originalSetupFee
-            : baseOrigSetupFee;
+            : fallbackOrigSetupFee;
+        const itFreeSetupPromo =
+          itSetupFee === 0 && (itOrigSetupFee ?? 0) > 0;
         const itFreeSetup = Boolean(
-          it.freeSetup ||
-            baseFreeSetup ||
-            (itSetupFee === 0 && (itOrigSetupFee ?? 0) > 0)
+          it.freeSetup || itSetupFee === 0 || itFreeSetupPromo
         );
         const itPricingModes =
           Array.isArray(it.pricingModes) && it.pricingModes.length > 0
@@ -697,9 +661,8 @@ const OVHAvailabilityPage = () => {
             : basePricingModes;
         const itHasPromo = Boolean(
           it.hasPromo ||
-            baseHasPromo ||
             (itPricingModes || []).some((m) => m.hasPromo) ||
-            itFreeSetup ||
+            itFreeSetupPromo ||
             (itOrigMonthly && estPrice && itOrigMonthly > estPrice + 0.01)
         );
 
@@ -781,6 +744,50 @@ const OVHAvailabilityPage = () => {
         );
       });
 
+      let minPriceConfig: MergedConfigEntry | null = null;
+      for (const cfg of configsList) {
+        if (
+          typeof cfg.estimatedMonthlyPrice === 'number' &&
+          cfg.estimatedMonthlyPrice > 0
+        ) {
+          if (
+            !minPriceConfig ||
+            minPriceConfig.estimatedMonthlyPrice === null ||
+            cfg.estimatedMonthlyPrice < minPriceConfig.estimatedMonthlyPrice
+          ) {
+            minPriceConfig = cfg;
+          }
+        }
+      }
+      if (!minPriceConfig && configsList.length > 0) {
+        minPriceConfig =
+          configsList.find((c) => c.isDefault) || configsList[0];
+      }
+
+      const rowStartingPrice =
+        minPriceConfig?.estimatedMonthlyPrice ??
+        (typeof srvMeta?.startingPrice === 'number' && srvMeta.startingPrice > 0
+          ? srvMeta.startingPrice
+          : typeof planMeta.basePrice === 'number' && planMeta.basePrice > 0
+          ? planMeta.basePrice
+          : null);
+      const rowOrigMonthly = minPriceConfig
+        ? minPriceConfig.originalMonthlyPrice
+        : srvMeta?.originalMonthlyPrice ??
+          planMeta.originalMonthlyPrice ??
+          null;
+      const rowSetupFee = minPriceConfig
+        ? minPriceConfig.setupFee
+        : fallbackSetupFee;
+      const rowOrigSetupFee = minPriceConfig
+        ? minPriceConfig.originalSetupFee
+        : fallbackOrigSetupFee;
+      const rowFreeSetupPromo =
+        rowSetupFee === 0 && (rowOrigSetupFee ?? 0) > 0;
+      const rowFreeSetup = Boolean(
+        minPriceConfig ? minPriceConfig.freeSetup : rowSetupFee === 0
+      );
+
       // Compute best availability and in-stock config count per datacenter across all configs of this planCode
       configsList.forEach((cfg) => {
         cfg.datacenters.forEach((d) => {
@@ -827,7 +834,13 @@ const OVHAvailabilityPage = () => {
       );
 
       const rowHasPromo = Boolean(
-        baseHasPromo ||
+        srvMeta?.hasPromo ||
+          planMeta.hasPromo ||
+          (basePricingModes || []).some((m) => m.hasPromo) ||
+          rowFreeSetupPromo ||
+          (rowOrigMonthly !== null &&
+            rowStartingPrice !== null &&
+            rowOrigMonthly > rowStartingPrice + 0.01) ||
           configsList.some(
             (c) => c.hasPromo || (c.pricingModes || []).some((m) => m.hasPromo)
           )
@@ -840,16 +853,17 @@ const OVHAvailabilityPage = () => {
         orderable: listingState === 'listed',
         generation,
         isRecentlyAdded,
-        startingPrice: minPrice,
-        originalMonthlyPrice: baseOrigMonthly,
-        setupFee: baseSetupFee,
-        originalSetupFee: baseOrigSetupFee,
-        freeSetup: baseFreeSetup,
+        startingPrice: rowStartingPrice,
+        originalMonthlyPrice: rowOrigMonthly,
+        setupFee: rowSetupFee,
+        originalSetupFee: rowOrigSetupFee,
+        freeSetup: rowFreeSetup,
         hasPromo: rowHasPromo,
-        promoCode: basePromoCode,
-        promoBadge: basePromoBadge,
-        promoDescription: basePromoDescription,
-        pricingModes: basePricingModes,
+        promoCode: minPriceConfig?.promoCode || basePromoCode,
+        promoBadge: minPriceConfig?.promoBadge || basePromoBadge,
+        promoDescription:
+          minPriceConfig?.promoDescription || basePromoDescription,
+        pricingModes: minPriceConfig?.pricingModes || basePricingModes,
         currency,
         configs: configsList,
         allDatacenters,
@@ -1051,49 +1065,49 @@ const OVHAvailabilityPage = () => {
       case '1H-low':
         return {
           text: '1H-Low',
-          color: 'text-yellow-400',
+          color: 'text-amber-700 dark:text-yellow-400',
           bg: 'bg-yellow-500/10',
           border: 'border-yellow-500/30',
         };
       case '1H-high':
         return {
           text: '1H-High',
-          color: 'text-green-400',
+          color: 'text-emerald-700 dark:text-green-400',
           bg: 'bg-green-500/10',
           border: 'border-green-500/30',
         };
       case '72H':
         return {
           text: '72H',
-          color: 'text-blue-400',
+          color: 'text-blue-700 dark:text-blue-400',
           bg: 'bg-blue-500/10',
           border: 'border-blue-500/30',
         };
       case '480H':
         return {
           text: '480H',
-          color: 'text-purple-400',
+          color: 'text-purple-700 dark:text-purple-400',
           bg: 'bg-purple-500/10',
           border: 'border-purple-500/30',
         };
       case 'unavailable':
         return {
           text: locale === 'zh-CN' ? '无货' : locale === 'fr' ? 'Rupture' : 'Out',
-          color: 'text-red-400/80',
+          color: 'text-rose-600 dark:text-red-400/80',
           bg: 'bg-red-500/5',
           border: 'border-red-500/20',
         };
       case 'unknown':
         return {
           text: '-',
-          color: 'text-gray-400',
+          color: 'text-slate-600 dark:text-gray-400',
           bg: 'bg-gray-500/10',
           border: 'border-gray-500/30',
         };
       default:
         return {
           text: availability,
-          color: 'text-cyan-400',
+          color: 'text-cyan-700 dark:text-cyan-400',
           bg: 'bg-cyan-500/10',
           border: 'border-cyan-500/30',
         };
@@ -1103,7 +1117,7 @@ const OVHAvailabilityPage = () => {
   const renderSkuChangeBadge = (chg: SkuChangeRecord) => {
     if (chg.type === 'replaced') {
       return (
-        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
           {t('sku.replaced', {
             oldCode: chg.replacedFrom || 'old',
             newCode: chg.planCode || chg.skuKey,
@@ -1113,14 +1127,14 @@ const OVHAvailabilityPage = () => {
     }
     if (chg.saleStarted) {
       return (
-        <span className="px-2 py-0.5 rounded font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+        <span className="px-2 py-0.5 rounded font-semibold bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
           {t('sku.saleStarted')}
         </span>
       );
     }
     if (chg.listingState === 'announced') {
       return (
-        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+        <span className="px-2 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
           {t('announced.skuAdded')}
         </span>
       );
@@ -1130,27 +1144,27 @@ const OVHAvailabilityPage = () => {
       (chg.type === 'added' && chg.listingState === 'presale')
     ) {
       return (
-        <span className="px-2 py-0.5 rounded font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/30">
+        <span className="px-2 py-0.5 rounded font-semibold bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
           {t('presale.skuAdded')}
         </span>
       );
     }
     if (chg.type === 'added' || chg.type === 'listed') {
       return (
-        <span className="px-2 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+        <span className="px-2 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
           {t('sku.newListed')}
         </span>
       );
     }
     if (chg.type === 'removed') {
       return (
-        <span className="px-2 py-0.5 rounded font-semibold bg-red-500/15 text-red-400 border border-red-500/30">
+        <span className="px-2 py-0.5 rounded font-semibold bg-red-500/15 text-rose-600 dark:text-red-400 border border-red-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
           {t('sku.removedBadge')}
         </span>
       );
     }
     return (
-      <span className="px-2 py-0.5 rounded font-semibold bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
+      <span className="px-2 py-0.5 rounded font-semibold bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30 whitespace-nowrap shrink-0 inline-flex items-center">
         {t('sku.configChangedBadge')}
       </span>
     );
@@ -1465,35 +1479,35 @@ const OVHAvailabilityPage = () => {
                     label: t('listing.filter.listed'),
                     count: tabCounts.listed,
                     activeCls:
-                      'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
+                      'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/50',
                   },
                   {
                     id: 'promo',
                     label: t('listing.filter.promo'),
                     count: tabCounts.promo,
                     activeCls:
-                      'bg-rose-500/20 text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
+                      'bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.2)]',
                   },
                   {
                     id: 'announced',
                     label: t('listing.filter.announced'),
                     count: tabCounts.announced,
                     activeCls:
-                      'bg-amber-500/20 text-amber-300 border-amber-500/50',
+                      'bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/50',
                   },
                   {
                     id: 'presale',
                     label: t('listing.filter.presale'),
                     count: tabCounts.presale,
                     activeCls:
-                      'bg-purple-500/20 text-purple-300 border-purple-500/50',
+                      'bg-purple-500/20 text-purple-700 dark:text-purple-300 border-purple-500/50',
                   },
                   {
                     id: 'new',
                     label: t('listing.filter.new'),
                     count: tabCounts.new,
                     activeCls:
-                      'bg-cyan-500/20 text-cyan-300 border-cyan-500/50',
+                      'bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border-cyan-500/50',
                   },
                 ] as const
               ).map((tab) => {
@@ -1503,16 +1517,16 @@ const OVHAvailabilityPage = () => {
                     key={tab.id}
                     type="button"
                     onClick={() => setListingFilterTab(tab.id)}
-                    className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 ${
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold border transition-all flex items-center gap-1.5 whitespace-nowrap ${
                       isActive
                         ? tab.activeCls
                         : tab.id === 'promo'
-                        ? 'bg-rose-500/10 text-rose-300/90 border-rose-500/30 hover:bg-rose-500/20'
+                        ? 'bg-rose-500/10 text-rose-600 dark:text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
                         : 'bg-cyber-surface text-cyber-muted border-cyber-grid hover:text-cyber-text'
                     }`}
                   >
                     <span>{tab.label}</span>
-                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/20">
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/10 dark:bg-black/25 text-current">
                       {tab.count}
                     </span>
                   </button>
@@ -1612,72 +1626,75 @@ const OVHAvailabilityPage = () => {
                   {/* Top Row: Model, Badges, Config Selector Dropdown, Price & Quick Monitor */}
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
                     {/* Left: Model identity & CPU */}
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 lg:min-w-[280px]">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <h3 className="text-sm sm:text-base font-bold text-cyber-accent truncate">
+                        <h3 className="text-sm sm:text-base font-bold text-cyber-accent whitespace-nowrap shrink-0">
                           {planMeta.name}
                         </h3>
                         {planMeta.regionLabel && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30">
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/30 whitespace-nowrap shrink-0 inline-flex items-center">
                             {planMeta.regionLabel}
                           </span>
                         )}
-                        <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-cyber-grid/40 text-cyber-muted">
+                        <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-cyber-grid/40 text-cyber-muted whitespace-nowrap shrink-0 inline-flex items-center">
                           {row.planCode}
                         </span>
                         {displayHasPromo && (
                           <span
                             title={displayPromoDesc}
-                            className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-300 border border-rose-500/40"
+                            className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/40 whitespace-nowrap shrink-0 inline-flex items-center gap-0.5"
                           >
                             🔥 {displayPromoBadge || t('promo.badge')}
                           </span>
                         )}
                         {row.listingState === 'announced' && (
-                          <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
+                          <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5 shrink-0" />
                             {t('announced.badge')}
                           </span>
                         )}
                         {row.listingState === 'presale' && (
-                          <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
+                          <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5 shrink-0" />
                             {t('presale.badge')}
                           </span>
                         )}
                         {row.listingState === 'listed' && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 whitespace-nowrap shrink-0 inline-flex items-center">
                             {t('listed.badge')}
                           </span>
                         )}
                         {row.generation && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                          <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 whitespace-nowrap shrink-0 inline-flex items-center">
                             {t('presale.generation', { year: row.generation })}
                           </span>
                         )}
                         {row.isRecentlyAdded && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5" />
+                          <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5 shrink-0" />
                             {t('sku.newListed')}
                           </span>
                         )}
-                        {planMeta.cpuText && (
-                          <span className="text-xs text-cyber-muted truncate max-w-md">
-                            · {planMeta.cpuText}
-                          </span>
-                        )}
-                        {activeGpuText && (
-                          <span className="text-xs text-cyber-accent font-medium">
-                            · {activeGpuText}
-                          </span>
-                        )}
                       </div>
+                      {(planMeta.cpuText || activeGpuText) && (
+                        <div className="text-xs text-cyber-muted truncate mt-1">
+                          {planMeta.cpuText && <span>{planMeta.cpuText}</span>}
+                          {planMeta.cpuText && activeGpuText && (
+                            <span> · </span>
+                          )}
+                          {activeGpuText && (
+                            <span className="text-cyber-accent font-medium">
+                              {activeGpuText}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* Right: Inline Configuration Dropdown + Price + Quick Monitor Button */}
-                    <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                       {row.configs.length > 0 && (
-                        <div className="flex items-center gap-1.5 min-w-[220px] sm:min-w-[280px] max-w-full">
+                        <div className="flex items-center gap-1.5 w-full sm:w-[260px] lg:w-[290px] max-w-[310px] min-w-0">
                           <select
                             aria-label={t('availability.configSelectorLabel')}
                             value={selectedCfgKey}
@@ -1687,7 +1704,7 @@ const OVHAvailabilityPage = () => {
                                 [row.planCode]: e.target.value,
                               }))
                             }
-                            className="cyber-input text-xs py-1 px-2 w-full"
+                            className="cyber-input text-xs py-1 px-2 w-full sm:w-[260px] lg:w-[290px] max-w-[310px] truncate"
                           >
                             <option value="all">
                               {t('availability.allConfigs', {
@@ -1737,7 +1754,7 @@ const OVHAvailabilityPage = () => {
                       {/* Setup Fee Pill */}
                       {row.listingState !== 'presale' &&
                         (displaySetupFee === 0 || displayFreeSetup ? (
-                          <div className="px-2 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 font-semibold text-xs leading-none whitespace-nowrap inline-flex items-center">
+                          <div className="px-2 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 font-semibold text-xs leading-none whitespace-nowrap shrink-0 inline-flex items-center">
                             <span>{t('promo.freeSetup')}</span>
                             {displayOrigSetupFee !== null &&
                               displayOrigSetupFee > 0 && (
@@ -1748,7 +1765,7 @@ const OVHAvailabilityPage = () => {
                               )}
                           </div>
                         ) : displaySetupFee !== null && displaySetupFee > 0 ? (
-                          <div className="px-2 py-1 rounded-md bg-cyber-grid/40 border border-cyber-grid text-cyber-muted font-mono text-xs leading-none whitespace-nowrap">
+                          <div className="px-2 py-1 rounded-md bg-cyber-grid/40 border border-cyber-grid text-cyber-muted font-mono text-xs leading-none whitespace-nowrap shrink-0 inline-flex items-center">
                             {t('promo.setupFee', {
                               price: `${symbol}${displaySetupFee.toFixed(2)}`,
                             })}
@@ -1759,7 +1776,7 @@ const OVHAvailabilityPage = () => {
                       {displayPrice !== null &&
                       displayPrice > 0 &&
                       row.listingState !== 'presale' ? (
-                        <div className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-xs sm:text-sm leading-none whitespace-nowrap inline-flex items-center">
+                        <div className="px-2.5 py-1 rounded-md bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent font-bold text-xs sm:text-sm leading-none whitespace-nowrap shrink-0 inline-flex items-center">
                           <span>
                             {activeConfig
                               ? `${symbol}${displayPrice.toFixed(2)}${t(
@@ -1780,7 +1797,7 @@ const OVHAvailabilityPage = () => {
                       ) : row.listingState === 'presale' ? (
                         <div
                           title={t('presale.notOrderableHint')}
-                          className="px-2 py-1 rounded bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs font-medium whitespace-nowrap"
+                          className="px-2 py-1 rounded bg-purple-500/10 border border-purple-500/30 text-purple-700 dark:text-purple-300 text-xs font-medium whitespace-nowrap shrink-0 inline-flex items-center"
                         >
                           {t('presale.pricingTbd')}
                         </div>
@@ -1853,9 +1870,9 @@ const OVHAvailabilityPage = () => {
                             })),
                           })
                         }
-                        className="px-2.5 py-1 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 border border-cyber-accent/40 text-cyber-accent text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap"
+                        className="px-2.5 py-1 rounded-md bg-cyber-accent/15 hover:bg-cyber-accent/25 border border-cyber-accent/40 text-cyber-accent text-xs font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
                       >
-                        <Bell className="w-3.5 h-3.5" />
+                        <Bell className="w-3.5 h-3.5 shrink-0" />
                         <span>{t('quickMonitor.button')}</span>
                       </button>
                     </div>
@@ -1865,7 +1882,7 @@ const OVHAvailabilityPage = () => {
                   <div className="mt-2 pt-2 border-t border-cyber-grid/40">
                     {row.listingState === 'announced' &&
                     dcCellsToRender.length === 0 ? (
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/25 rounded px-2.5 py-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded px-2.5 py-1.5">
                         <span>{t('announced.noStockFeedHint')}</span>
                         {row.configs[0] &&
                           (row.configs[0].memory || row.configs[0].storage) && (
@@ -1875,7 +1892,7 @@ const OVHAvailabilityPage = () => {
                           )}
                       </div>
                     ) : (
-                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5">
+                      <div className="flex flex-wrap gap-1.5">
                         {dcCellsToRender.map((dc) => {
                           const availInfo = getAvailabilityInfo(
                             dc.availability
@@ -1884,20 +1901,20 @@ const OVHAvailabilityPage = () => {
                             <div
                               key={dc.datacenter}
                               title={dc.tooltip}
-                              className={`${availInfo.bg} ${availInfo.border} border rounded px-2 py-1 flex items-center justify-between gap-1 text-xs`}
+                              className={`${availInfo.bg} ${availInfo.border} border rounded min-w-[120px] px-2.5 py-1.5 inline-flex items-center justify-between gap-2 text-xs`}
                             >
-                              <div className="font-semibold text-slate-200 text-[11px] truncate">
+                              <div className="font-semibold text-cyber-text text-[11px] shrink-0 whitespace-nowrap">
                                 <DCLabel code={dc.datacenter} mode="compact" />
                               </div>
-                              <div className="flex items-center gap-1 flex-shrink-0">
+                              <div className="flex items-center gap-1 shrink-0 whitespace-nowrap">
                                 <span
-                                  className={`${availInfo.color} text-[10px] font-semibold`}
+                                  className={`${availInfo.color} text-[10px] font-semibold whitespace-nowrap`}
                                 >
                                   {availInfo.text}
                                 </span>
                                 {!activeConfig &&
                                   dc.inStockConfigsCount > 1 && (
-                                    <span className="px-1 py-0.1 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-mono">
+                                    <span className="px-1 py-0.1 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-[9px] font-mono whitespace-nowrap shrink-0">
                                       {t('availability.multiConfigBadge', {
                                         count: dc.inStockConfigsCount,
                                       })}

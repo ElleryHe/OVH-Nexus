@@ -1105,3 +1105,149 @@ func TestStockTargetPassesPricingModeDurationAndCouponToAutoOrder(t *testing.T) 
 		t.Fatalf("expected autoOrderFn to receive PricingMode=upfront12, Duration=P12M, Coupon=BF26, MaxMonthlyPrice=30.00; got %+v", got)
 	}
 }
+
+func TestNormalizeLoadedSKUsAutoRepairsCorruptedBaselineEntries(t *testing.T) {
+	env := newMonitorTestEnv(t, nil)
+	ctx := context.Background()
+
+	nowTS := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	oldTS := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	altTS := time.Now().UTC().Add(-36 * time.Hour).Format(time.RFC3339Nano)
+
+	skus := map[string]TrackedSKU{
+		// 1. Valid baseline entry with different FirstSeen timestamp -> must remain Baseline=true, ListedAt=""
+		"24ska01": {
+			Key:          "24ska01",
+			PlanCode:     "24ska01",
+			PlanCodes:    []string{"24ska01"},
+			Name:         "KS-A",
+			Range:        "KS",
+			FirstSeen:    oldTS,
+			Baseline:     true,
+			ListingState: "listed",
+		},
+		// 2. Corrupted baseline entry (Baseline=false, ListedAt==FirstSeen, NOT in history "added" records) -> must auto-repair to Baseline=true, ListedAt=""
+		"21hcisap01-v1": {
+			Key:          "21hcisap01-v1",
+			PlanCode:     "21hcisap01-v1",
+			PlanCodes:    []string{"21hcisap01-v1", "21hcisap01-v1-sgp"},
+			Name:         "HGR-SAP-1",
+			Range:        "HGR",
+			FirstSeen:    altTS,
+			ListedAt:     altTS,
+			Baseline:     false,
+			ListingState: "listed",
+		},
+		// 3. Corrupted baseline entry with Baseline=true but accidentally populated ListedAt -> must clear ListedAt=""
+		"24rise01": {
+			Key:          "24rise01",
+			PlanCode:     "24rise01",
+			PlanCodes:    []string{"24rise01"},
+			Name:         "RISE-1",
+			Range:        "RISE",
+			FirstSeen:    altTS,
+			ListedAt:     altTS,
+			Baseline:     true,
+			ListingState: "listed",
+		},
+		// 4. Genuine newly added SKU (present in history Type=="added") -> must remain Baseline=false, ListedAt==nowTS and appear in RecentFirstSeen
+		"27skle05": {
+			Key:          "27skle05",
+			PlanCode:     "27skle05",
+			PlanCodes:    []string{"27skle05"},
+			Name:         "KS-LE-5",
+			Range:        "KS",
+			FirstSeen:    nowTS,
+			ListedAt:     nowTS,
+			Baseline:     false,
+			ListingState: "listed",
+		},
+		// 5. Genuine SaleStarted SKU -> must remain Baseline=false, SaleStarted=true, ListedAt==nowTS and appear in RecentFirstSeen
+		"27skle01": {
+			Key:          "27skle01",
+			PlanCode:     "27skle01",
+			PlanCodes:    []string{"27skle01"},
+			Name:         "KS-LE-1",
+			Range:        "KS",
+			FirstSeen:    oldTS,
+			ListedAt:     nowTS,
+			Baseline:     false,
+			SaleStarted:  true,
+			ListingState: "listed",
+		},
+	}
+
+	history := []SKUChangeRecord{
+		{
+			ID:           "chg-1",
+			Type:         "added",
+			ListingState: "listed",
+			SKUKey:       "27skle05",
+			PlanCode:     "27skle05",
+			PlanCodes:    []string{"27skle05"},
+			Name:         "KS-LE-5",
+			Endpoint:     "ovh-eu",
+			Timestamp:    nowTS,
+		},
+		{
+			ID:           "chg-2",
+			Type:         "added",
+			ListingState: "listed",
+			SaleStarted:  true,
+			SKUKey:       "27skle01",
+			PlanCode:     "27skle01",
+			PlanCodes:    []string{"27skle01"},
+			Name:         "KS-LE-1",
+			Endpoint:     "ovh-eu",
+			Timestamp:    nowTS,
+		},
+	}
+
+	if err := env.svc.saveSKUState(ctx, true, "ovh-eu", skus, map[string]int{}, history); err != nil {
+		t.Fatalf("saveSKUState failed: %v", err)
+	}
+
+	status, _, err := env.svc.GetSKUStatusAndChanges(ctx)
+	if err != nil {
+		t.Fatalf("GetSKUStatusAndChanges failed: %v", err)
+	}
+
+	// Corrupted baseline entries must NOT appear in RecentFirstSeen or ResolveSKUListedAt
+	for _, baselineCode := range []string{"24ska01", "21hcisap01-v1", "21hcisap01-v1-sgp", "24rise01"} {
+		if ts := status.RecentFirstSeen[baselineCode]; ts != "" {
+			t.Fatalf("expected repaired baseline SKU %s to NOT be in RecentFirstSeen, got %q", baselineCode, ts)
+		}
+		if ts := env.svc.ResolveSKUListedAt(baselineCode); ts != "" {
+			t.Fatalf("expected ResolveSKUListedAt(%s) to be empty after baseline repair, got %q", baselineCode, ts)
+		}
+	}
+
+	// Genuinely added / SaleStarted entries MUST remain in RecentFirstSeen and ResolveSKUListedAt
+	for _, addedCode := range []string{"27skle05", "27skle01"} {
+		if ts := status.RecentFirstSeen[addedCode]; ts != nowTS {
+			t.Fatalf("expected genuine added SKU %s in RecentFirstSeen with %q, got %q", addedCode, nowTS, ts)
+		}
+		if ts := env.svc.ResolveSKUListedAt(addedCode); ts != nowTS {
+			t.Fatalf("expected ResolveSKUListedAt(%s) = %q, got %q", addedCode, nowTS, ts)
+		}
+	}
+
+	// Verify the repaired state was persisted back to SQLite so subsequent loads return dirty=false
+	reloaded, err := env.st.LoadSKUWatcherState(ctx)
+	if err != nil {
+		t.Fatalf("LoadSKUWatcherState failed: %v", err)
+	}
+	var persistedSKUs map[string]TrackedSKU
+	if err := json.Unmarshal(reloaded.SKUsJSON, &persistedSKUs); err != nil {
+		t.Fatalf("unmarshal persisted SKUs failed: %v", err)
+	}
+	if !persistedSKUs["21hcisap01-v1"].Baseline || persistedSKUs["21hcisap01-v1"].ListedAt != "" {
+		t.Fatalf("expected 21hcisap01-v1 persisted with Baseline=true and ListedAt='', got %+v", persistedSKUs["21hcisap01-v1"])
+	}
+	if !persistedSKUs["24rise01"].Baseline || persistedSKUs["24rise01"].ListedAt != "" {
+		t.Fatalf("expected 24rise01 persisted with Baseline=true and ListedAt='', got %+v", persistedSKUs["24rise01"])
+	}
+	if normalizeLoadedSKUs(persistedSKUs, history, true) {
+		t.Fatalf("expected normalizeLoadedSKUs to return dirty=false on already-repaired state")
+	}
+}

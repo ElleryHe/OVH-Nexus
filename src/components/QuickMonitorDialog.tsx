@@ -193,7 +193,9 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
         ? raw.originalMonthlyPrice
         : typeof raw.originalPrice === 'number' && raw.originalPrice > 0
         ? raw.originalPrice
-        : fallbackMeta.originalMonthlyPrice ?? null;
+        : raw.isDefault
+        ? fallbackMeta.originalMonthlyPrice ?? null
+        : null;
 
     const setupFee =
       typeof raw.setupFee === 'number'
@@ -209,16 +211,17 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
         ? fallbackMeta.originalSetupFee
         : null;
 
+    const freeSetupPromo =
+      setupFee === 0 && (originalSetupFee ?? 0) > 0;
     const freeSetup = Boolean(
-      raw.freeSetup ||
-        fallbackMeta.freeSetup ||
-        (setupFee === 0 && (originalSetupFee ?? 0) > 0)
+      raw.freeSetup || setupFee === 0 || freeSetupPromo
     );
 
     const hasPromo = Boolean(
       raw.hasPromo ||
-        fallbackMeta.hasPromo ||
-        freeSetup ||
+        (Array.isArray(raw.pricingModes) &&
+          raw.pricingModes.some((m: any) => m.hasPromo)) ||
+        freeSetupPromo ||
         (originalMonthlyPrice &&
           estPrice &&
           originalMonthlyPrice > estPrice + 0.01)

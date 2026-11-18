@@ -36,6 +36,7 @@ type skuFastRecheckState struct {
 	pending        bool
 	delayOverride  time.Duration
 	listedAtByCode map[string]string
+	listedAtLoaded bool
 }
 
 var (
@@ -138,6 +139,24 @@ func (s *Service) ResolveSKUListedAt(planCode string) string {
 	}
 	skuFastRecheckMu.Lock()
 	st := skuFastRecheckStates[s]
+	loaded := st != nil && st.listedAtLoaded
+	skuFastRecheckMu.Unlock()
+	if !loaded && s.store != nil {
+		if state, err := s.store.LoadSKUWatcherState(context.Background()); err == nil && state != nil {
+			var history []SKUChangeRecord
+			_ = json.Unmarshal(state.ChangesJSON, &history)
+			skus := make(map[string]TrackedSKU)
+			_ = json.Unmarshal(state.SKUsJSON, &skus)
+			if normalizeLoadedSKUs(skus, history, state.Initialized) {
+				missingCounts := make(map[string]int)
+				_ = json.Unmarshal(state.MissingJSON, &missingCounts)
+				_ = s.saveSKUState(context.Background(), state.Initialized, state.Endpoint, skus, missingCounts, history)
+			}
+			s.updateCachedListedAtMap(skus)
+		}
+	}
+	skuFastRecheckMu.Lock()
+	st = skuFastRecheckStates[s]
 	if st != nil && len(st.listedAtByCode) > 0 {
 		if ts := st.listedAtByCode[strings.ToLower(pc)]; ts != "" {
 			skuFastRecheckMu.Unlock()
@@ -182,6 +201,7 @@ func (s *Service) updateCachedListedAtMap(skus map[string]TrackedSKU) {
 		skuFastRecheckStates[s] = st
 	}
 	st.listedAtByCode = m
+	st.listedAtLoaded = true
 	skuFastRecheckMu.Unlock()
 }
 
@@ -454,11 +474,14 @@ func (s *Service) checkSKUOnce(ctx context.Context, manual, fastRecheck bool) (*
 
 	prevSKUs := make(map[string]TrackedSKU)
 	_ = json.Unmarshal(state.SKUsJSON, &prevSKUs)
-	normalizeLoadedSKUs(prevSKUs, state.Initialized)
 	missingCounts := make(map[string]int)
 	_ = json.Unmarshal(state.MissingJSON, &missingCounts)
 	var history []SKUChangeRecord
 	_ = json.Unmarshal(state.ChangesJSON, &history)
+	if normalizeLoadedSKUs(prevSKUs, history, state.Initialized) {
+		s.updateCachedListedAtMap(prevSKUs)
+		_ = s.saveSKUState(ctx, state.Initialized, state.Endpoint, prevSKUs, missingCounts, history)
+	}
 
 	if len(prevSKUs) > 0 && len(dict.RealPlans) > 0 {
 		pruneAndMigratePrevSKUs(prevSKUs, missingCounts, currSKUs, dict, availItems, rules)
@@ -1434,44 +1457,84 @@ func collectCatalogSKUs(
 	return out
 }
 
-// normalizeLoadedSKUs applies migration guards for legacy snapshots and backfills ListedAt
-// for non-baseline SKUs whose FirstSeen differs from the baseline timestamp.
-func normalizeLoadedSKUs(skus map[string]TrackedSKU, initialized bool) {
+// normalizeLoadedSKUs applies migration guards for legacy snapshots, repairs corrupted baseline
+// entries against recorded change history, and returns true if any entry was modified.
+func normalizeLoadedSKUs(skus map[string]TrackedSKU, history []SKUChangeRecord, initialized bool) bool {
 	if len(skus) == 0 {
-		return
+		return false
 	}
+
+	dirty := false
 
 	// Normalize legacy field aliases (skuKey -> Key, firstSeenAt -> FirstSeen) first.
 	for k, entry := range skus {
+		changed := false
 		if entry.Key == "" {
 			entry.Key = nonEmpty(entry.SKUKey, k)
+			changed = true
 		}
-		entry.SKUKey = ""
+		if entry.SKUKey != "" {
+			entry.SKUKey = ""
+			changed = true
+		}
 		if entry.FirstSeen == "" && entry.FirstSeenAt != "" {
 			entry.FirstSeen = entry.FirstSeenAt
+			changed = true
 		}
-		entry.FirstSeenAt = ""
+		if entry.FirstSeenAt != "" {
+			entry.FirstSeenAt = ""
+			changed = true
+		}
 		if entry.PlanCode == "" {
 			if len(entry.PlanCodes) > 0 && entry.PlanCodes[0] != "" {
 				entry.PlanCode = entry.PlanCodes[0]
 			} else {
 				entry.PlanCode = entry.Key
 			}
+			changed = true
 		}
-		skus[k] = entry
+		if changed {
+			dirty = true
+			skus[k] = entry
+		}
+	}
+
+	genuinelyAdded := make(map[string]bool)
+	markAdded := func(code string) {
+		c := strings.ToLower(strings.TrimSpace(code))
+		if c == "" {
+			return
+		}
+		genuinelyAdded[c] = true
+		if base, _ := catalog.ParsePlanRegion(c); base != "" {
+			genuinelyAdded[strings.ToLower(base)] = true
+		}
+	}
+	for _, rec := range history {
+		if rec.Type == "added" || rec.Type == "replaced" || rec.SaleStarted {
+			markAdded(rec.SKUKey)
+			markAdded(rec.PlanCode)
+			for _, pc := range rec.PlanCodes {
+				markAdded(pc)
+			}
+		}
+	}
+	isEntryGenuinelyAdded := func(entry TrackedSKU) bool {
+		if genuinelyAdded[strings.ToLower(strings.TrimSpace(entry.Key))] ||
+			genuinelyAdded[strings.ToLower(strings.TrimSpace(entry.PlanCode))] {
+			return true
+		}
+		for _, pc := range entry.PlanCodes {
+			if genuinelyAdded[strings.ToLower(strings.TrimSpace(pc))] {
+				return true
+			}
+		}
+		return false
 	}
 
 	allUnmigratedSameTS := initialized
 	var sharedFirstSeen string
-	tsCounts := make(map[string]int)
-	var baselineTS string
 	for _, entry := range skus {
-		if entry.FirstSeen != "" {
-			tsCounts[entry.FirstSeen]++
-		}
-		if entry.Baseline && entry.FirstSeen != "" && baselineTS == "" {
-			baselineTS = entry.FirstSeen
-		}
 		if entry.Baseline || entry.ListedAt != "" || entry.PresaleSince != "" || entry.FirstSeen == "" {
 			allUnmigratedSameTS = false
 		}
@@ -1481,35 +1544,50 @@ func normalizeLoadedSKUs(skus map[string]TrackedSKU, initialized bool) {
 			allUnmigratedSameTS = false
 		}
 	}
-	if baselineTS == "" && len(skus) >= 3 {
-		maxCnt := 0
-		for ts, cnt := range tsCounts {
-			if cnt > maxCnt && cnt >= 2 {
-				maxCnt = cnt
-				baselineTS = ts
-			}
-		}
-	}
 
 	for k, entry := range skus {
-		if allUnmigratedSameTS {
-			entry.Baseline = true
-			entry.ListedAt = ""
+		changed := false
+		if allUnmigratedSameTS && !isEntryGenuinelyAdded(entry) {
+			if !entry.Baseline || entry.ListedAt != "" {
+				entry.Baseline = true
+				entry.ListedAt = ""
+				changed = true
+			}
 		}
 		if entry.ListingState == "" {
 			entry.ListingState = "listed"
+			changed = true
 		}
-		if entry.ListingState == "listed" && entry.ListedAt == "" && entry.FirstSeen != "" {
-			if !entry.Baseline || (baselineTS != "" && entry.FirstSeen != baselineTS) {
-				entry.Baseline = false
-				entry.ListedAt = entry.FirstSeen
+		if entry.Baseline {
+			if !entry.SaleStarted && entry.ListedAt != "" {
+				entry.ListedAt = ""
+				changed = true
+			}
+		} else if entry.ListingState == "listed" && !entry.SaleStarted {
+			if isEntryGenuinelyAdded(entry) {
+				if entry.ListedAt == "" && entry.FirstSeen != "" {
+					entry.ListedAt = entry.FirstSeen
+					changed = true
+				}
+			} else if entry.ListedAt == "" || entry.ListedAt == entry.FirstSeen {
+				entry.Baseline = true
+				entry.ListedAt = ""
+				changed = true
 			}
 		}
 		if entry.Generation == 0 {
-			entry.Generation = catalog.InferPlanGeneration(entry.PlanCode)
+			if gen := catalog.InferPlanGeneration(entry.PlanCode); gen != 0 {
+				entry.Generation = gen
+				changed = true
+			}
 		}
-		skus[k] = entry
+		if changed {
+			dirty = true
+			skus[k] = entry
+		}
 	}
+
+	return dirty
 }
 
 func buildSKUAvailSummaries(items []catalog.RawAvailabilityItem, locale string) map[string]*skuAvailSummary {
@@ -1645,15 +1723,19 @@ func (s *Service) buildSKUStatusAndChanges(ctx context.Context) (*SKUWatcherStat
 		rules = settings.Rules
 	}
 
-	skus := make(map[string]TrackedSKU)
-	_ = json.Unmarshal(state.SKUsJSON, &skus)
-	normalizeLoadedSKUs(skus, state.Initialized)
-	s.updateCachedListedAtMap(skus)
 	var changes []SKUChangeRecord
 	_ = json.Unmarshal(state.ChangesJSON, &changes)
 	if changes == nil {
 		changes = []SKUChangeRecord{}
 	}
+	skus := make(map[string]TrackedSKU)
+	_ = json.Unmarshal(state.SKUsJSON, &skus)
+	if normalizeLoadedSKUs(skus, changes, state.Initialized) {
+		missingCounts := make(map[string]int)
+		_ = json.Unmarshal(state.MissingJSON, &missingCounts)
+		_ = s.saveSKUState(ctx, state.Initialized, state.Endpoint, skus, missingCounts, changes)
+	}
+	s.updateCachedListedAtMap(skus)
 
 	recordPlanCodeTimestamp := func(target map[string]string, entry TrackedSKU, tsStr string) {
 		if tsStr == "" {

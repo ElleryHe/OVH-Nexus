@@ -1113,27 +1113,29 @@ func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDic
 						continue
 					}
 					ap, hasAP := addonsPriceByCode[rawAC]
-					addonDelta := 0.0
-					if hasAP && ap.price != nil {
-						addonDelta = *ap.price
-						if *ap.price > 0 {
-							addonPrices[rawAC] = *ap.price
-							if ap.product != "" {
-								addonPrices[ap.product] = *ap.price
-							}
-						}
-					}
+					isDef := rawAC == defAddon
 					prodKey := ap.product
 					if prodKey == "" {
 						prodKey = stripPlanAddonSuffix(rawAC, planCode, baseCode, noVerCode, productKey)
 					}
+					addonDelta := 0.0
+					if hasAP && ap.price != nil {
+						addonDelta = *ap.price
+						addonPrices[rawAC] = *ap.price
+						if prodKey != "" {
+							if _, exists := addonPrices[prodKey]; !exists || isDef {
+								addonPrices[prodKey] = *ap.price
+							}
+						}
+					}
 					if hasAP && len(ap.modes) > 0 {
 						addonModePrices[rawAC] = copyPricingModesMap(ap.modes)
 						if prodKey != "" {
-							addonModePrices[prodKey] = copyPricingModesMap(ap.modes)
+							if _, exists := addonModePrices[prodKey]; !exists || isDef {
+								addonModePrices[prodKey] = copyPricingModesMap(ap.modes)
+							}
 						}
 					}
-					isDef := rawAC == defAddon
 					estOptPrice := roundCents(basePriceVal + addonDelta)
 					var optModes []PlanPricingMode
 					if hasAP && len(ap.modes) > 0 {
@@ -1494,7 +1496,7 @@ func ParsePlanPricingModes(item map[string]any) []PlanPricingMode {
 				} else if strings.Contains(strings.ToUpper(instPromoCode), "FREESETUP") || strings.Contains(strings.ToUpper(instPromoDesc), "FREE SETUP") {
 					setupFee = 0
 				}
-				hasInstPromo = setupFee < originalSetupFee
+				hasInstPromo = originalSetupFee > 0 && setupFee < originalSetupFee
 			}
 		}
 
@@ -1562,7 +1564,7 @@ func ParsePlanPricingModes(item map[string]any) []PlanPricingMode {
 				} else if renewPromoVal > 0 {
 					periodPrice = math.Max(0, roundCents(originalPeriodPrice-renewPromoVal))
 				}
-				hasRenewPromo = periodPrice < originalPeriodPrice
+				hasRenewPromo = originalPeriodPrice > 0 && periodPrice < originalPeriodPrice
 			}
 		}
 
@@ -1686,6 +1688,28 @@ func lookupPlanCaseInsensitive(m map[string]CatalogPlanEntry, key string) (Catal
 	return CatalogPlanEntry{}, false
 }
 
+func stripCrossPlanPromoModes(src map[string]PlanPricingMode) map[string]PlanPricingMode {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]PlanPricingMode, len(src))
+	for k, m := range src {
+		m.OriginalPeriodPrice = m.PeriodPrice
+		m.OriginalMonthlyPrice = m.MonthlyEquivalentPrice
+		m.OriginalSetupFee = m.SetupFee
+		m.HasPromo = false
+		m.PromoCode = ""
+		m.PromoBadge = ""
+		m.PromoDescription = ""
+		m.PromoValue = 0
+		m.PromoType = ""
+		m.PromoDuration = 0
+		m.PromoEndDate = ""
+		dst[k] = m
+	}
+	return dst
+}
+
 func lookupAddonScalar(code, defaultCode string, planEntry *CatalogPlanEntry, dict *CatalogDictionary) float64 {
 	c := strings.TrimSpace(code)
 	if c == "" || strings.EqualFold(c, "N/A") || strings.EqualFold(c, "none") {
@@ -1694,6 +1718,9 @@ func lookupAddonScalar(code, defaultCode string, planEntry *CatalogPlanEntry, di
 	if defaultCode != "" && (strings.EqualFold(c, defaultCode) || StandardizeConfig(c) == StandardizeConfig(defaultCode)) {
 		if planEntry != nil && len(planEntry.AddonPrices) > 0 {
 			if v, ok := planEntry.AddonPrices[c]; ok {
+				return v
+			}
+			if v, ok := planEntry.AddonPrices[defaultCode]; ok {
 				return v
 			}
 		}
@@ -1730,6 +1757,17 @@ func lookupAddonModes(code, defaultCode string, planEntry *CatalogPlanEntry, dic
 		return nil
 	}
 	isDef := defaultCode != "" && (strings.EqualFold(c, defaultCode) || StandardizeConfig(c) == StandardizeConfig(defaultCode))
+	if isDef {
+		if planEntry != nil && len(planEntry.AddonModePrices) > 0 {
+			if m, ok := planEntry.AddonModePrices[c]; ok {
+				return m
+			}
+			if m, ok := planEntry.AddonModePrices[defaultCode]; ok {
+				return m
+			}
+		}
+		return nil
+	}
 	if planEntry != nil && len(planEntry.AddonModePrices) > 0 {
 		if m, ok := planEntry.AddonModePrices[c]; ok {
 			return m
@@ -1741,17 +1779,14 @@ func lookupAddonModes(code, defaultCode string, planEntry *CatalogPlanEntry, dic
 			}
 		}
 	}
-	if isDef {
-		return nil
-	}
 	if dict != nil && len(dict.AddonModePrices) > 0 {
 		if m, ok := dict.AddonModePrices[c]; ok {
-			return m
+			return stripCrossPlanPromoModes(m)
 		}
 		low := strings.ToLower(c)
 		for k, m := range dict.AddonModePrices {
 			if strings.EqualFold(k, low) || strings.HasPrefix(strings.ToLower(k), low+"-") {
-				return m
+				return stripCrossPlanPromoModes(m)
 			}
 		}
 	}
@@ -1855,7 +1890,9 @@ func BuildConfigPricingModes(
 		cfgMode.SetupFee = roundCents(bm.SetupFee + ms + ss)
 		cfgMode.OriginalSetupFee = roundCents(bm.OriginalSetupFee + mos + sos)
 		cfgMode.FreeSetup = cfgMode.SetupFee <= 0
-		cfgMode.HasPromo = bm.HasPromo || mhp || shp || cfgMode.PeriodPrice < cfgMode.OriginalPeriodPrice
+		cfgMode.HasPromo = bm.HasPromo || mhp || shp ||
+			(cfgMode.OriginalPeriodPrice > 0 && cfgMode.PeriodPrice < cfgMode.OriginalPeriodPrice) ||
+			(cfgMode.OriginalSetupFee > 0 && cfgMode.SetupFee < cfgMode.OriginalSetupFee)
 		out = append(out, cfgMode)
 	}
 	return out
@@ -2402,7 +2439,24 @@ func buildSingleServerPlan(
 		pricingModes = copyPricingModesSlice(cfgs[0].PricingModes)
 	}
 	planSum := summarizePricingModes(pricingModes)
+	if startingPrice == 0 && planSum.MonthlyPrice > 0 {
+		startingPrice = planSum.MonthlyPrice
+	}
 	origMonthly := planSum.OriginalMonthlyPrice
+	if startingPrice == 0 && len(cfgs) > 0 {
+		refCfg := cfgs[0]
+		for _, c := range cfgs {
+			if c.EstimatedMonthlyPrice > 0 && (refCfg.EstimatedMonthlyPrice <= 0 || c.EstimatedMonthlyPrice < refCfg.EstimatedMonthlyPrice) {
+				refCfg = c
+			}
+		}
+		startingPrice = refCfg.EstimatedMonthlyPrice
+		origMonthly = refCfg.OriginalMonthlyPrice
+		if len(pricingModes) == 0 && len(refCfg.PricingModes) > 0 {
+			pricingModes = copyPricingModesSlice(refCfg.PricingModes)
+			planSum = summarizePricingModes(pricingModes)
+		}
+	}
 	if origMonthly == 0 && startingPrice > 0 {
 		origMonthly = startingPrice
 	}
@@ -2507,7 +2561,24 @@ func buildSynthesizedAnnouncedPlan(
 		pricingModes = copyPricingModesSlice(meta.PricingModes)
 	}
 	planSum := summarizePricingModes(pricingModes)
+	if startingPrice == 0 && planSum.MonthlyPrice > 0 {
+		startingPrice = planSum.MonthlyPrice
+	}
 	origMonthly := planSum.OriginalMonthlyPrice
+	if startingPrice == 0 && len(cfgs) > 0 {
+		refCfg := cfgs[0]
+		for _, c := range cfgs {
+			if c.EstimatedMonthlyPrice > 0 && (refCfg.EstimatedMonthlyPrice <= 0 || c.EstimatedMonthlyPrice < refCfg.EstimatedMonthlyPrice) {
+				refCfg = c
+			}
+		}
+		startingPrice = refCfg.EstimatedMonthlyPrice
+		origMonthly = refCfg.OriginalMonthlyPrice
+		if len(pricingModes) == 0 && len(refCfg.PricingModes) > 0 {
+			pricingModes = copyPricingModesSlice(refCfg.PricingModes)
+			planSum = summarizePricingModes(pricingModes)
+		}
+	}
 	if origMonthly == 0 && startingPrice > 0 {
 		origMonthly = startingPrice
 	}
@@ -2865,9 +2936,6 @@ func (s *Service) GetPlanConfigs(ctx context.Context, endpoint, zone, planCode s
 		}
 	}
 	startingPrice := basePrice
-	if startingPrice == 0 && len(configs) > 0 {
-		startingPrice = configs[0].EstimatedMonthlyPrice
-	}
 
 	var pricingModes []PlanPricingMode
 	if planEntry != nil && len(planEntry.PricingModes) > 0 {
@@ -2878,7 +2946,24 @@ func (s *Service) GetPlanConfigs(ctx context.Context, endpoint, zone, planCode s
 		pricingModes = copyPricingModesSlice(configs[0].PricingModes)
 	}
 	planSum := summarizePricingModes(pricingModes)
+	if startingPrice == 0 && planSum.MonthlyPrice > 0 {
+		startingPrice = planSum.MonthlyPrice
+	}
 	origMonthly := planSum.OriginalMonthlyPrice
+	if startingPrice == 0 && len(configs) > 0 {
+		refCfg := configs[0]
+		for _, c := range configs {
+			if c.EstimatedMonthlyPrice > 0 && (refCfg.EstimatedMonthlyPrice <= 0 || c.EstimatedMonthlyPrice < refCfg.EstimatedMonthlyPrice) {
+				refCfg = c
+			}
+		}
+		startingPrice = refCfg.EstimatedMonthlyPrice
+		origMonthly = refCfg.OriginalMonthlyPrice
+		if len(pricingModes) == 0 && len(refCfg.PricingModes) > 0 {
+			pricingModes = copyPricingModesSlice(refCfg.PricingModes)
+			planSum = summarizePricingModes(pricingModes)
+		}
+	}
 	if origMonthly == 0 && startingPrice > 0 {
 		origMonthly = startingPrice
 	}

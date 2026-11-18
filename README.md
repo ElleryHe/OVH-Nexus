@@ -18,6 +18,7 @@
 <p align="center">
   <a href="https://ovh-nexus.ellery.me" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Docs-ovh--nexus.ellery.me-0050D7?logo=read-the-docs&logoColor=white" alt="Documentation" /></a>
   <a href="https://hub.docker.com/r/elleryhe/ovh-nexus" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Docker-elleryhe%2Fovh--nexus-2496ED?logo=docker&logoColor=white" alt="Docker Hub" /></a>
+  <a href="https://ovh-nexus.ellery.me/rss.xml" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Changelog-RSS-FFA500?logo=rss&logoColor=white" alt="Changelog RSS Feed" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3.0-blue.svg" alt="License: AGPL v3.0" /></a>
   <img src="https://img.shields.io/badge/i18n-EN%20%7C%20FR%20%7C%20%E4%B8%AD%E6%96%87-10B981" alt="Tri-Lingual UI" />
 </p>
@@ -131,6 +132,6 @@ Open `http://localhost:20000` and sign in with username `Nexus` (or your configu
 
 ## License & Disclaimer
 
-Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE](./LICENSE), [CHANGELOG.md](./CHANGELOG.md), [CONTRIBUTING.md](./CONTRIBUTING.md), and [SECURITY.md](./SECURITY.md).
+Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE](./LICENSE), [Changelog](https://ovh-nexus.ellery.me/about/changelog/) ([RSS Feed](https://ovh-nexus.ellery.me/rss.xml)), [Contributing Guide](https://ovh-nexus.ellery.me/about/contributing/), and [Security Policy](https://ovh-nexus.ellery.me/operations/security/).
 
 > **OVH Nexus** is an independent open-source project and is **not affiliated with, endorsed by, or sponsored by OVH SAS / OVHcloud**. "OVH" and "OVHcloud" are registered trademarks of OVH SAS.
