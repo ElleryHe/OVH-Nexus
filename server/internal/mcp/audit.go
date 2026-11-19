@@ -23,6 +23,9 @@ type orderQuote struct {
 	PlanCode     string
 	Datacenter   string
 	Options      []string
+	PricingMode  string
+	Duration     string
+	Coupon       string
 	AccountID    string
 	ProfileAlias string
 	Price        map[string]any
@@ -46,6 +49,10 @@ func newQuoteStore(nowFn func() time.Time) *quoteStore {
 }
 
 func (qs *quoteStore) create(planCode, datacenter string, options []string, accountID, profileAlias string, price map[string]any) orderQuote {
+	return qs.createWithMode(planCode, datacenter, options, "default", "P1M", "", accountID, profileAlias, price)
+}
+
+func (qs *quoteStore) createWithMode(planCode, datacenter string, options []string, pricingMode, duration, coupon, accountID, profileAlias string, price map[string]any) orderQuote {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
 
@@ -64,6 +71,9 @@ func (qs *quoteStore) create(planCode, datacenter string, options []string, acco
 		PlanCode:     planCode,
 		Datacenter:   datacenter,
 		Options:      append([]string(nil), options...),
+		PricingMode:  pricingMode,
+		Duration:     duration,
+		Coupon:       coupon,
 		AccountID:    accountID,
 		ProfileAlias: profileAlias,
 		Price:        priceCopy,

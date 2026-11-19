@@ -1157,19 +1157,17 @@ func pruneAndMigratePrevSKUs(
 			continue
 		}
 
-		// 2. If neither in RealPlans nor in availCodes, check if it is an alias (in dict.Plans, port alias like -1g, or stripped -vN prefix).
+		// 2. If neither in RealPlans nor in availCodes, check if it is an alias (in dict.Plans/PlanAliases, port alias like -1g, or stripped -vN prefix).
 		inReal := realLower[lowKey] != "" || realLower[lowPC] != ""
 		inAvail := availCodes[lowKey] || availCodes[lowPC]
 		if !inReal && !inAvail {
-			_, inDictPlansKey := dict.Plans[k]
-			_, inDictPlansPC := dict.Plans[prev.PlanCode]
-			_, inDictPlansLow := dict.Plans[lowKey]
+			inDictPlans := dict.HasPlanOrAlias(k) || dict.HasPlanOrAlias(prev.PlanCode) || dict.HasPlanOrAlias(lowKey)
 			targetRealKey := strippedVerToRealKey[lowKey]
 			if targetRealKey == "" {
 				targetRealKey = strippedVerToRealKey[lowPC]
 			}
 			isPortAlias := reAliasPortSuffix.MatchString(lowKey) || reAliasPortSuffix.MatchString(lowPC)
-			if inDictPlansKey || inDictPlansPC || inDictPlansLow || targetRealKey != "" || isPortAlias {
+			if inDictPlans || targetRealKey != "" || isPortAlias {
 				if targetRealKey != "" {
 					if currEntry, ok := currSKUs[targetRealKey]; ok {
 						cp := prev

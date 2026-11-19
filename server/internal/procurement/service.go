@@ -762,10 +762,7 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 				dict, _ := s.catalog.GetDictionary(ctx, ep, zn, false)
 				var defMem, defSto string
 				if dict != nil {
-					if e, ok := dict.RealPlans[planCode]; ok {
-						defMem = nonEmptyStr(e.DefaultMemory, e.DefaultSpecs.Memory)
-						defSto = nonEmptyStr(e.DefaultStorage, e.DefaultSpecs.Storage)
-					} else if e, ok := dict.Plans[planCode]; ok {
+					if e, ok := dict.LookupPlan(planCode); ok {
 						defMem = nonEmptyStr(e.DefaultMemory, e.DefaultSpecs.Memory)
 						defSto = nonEmptyStr(e.DefaultStorage, e.DefaultSpecs.Storage)
 					}
@@ -1131,6 +1128,14 @@ func (s *Service) quoteLiveCart(
 	if trimmedCoupon != "" {
 		if couponErr := catalog.ApplyCartCoupon(ctx, client, cartID, trimmedCoupon); couponErr != nil {
 			deleteCartOnce()
+			if s.catalog != nil {
+				if camp, isAuto := s.catalog.LookupAutoAppliedPromo(ctx, ep, zone, trimmedCoupon); isAuto && camp != nil {
+					return nil, 0, 0, 0, "EUR", fmt.Errorf(
+						"%w: %s is an automatic OVH catalog promotion (context=%s, modes=%s) applied automatically without a coupon code — leave Coupon empty (%v)",
+						ErrInvalidCoupon, camp.PromoCode, camp.Context, strings.Join(camp.SupportedModes, "/"), couponErr,
+					)
+				}
+			}
 			return nil, 0, 0, 0, "EUR", fmt.Errorf("%w: %v", ErrInvalidCoupon, couponErr)
 		}
 	}

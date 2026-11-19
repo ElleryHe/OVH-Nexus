@@ -14,6 +14,8 @@ services:
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       - PUID=${PUID:-65532}
       - PGID=${PGID:-65532}
+      - GOMEMLIMIT=${GOMEMLIMIT:-256MiB}
+      - GOGC=${GOGC:-50}
     # Entrypoint automatically initializes /data (0700) and drops privileges via su-exec to PUID:PGID
     volumes:
       - ./data:/data

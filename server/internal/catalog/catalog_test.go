@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -289,10 +290,10 @@ func TestCatalogFetchingSingleflightDiskCacheAndRoutes(t *testing.T) {
 		t.Fatalf("expected singleflight to deduplicate upstream calls (got eco=%d bm=%d avail=%d)", ecoCalls.Load(), bmCalls.Load(), availCalls.Load())
 	}
 
-	// Verify disk JSON cache files were written under <dataDir>/cache
-	cacheFiles, _ := filepath.Glob(filepath.Join(dataDir, "cache", "*.json"))
+	// Verify compressed disk .json.gz cache files were written under <dataDir>/cache
+	cacheFiles, _ := filepath.Glob(filepath.Join(dataDir, "cache", "*.json.gz"))
 	if len(cacheFiles) < 2 {
-		t.Fatalf("expected disk JSON cache files in %s/cache, got %v", dataDir, cacheFiles)
+		t.Fatalf("expected compressed .json.gz disk cache files in %s/cache, got %v", dataDir, cacheFiles)
 	}
 
 	// 2. GET /api/servers should serve from memory cache without calling upstream again.
@@ -1274,5 +1275,283 @@ func TestZeroSetupFeeWithoutPromoAndMultiConfigIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestV140CacheSlimmingSHA256ShortCircuitPromotionsRadarAndAutoPromoGuard(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatalf("mkdir cacheDir: %v", err)
+	}
+	// Seed legacy v1/v2/v3/vps files that NewService must automatically prune on startup.
+	legacyFiles := []string{
+		"catalog_dict_ovh-eu_IE.json",
+		"catalog_dict_v2_ovh-eu_IE.json",
+		"catalog_dict_v3_ovh-eu_IE.json",
+		"servers_v3_ovh-eu_IE.json",
+		"vps_catalog_ovh-eu_IE.json",
+		"catalog_dict_v4_ovh-eu_IE.json.gz.tmp",
+	}
+	for _, lf := range legacyFiles {
+		if err := os.WriteFile(filepath.Join(cacheDir, lf), []byte(`{"stale":true}`), 0o600); err != nil {
+			t.Fatalf("seed legacy file %s: %v", lf, err)
+		}
+	}
+
+	svc := NewService(nil, nil, nil, dataDir)
+	for _, lf := range legacyFiles {
+		if _, err := os.Stat(filepath.Join(cacheDir, lf)); !os.IsNotExist(err) {
+			t.Fatalf("expected legacy cache file %s to be pruned on NewService startup", lf)
+		}
+	}
+
+	// Build mock OVH public API serving dual-channel Black Friday promos + heavy software license junk.
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/order/catalog/public/eco":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"addons": []map[string]any{
+					{
+						"planCode": "ram-64g-ecc-2133-24sys02-v3",
+						"product":  "ram-64g-ecc-2133",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 1200000000, "interval": 1},
+						},
+					},
+					{
+						"planCode": "windows-2022-std-24sys02-v3",
+						"product":  "windows-2022-std",
+						"pricings": []map[string]any{
+							{"mode": "default", "capacities": []string{"renew"}, "price": 2500000000, "interval": 1},
+						},
+					},
+				},
+				"plans": []map[string]any{
+					{
+						"planCode":    "24sys02-v3",
+						"product":     "24sys02-1g",
+						"invoiceName": "SYS-2 | Intel Xeon E-2386G",
+						"pricings": []map[string]any{
+							{
+								"mode":       "default",
+								"capacities": []string{"renew"},
+								"price":      3799000000,
+								"interval":   1,
+								"promotions": []map[string]any{
+									{
+										"name":            "BF26_ECO_20OFF",
+										"description":     "Black Friday : 20% off for 12 months on SYS-2 server.",
+										"context":         "standard",
+										"type":            "percentage",
+										"value":           20,
+										"duration":        12,
+										"minimumDuration": 2,
+										"startDate":       "2026-11-17T09:00:00+01:00",
+										"endDate":         "2026-12-01T14:00:00+01:00",
+										"discount":        map[string]any{"value": 759800000},
+										"total":           map[string]any{"value": 3039200000},
+									},
+								},
+							},
+							{
+								"mode":       "upfront24",
+								"capacities": []string{"renew"},
+								"price":      82000000000,
+								"interval":   24,
+								"commitment": 24,
+							},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-2133-24sys02-v3", "addons": []string{"ram-32g-ecc-2133-24sys02-v3", "ram-64g-ecc-2133-24sys02-v3"}},
+							{"name": "storage", "default": "softraid-2x512nvme-24sys02-v3", "addons": []string{"softraid-2x512nvme-24sys02-v3"}},
+							{"name": "application-license", "addons": []string{"windows-2022-std-24sys02-v3", "cpanel-pro-100"}},
+							{"name": "distribution-license", "addons": []string{"cloudlinux-os-24sys02-v3"}},
+						},
+					},
+				},
+			})
+		case "/order/catalog/public/baremetalServers":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"locale": map[string]any{"currencyCode": "EUR"},
+				"plans": []map[string]any{
+					{
+						"planCode":    "26game01-v4",
+						"product":     "26game01",
+						"invoiceName": "GAME-1 | AMD Ryzen 5 5600X",
+						"pricings": []map[string]any{
+							{
+								"mode":       "default",
+								"capacities": []string{"renew"},
+								"price":      8000000000,
+								"interval":   1,
+								"promotions": []map[string]any{
+									{
+										"name":            "BF26_OVH_GAME_15OFF",
+										"description":     "Black Friday : 15% off for 12 months on GAME-1.",
+										"context":         "standard",
+										"type":            "percentage",
+										"value":           15,
+										"duration":        12,
+										"minimumDuration": 2,
+										"endDate":         "2026-12-01T14:00:00+01:00",
+									},
+								},
+							},
+							{
+								"mode":       "default",
+								"capacities": []string{"installation"},
+								"price":      10000000000,
+								"promotions": []map[string]any{
+									{
+										"name":        "BF26_OVH_GAME_15OFF_SETUP",
+										"description": "Black Friday : 15% off on GAME-1 setup fees.",
+										"context":     "standard",
+										"type":        "percentage",
+										"value":       15,
+										"duration":    1,
+										"endDate":     "2026-12-01T14:00:00+01:00",
+									},
+								},
+							},
+						},
+						"addonFamilies": []map[string]any{
+							{"name": "memory", "default": "ram-32g-ecc-3200-26game01-v4", "addons": []string{"ram-32g-ecc-3200-26game01-v4"}},
+							{"name": "storage", "default": "softraid-2x960nvme-26game01-v4", "addons": []string{"softraid-2x960nvme-26game01-v4"}},
+						},
+					},
+				},
+			})
+		case "/dedicated/server/datacenter/availabilities":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"fqn":      "24sys02-v3.ram-32g.softraid-2x512nvme",
+					"planCode": "24sys02-v3",
+					"memory":   "ram-32g-ecc-2133",
+					"storage":  "softraid-2x512nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "gra", "availability": "1H"},
+					},
+				},
+				{
+					"fqn":      "26game01-v4.ram-32g.softraid-2x960nvme",
+					"planCode": "26game01-v4",
+					"memory":   "ram-32g-ecc-3200",
+					"storage":  "softraid-2x960nvme",
+					"datacenters": []map[string]any{
+						{"datacenter": "rbx", "availability": "unavailable"},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+
+	// 1. First baremetal refresh populates deduplicated RealPlans + PlanAliases and strips software licenses.
+	dict1, err := svc.GetBaremetalDictionary(context.Background(), "ovh-eu", "IE", true)
+	if err != nil {
+		t.Fatalf("first GetBaremetalDictionary failed: %v", err)
+	}
+	if len(dict1.RealPlans) != 2 {
+		t.Fatalf("expected 2 RealPlans, got %d", len(dict1.RealPlans))
+	}
+	if len(dict1.Plans) != 0 {
+		t.Fatalf("expected 0 duplicate entries in Plans (aliases belong in PlanAliases), got %+v", dict1.Plans)
+	}
+	if dict1.PlanAliases["24sys02-1g"] != "24sys02-v3" || dict1.PlanAliases["24sys02"] != "24sys02-v3" {
+		t.Fatalf("expected PlanAliases to map 24sys02-1g and 24sys02 -> 24sys02-v3, got %+v", dict1.PlanAliases)
+	}
+	if _, leaked := dict1.AddonPrices["windows-2022-std-24sys02-v3"]; leaked {
+		t.Fatalf("expected software license addon to be filtered out from AddonPrices")
+	}
+	sys2 := dict1.RealPlans["24sys02-v3"]
+	for _, opt := range sys2.AvailableOptions {
+		if strings.Contains(opt.Family, "license") || strings.Contains(opt.Value, "windows") || strings.Contains(opt.Value, "cpanel") || strings.Contains(opt.Value, "cloudlinux") {
+			t.Fatalf("expected software license option to be filtered from AvailableOptions, got %+v", opt)
+		}
+	}
+
+	// Verify disk file is compressed .json.gz and record mtime before SHA-256 short-circuit test.
+	dictPath := svc.dictCachePath("ovh-eu", "IE")
+	stat1, err := os.Stat(dictPath)
+	if err != nil {
+		t.Fatalf("expected compressed dict cache file %s: %v", dictPath, err)
+	}
+
+	// 2. Second forceRefresh with unchanged upstream JSON must short-circuit via SHA-256 without rewriting disk.
+	time.Sleep(20 * time.Millisecond)
+	dict2, err := svc.GetBaremetalDictionary(context.Background(), "ovh-eu", "IE", true)
+	if err != nil {
+		t.Fatalf("second GetBaremetalDictionary failed: %v", err)
+	}
+	if dict2 != dict1 {
+		t.Fatalf("expected SHA-256 short-circuit to reuse exact in-memory dictionary pointer")
+	}
+	stat2, err := os.Stat(dictPath)
+	if err != nil {
+		t.Fatalf("stat dictPath after short-circuit: %v", err)
+	}
+	if !stat2.ModTime().Equal(stat1.ModTime()) {
+		t.Fatalf("expected SHA-256 short-circuit to skip disk write (mtime changed %v -> %v)", stat1.ModTime(), stat2.ModTime())
+	}
+
+	// 3. Verify GET /api/catalog/dictionary returns wire-slimmed projection (no AvailableOptions) and GET /api/catalog/promotions returns dual-channel campaigns.
+	r := chi.NewRouter()
+	svc.MountRoutes(r)
+
+	wDict := httptest.NewRecorder()
+	r.ServeHTTP(wDict, httptest.NewRequest(http.MethodGet, "/catalog/dictionary?subsidiary=IE", nil))
+	if wDict.Code != http.StatusOK {
+		t.Fatalf("GET /catalog/dictionary failed: %d %s", wDict.Code, wDict.Body.String())
+	}
+	if strings.Contains(wDict.Body.String(), `"availableOptions"`) {
+		t.Fatalf("expected GET /catalog/dictionary wire projection to omit availableOptions")
+	}
+
+	wPromo := httptest.NewRecorder()
+	r.ServeHTTP(wPromo, httptest.NewRequest(http.MethodGet, "/catalog/promotions?subsidiary=IE", nil))
+	if wPromo.Code != http.StatusOK {
+		t.Fatalf("GET /catalog/promotions failed: %d %s", wPromo.Code, wPromo.Body.String())
+	}
+	var promoResp CatalogPromotionsResponse
+	if err := json.Unmarshal(wPromo.Body.Bytes(), &promoResp); err != nil {
+		t.Fatalf("decode /catalog/promotions: %v", err)
+	}
+	// Must capture all 3 campaigns including BOTH BF26_OVH_GAME_15OFF and BF26_OVH_GAME_15OFF_SETUP on 26game01-v4!
+	if promoResp.TotalCampaigns != 3 || promoResp.TotalPromotedPlans != 2 || promoResp.InStockPlans != 1 {
+		t.Fatalf("unexpected promotions summary: campaigns=%d plans=%d inStock=%d (%+v)", promoResp.TotalCampaigns, promoResp.TotalPromotedPlans, promoResp.InStockPlans, promoResp)
+	}
+	if len(promoResp.AutoAppliedCodes) != 3 {
+		t.Fatalf("expected 3 autoAppliedCodes, got %+v", promoResp.AutoAppliedCodes)
+	}
+	var sys2Promo, game1Promo *CatalogPromoPlan
+	for i := range promoResp.Plans {
+		switch promoResp.Plans[i].PlanCode {
+		case "24sys02-v3":
+			sys2Promo = &promoResp.Plans[i]
+		case "26game01-v4":
+			game1Promo = &promoResp.Plans[i]
+		}
+	}
+	if sys2Promo == nil || !slices.Contains(sys2Promo.SupportedPromoModes, "default") || !slices.Contains(sys2Promo.MissedPromoModes, "upfront24") || sys2Promo.AddonsDiscounted {
+		t.Fatalf("unexpected 24sys02-v3 promo plan breakdown: %+v", sys2Promo)
+	}
+	if game1Promo == nil || !game1Promo.HasRecurringPromo || !game1Promo.HasSetupPromo || len(game1Promo.PromoCodes) != 2 {
+		t.Fatalf("expected 26game01-v4 dual-channel promo (renew + setup), got %+v", game1Promo)
+	}
+	if game1Promo.PricingModes[0].RenewPromo == nil || game1Promo.PricingModes[0].SetupPromo == nil {
+		t.Fatalf("expected both RenewPromo and SetupPromo populated on 26game01-v4 PricingModes[0], got %+v", game1Promo.PricingModes[0])
+	}
+
+	// Verify LookupAutoAppliedPromo detects standard auto-applied campaign codes.
+	camp, isAuto := svc.LookupAutoAppliedPromo(context.Background(), "ovh-eu", "IE", "bf26_eco_20off")
+	if !isAuto || camp == nil || camp.PromoCode != "BF26_ECO_20OFF" {
+		t.Fatalf("expected LookupAutoAppliedPromo to detect BF26_ECO_20OFF, got isAuto=%v camp=%+v", isAuto, camp)
+	}
+}
+
 
 

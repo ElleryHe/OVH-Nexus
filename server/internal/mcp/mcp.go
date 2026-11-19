@@ -27,7 +27,7 @@ import (
 const (
 	MCPProtocolVersion = "2025-03-26"
 	MCPServerName      = "ovh-nexus-mcp"
-	MCPServerVersion   = "1.3.4"
+	MCPServerVersion   = "1.4.0"
 	maxMCPBodyBytes    = 2 << 20
 )
 
@@ -941,6 +941,33 @@ func asInt(v any, def int) int {
 	case string:
 		if i, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
 			return i
+		}
+		return def
+	default:
+		return def
+	}
+}
+
+func asFloat(v any, def float64) float64 {
+	switch t := v.(type) {
+	case nil:
+		return def
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+		return def
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return f
 		}
 		return def
 	default:

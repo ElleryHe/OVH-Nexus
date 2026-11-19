@@ -832,11 +832,11 @@ const MCPGatewayPage = () => {
                         L1 只读查询
                       </span>
                       <span className="text-sm font-semibold text-cyber-text">
-                        资产清点、机房库存、SKU 动态与订单进度 (11 个工具)
+                        资产清点、机房库存、优惠情报、SKU 动态与订单进度 (12 个工具)
                       </span>
                     </div>
                     <p className="text-xs text-cyber-muted leading-relaxed">
-                      允许 AI 查看脱敏后的独服 (`bm-xx`)、VPS (`vps-xx`)、服务到期日、公开机房实时库存以及订单交付进度。所有真实主机名、完整 IP 与付款链接均被自动剥离。
+                      允许 AI 查看脱敏后的独服 (`bm-xx`)、VPS (`vps-xx`)、服务到期日、公开机房实时库存、活跃官促优惠规则（`catalog_promotions`）以及订单交付进度。所有真实主机名、完整 IP 与付款链接均被自动剥离。
                     </p>
                   </div>
                   <input

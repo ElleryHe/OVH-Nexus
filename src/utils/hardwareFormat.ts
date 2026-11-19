@@ -75,6 +75,7 @@ export interface CatalogDictionary {
   currency?: string;
   plans: Record<string, CatalogPlanDictEntry>;
   realPlans?: Record<string, CatalogPlanDictEntry>;
+  planAliases?: Record<string, string>;
   addonPrices?: Record<string, number>;
   addonModePrices?: Record<string, Record<string, PlanPricingMode>>;
   options: Record<string, any>;
@@ -92,10 +93,13 @@ export interface ConfigPriceBreakdown {
   formattedTotal: string;
 }
 
-const LEGACY_STORAGE_KEY = "ovh_nexus_catalog_dict_v2";
-const STORAGE_KEY = "ovh_nexus_catalog_dict_v3";
+const LEGACY_STORAGE_KEYS = [
+  "ovh_nexus_catalog_dict_v2",
+  "ovh_nexus_catalog_dict_v3",
+];
+const STORAGE_KEY = "ovh_nexus_catalog_dict_v4";
 try {
-  localStorage.removeItem(LEGACY_STORAGE_KEY);
+  LEGACY_STORAGE_KEYS.forEach((k) => localStorage.removeItem(k));
 } catch {
   // ignore storage errors
 }
@@ -330,14 +334,20 @@ export function resolvePlanDisplay(
 
   const realPlans = activeDict?.realPlans || {};
   const plans = activeDict?.plans || {};
+  const aliases = activeDict?.planAliases || {};
+  const lookupDict = (key?: string): CatalogPlanDictEntry | undefined => {
+    if (!key) return undefined;
+    const direct = realPlans[key] || plans[key];
+    if (direct) return direct;
+    const canonical = aliases[key] || aliases[key.toLowerCase()];
+    if (canonical) return realPlans[canonical] || plans[canonical];
+    return undefined;
+  };
   const match =
-    realPlans[planCode] ||
-    plans[planCode] ||
-    (serverCode ? realPlans[serverCode] || plans[serverCode] : undefined) ||
-    realPlans[baseCode] ||
-    plans[baseCode] ||
-    realPlans[cleanBase] ||
-    plans[cleanBase];
+    lookupDict(planCode) ||
+    (serverCode ? lookupDict(serverCode) : undefined) ||
+    lookupDict(baseCode) ||
+    lookupDict(cleanBase);
 
   if (match) {
     const cpu = match.cpu || null;

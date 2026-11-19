@@ -3,7 +3,7 @@ title: Journal des Modifications (Changelog)
 description: Historique des versions et nouveautés d'OVH Nexus.
 ---
 
-:::note[Dernière version : v1.3.4]
+:::note[Dernière version : v1.4.0]
 Retrouvez les versions officielles et les images Docker multi-architecture sur [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) et [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
@@ -12,6 +12,30 @@ Abonnez-vous aux notes de version d'OVH Nexus depuis votre lecteur RSS (Feedly, 
 :::
 
 Toutes les modifications notables d'**OVH Nexus** sont documentées sur cette page selon le format [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et la [Gestion Sémantique de Version (SemVer)](https://semver.org/lang/fr/).
+
+## [1.4.0] - 2026-11-19 — Refonte Mémoire & Cache (-99 %), Radar des Promotions & Inspecteur Debug, et Intelligence Promo MCP
+
+### Ajouté (Added)
+
+- **Radar des Promotions OVH, Bannière Repliable & Inspecteur Debug à Double Niveau (`/servers`, `GET /api/catalog/promotions`)** :
+  - Ajout de `GET /api/catalog/promotions` agrégeant toutes les campagnes promotionnelles actives du catalogue OVHcloud (`promoCode`, `context`, `autoApplied`, `capacities`, `supportedModes`, durées, compte à rebours d'expiration, économie maximale et compteurs de stock par campagne).
+  - Prise en charge complète des promotions bi-canal (récurrent + frais d'installation simultanés, ex. `26game01-v4` avec `BF26_OVH_GAME_15OFF` + `BF26_OVH_GAME_15OFF_SETUP`) sans perte de métadonnées.
+  - Ajout d'une **bannière de promotions repliable** en haut du catalogue `/servers` avec filtrage en un clic par campagne et modale d'**Inspecteur des Règles & Debug** clarifiant les remises catalogue automatiques (`context="standard"`) par rapport aux coupons panier manuels.
+  - Ajout d'un panneau **Debug promo & tarification** dans la fenêtre de commande (décomposition serveur de base vs supplément matériel RAM/stockage, alerte de mode de facturation manqué, garde-fou anti-saisie d'identifiants automatiques dans le champ Coupon et bouton **Tester au panier** en temps réel via un panier éphémère).
+- **Intelligence Promo MCP & Boucle de Décision Engagement/Coupon (`21 Outils`)** :
+  - Nouvel outil L1 lecture seule sans clé API **`catalog_promotions`** (portant L1 à **12 outils** et le total à **21 outils**), exposant campagnes, modes éligibles, `autoAppliedCodes` et `agentGuidance`.
+  - Enrichissement des outils L2 **`order_quote`** (transmis à **`order_create_unpaid`**) et **`queue_add`** avec les paramètres `pricing_mode` (`default`, `upfront12`, `upfront24`), `coupon` et `max_monthly_price` tout en maintenant `auto_pay=false` et `quantity=1` verrouillés en dur.
+
+### Modifié & Optimisé (Changed & Optimized)
+
+- **Réduction de 99 % du Cache Disque & Refonte de l'Empreinte Mémoire Go** :
+  - Suppression des fuites mémoire de graphes `map[string]any` (`Service.rawCatalogs`, `Service.vpsCache` et fichiers `vps_*.json` inutilisés).
+  - Remplacement de la désérialisation `map[string]any` par un décodage séquentiel en flux `json.NewDecoder` vers des structures Go typées minimales (plafond décompressé porté de `32 MiB` à `128 MiB`, délai HTTP catalogue public `60s`).
+  - Ajout d'un **court-circuit SHA-256 sur flux Gzip** avec garde contre les pannes partielles sur les vérifications SKU toutes les 120 secondes : **zéro décodage JSON, zéro reconstruction et zéro écriture disque** lorsque le catalogue est inchangé.
+  - Déduplication de `CatalogDictionary` via `PlanAliases`, filtrage des familles de licences logicielles (`application-license`, `distribution-license`) et projection réseau allégée réduisant `GET /api/catalog/dictionary` de **56 Mo à ~0,5 Mo** (rétablissant la mise en cache `localStorage` navigateur).
+  - Passage du cache disque au format compressé atomique `.json.gz` (réduisant `/data/cache/` de **~95 Mo à < 1 Mo**) avec purge automatique au démarrage des anciens fichiers `v1`/`v2`/`v3`/`vps_*.json`, et injection par défaut de `GOMEMLIMIT=256MiB` + `GOGC=50` + `debug.FreeOSMemory()`.
+
+---
 
 ## [1.3.4] - 2026-11-18 — Correctifs de Disposition & Promotions de la Matrice de Stock, Restauration Auto de la Base SKU & Optimisation IA `/llms.txt`
 
