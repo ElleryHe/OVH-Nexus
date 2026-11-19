@@ -39,6 +39,8 @@ import {
   QuickMonitorDialog,
   QuickMonitorInitialConfig,
 } from '@/components/QuickMonitorDialog';
+import { CatalogPromoBanner } from '@/components/CatalogPromoBanner';
+import { OrderPromoDebugPanel } from '@/components/OrderPromoDebugPanel';
 import {
   OVH_DATACENTERS,
   formatDatacenter,
@@ -59,6 +61,7 @@ import {
   resolvePricingModeEntry,
 } from '@/utils/hardwareFormat';
 import type {
+  CatalogPromotionsResponse,
   ListingState,
   OVHAvailabilityRow,
   PlanConfigOption,
@@ -190,6 +193,11 @@ const ServersPage = () => {
   const [showBatchMonitorDialog, setShowBatchMonitorDialog] = useState(false);
   const [listingFilterTab, setListingFilterTab] =
     useState<ListingFilterTab>('all');
+  const [promotions, setPromotions] =
+    useState<CatalogPromotionsResponse | null>(null);
+  const [selectedPromoCode, setSelectedPromoCode] = useState<string | null>(
+    null
+  );
   const [recentSkuMap, setRecentSkuMap] = useState<Record<string, string>>({});
 
   const [quickMonitorTarget, setQuickMonitorTarget] = useState<{
@@ -536,6 +544,19 @@ const ServersPage = () => {
     }
   };
 
+  const fetchPromotions = useCallback(async (forceRefresh = false) => {
+    try {
+      const res = await api.get('/catalog/promotions', {
+        params: forceRefresh ? { refresh: '1' } : undefined,
+      });
+      if (res.data && Array.isArray(res.data.campaigns)) {
+        setPromotions(res.data as CatalogPromotionsResponse);
+      }
+    } catch {
+      // non-fatal: banner simply hides if promotions endpoint is unavailable
+    }
+  }, []);
+
   useEffect(() => {
     const loadInitialData = async () => {
       if (isAuthenticated) {
@@ -549,6 +570,7 @@ const ServersPage = () => {
           }
         })
         .catch(() => {});
+      fetchPromotions(false);
       await fetchServers(false);
     };
 
@@ -558,13 +580,14 @@ const ServersPage = () => {
       if (newAuthState) {
         await loadSubscribedServers();
       }
+      fetchPromotions(true);
       await fetchServers(true, newAuthState);
     });
 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [fetchPromotions]);
 
   // Build unified configuration list for a server card (merging default config + available configs + live availability)
   const buildUnifiedConfigsForServer = useCallback(
@@ -1407,6 +1430,27 @@ const ServersPage = () => {
       );
     }
 
+    if (selectedPromoCode) {
+      const targetCamp = promotions?.campaigns.find(
+        (c) => c.promoCode === selectedPromoCode
+      );
+      const codeSet = new Set(
+        (targetCamp?.planCodes || []).map((c) => c.toLowerCase())
+      );
+      filtered = filtered.filter((srv) => {
+        if (codeSet.size > 0 && codeSet.has(srv.planCode.toLowerCase())) {
+          return true;
+        }
+        if (srv.promoCode === selectedPromoCode) return true;
+        return (srv.pricingModes || []).some(
+          (m) =>
+            m.promoCode === selectedPromoCode ||
+            m.renewPromo?.code === selectedPromoCode ||
+            m.setupPromo?.code === selectedPromoCode
+        );
+      });
+    }
+
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       filtered = filtered.filter(
@@ -1440,7 +1484,7 @@ const ServersPage = () => {
     });
 
     return filtered;
-  }, [servers, listingFilterTab, searchTerm, selectedDatacenter, recentSkuMap, subscribedServers]);
+  }, [servers, listingFilterTab, selectedPromoCode, promotions, searchTerm, selectedDatacenter, recentSkuMap, subscribedServers]);
 
   const formatDateTime = (date: Date | null): string => {
     if (!date) return '未知';
@@ -1507,6 +1551,18 @@ const ServersPage = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Live OVH Promotions Radar Banner (Collapsible) */}
+      <CatalogPromoBanner
+        promotions={promotions}
+        selectedPromoCode={selectedPromoCode}
+        onSelectPromoCode={(code) => {
+          setSelectedPromoCode(code);
+          if (code && listingFilterTab !== 'all' && listingFilterTab !== 'promo') {
+            setListingFilterTab('all');
+          }
+        }}
+      />
 
       {/* Filters & Controls */}
       <div className="cyber-panel p-3 w-full space-y-2.5">
@@ -1584,7 +1640,10 @@ const ServersPage = () => {
               </button>
 
               <button
-                onClick={() => fetchServers(true)}
+                onClick={() => {
+                  fetchServers(true);
+                  fetchPromotions(true);
+                }}
                 disabled={isLoading || isRefreshing}
                 className="cyber-button text-xs flex items-center gap-1.5 px-2.5 py-1.5"
               >
@@ -1695,6 +1754,7 @@ const ServersPage = () => {
                 setSearchTerm('');
                 setSelectedDatacenter('all');
                 setListingFilterTab('all');
+                setSelectedPromoCode(null);
               }}
               className="px-4 py-1.5 bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/40 rounded-md text-xs font-semibold"
             >
@@ -2648,6 +2708,44 @@ const ServersPage = () => {
                         )}
                       </div>
                     </div>
+
+                    {/* Promo Hit & Pricing Debug + Auto-Promo Guard + Live Cart Probe */}
+                    <OrderPromoDebugPanel
+                      server={modalServer}
+                      promotions={promotions}
+                      activeModeKey={activeModeEntry?.mode || selectedPricingMode}
+                      activeDuration={resolvePricingModeDuration(
+                        activeModeEntry?.mode || selectedPricingMode,
+                        availablePricingModes
+                      )}
+                      activeConfigMode={activeModeEntry}
+                      basePlanModes={modalServer.pricingModes || []}
+                      configModes={availablePricingModes}
+                      selectedDatacenter={
+                        selectedDcsForModal[0] ||
+                        activeCfg?.inStockDcs[0] ||
+                        allInStockDcs[0] ||
+                        'gra'
+                      }
+                      selectedOptions={[
+                        ...(activeCfg?.options || []),
+                        ...selectedAdvOpts,
+                      ]}
+                      coupon={selectedCoupon}
+                      isAuthenticated={isAuthenticated}
+                      onClearCoupon={() =>
+                        setSelectedCouponMap((prev) => ({
+                          ...prev,
+                          [modalServer.planCode]: '',
+                        }))
+                      }
+                      onSwitchMode={(mode) =>
+                        setSelectedPricingModeMap((prev) => ({
+                          ...prev,
+                          [modalServer.planCode]: mode,
+                        }))
+                      }
+                    />
                   </div>
                 )}
 

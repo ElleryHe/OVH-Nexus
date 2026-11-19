@@ -22,9 +22,11 @@ OVH Nexus se configure au démarrage du conteneur via les variables d'environnem
 | `TRUSTED_PROXIES` | Non | *(vide)* | Liste d'IP ou de plages CIDR séparées par des virgules (ex. `127.0.0.1,172.16.0.0/12`) autorisées à transmettre `X-Forwarded-For` et `X-Real-IP`. |
 | `PUID` | Non | `65532` | Identifiant utilisateur numérique vers lequel le point d'entrée (`su-exec`) abaisse les privilèges après avoir initialisé `/data` (`0700`). Peut être aligné sur l'UID Linux hôte (`id -u`) ; ignoré si le conteneur démarre déjà en non-root (`id -u != 0`, ex. Kubernetes `runAsNonRoot: true`). |
 | `PGID` | Non | `65532` | Identifiant de groupe numérique vers lequel le point d'entrée (`su-exec`) abaisse les privilèges après avoir initialisé `/data` (`0700`). Peut être aligné sur le GID Linux hôte (`id -g`). |
+| `GOMEMLIMIT` | Non | `256MiB` | Plafond souple de mémoire Go (appliqué par défaut dans `Dockerfile` et au démarrage du binaire) pour maintenir une empreinte RSS minimale et restituer les pages libres au noyau. |
+| `GOGC` | Non | `50` | Pourcentage cible du ramasse-miettes Go (`50` par défaut pour une consommation mémoire réduite ; peut être ajusté à `100` selon vos besoins). |
 | `SECRET_KEY` | Non | *(auto-généré)* | Clé optionnelle pour signer `ovh_session` (HMAC-SHA256). Si omise, une clé aléatoire est générée une fois et chiffrée dans `/data/nexus.db` (`kv_settings`). |
 | `CORS_ORIGINS` | Non | `http://localhost:19999,http://127.0.0.1:19999` | Origines autorisées en développement local séparé. Inutile en production où le binaire unique sert WebUI et `/api/*` sur la même origine. |
-| `DOCKER_IMAGE` | Non | `elleryhe/ovh-nexus:latest` | Permet de remplacer le tag de l'image dans `docker-compose.yml` (ex. `elleryhe/ovh-nexus:1.3.0`). |
+| `DOCKER_IMAGE` | Non | `elleryhe/ovh-nexus:latest` | Permet de remplacer le tag de l'image dans `docker-compose.yml` (ex. `elleryhe/ovh-nexus:1.4.0`). |
 
 ## Générer des Clés Robustes
 

@@ -66,6 +66,12 @@ type CatalogAvailabilityFilterReader interface {
 	QueryAvailabilityFiltered(ctx context.Context, planFilter, dcFilter, listingState string, onlyAvailable, presaleOnly, onlyAnnounced bool, offset, limit int) ([]CatalogEntry, int, error)
 }
 
+// CatalogPromotionsReader is an optional extension of CatalogReader that provides structured
+// public catalog promotion campaigns, auto-applied rules, and per-plan savings breakdowns.
+type CatalogPromotionsReader interface {
+	GetPromotions(ctx context.Context, opts catalog.PromotionsQueryOptions) (*catalog.CatalogPromotionsResponse, error)
+}
+
 // SKUChangesReader is an optional interface that MonitorClient implementations (such as httpx monitorAdapter)
 // can satisfy to serve real-time SKU Watcher status and change events directly from monitor.Service.
 type SKUChangesReader interface {
@@ -90,9 +96,12 @@ type UnpaidOrderRequest struct {
 	PlanCode                string
 	Datacenter              string
 	Options                 []string
-	Quantity                int  // Must always be 1
-	AutoPay                 bool // Must always be false
-	WaiveRetractationPeriod bool // Must always be false
+	PricingMode             string // "default", "upfront12", "upfront24"
+	Duration                string // "P1M", "P12M", "P24M"
+	Coupon                  string // optional private OVH cart voucher code
+	Quantity                int    // Must always be 1
+	AutoPay                 bool   // Must always be false
+	WaiveRetractationPeriod bool   // Must always be false
 }
 
 // UnpaidOrderResult returns the created unpaid order summary.
@@ -105,6 +114,11 @@ type UnpaidOrderResult struct {
 type ProcurementClient interface {
 	QuoteOrder(ctx context.Context, accountID, planCode, datacenter string, options []string) (*OrderQuoteResult, error)
 	CreateUnpaidOrder(ctx context.Context, req UnpaidOrderRequest) (*UnpaidOrderResult, error)
+}
+
+// ProcurementModeQuoter is an optional extension of ProcurementClient supporting commitment billing modes and coupons.
+type ProcurementModeQuoter interface {
+	QuoteOrderWithMode(ctx context.Context, accountID, planCode, datacenter string, options []string, pricingMode, duration, coupon string) (*OrderQuoteResult, error)
 }
 
 // MonitorClient abstracts stock subscription management on running background monitors.

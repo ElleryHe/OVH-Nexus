@@ -203,7 +203,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 		t.Fatalf("read gunzipped /api/health: %v", err)
 	}
 	healthMap := decodeMap(t, healthBytes)
-	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.4" {
+	if healthMap["status"] != "ok" || healthMap["version"] != "1.4.0" {
 		t.Fatalf("unexpected health payload: %+v", healthMap)
 	}
 
@@ -1029,7 +1029,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"Authorization": "Bearer " + mcpToken,
 	}
 
-	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.4"
+	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.4.0"
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1043,11 +1043,11 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}
 	initRes := decodeMap(t, body)["result"].(map[string]any)
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.4" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.4.0" {
 		t.Fatalf("unexpected MCP serverInfo: %+v", srvInfo)
 	}
 
-	// 6. tools/list -> 16 tools (11 L1 + 5 L2), 0 L3 tools when 2FA is off.
+	// 6. tools/list -> 17 tools (12 L1 + 5 L2), 0 L3 tools when 2FA is off.
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -1057,8 +1057,8 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		t.Fatalf("MCP tools/list failed: %d", code)
 	}
 	tools := decodeMap(t, body)["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 16 {
-		t.Fatalf("expected 16 tools (L1+L2) with 2FA off, got %d", len(tools))
+	if len(tools) != 17 {
+		t.Fatalf("expected 17 tools (L1+L2) with 2FA off, got %d", len(tools))
 	}
 
 	// 7. Calling L3 tool baremetal_reboot must be blocked while 2FA is disabled.
@@ -1359,8 +1359,8 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"method":  "tools/list",
 	}, mcpHeaders)
 	tools = decodeMap(t, body)["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 20 {
-		t.Fatalf("expected all 20 tools after 2FA + L3 unlock, got %d", len(tools))
+	if len(tools) != 21 {
+		t.Fatalf("expected all 21 tools after 2FA + L3 unlock, got %d", len(tools))
 	}
 
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{

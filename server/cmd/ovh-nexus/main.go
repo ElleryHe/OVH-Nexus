@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,11 +20,28 @@ import (
 	"ovh-nexus/server/internal/vault"
 )
 
+const (
+	defaultGoMemLimitBytes = 256 << 20 // 256 MiB soft heap ceiling
+	defaultGoGCPercent     = 50        // Proactive GC cycle for low steady-state RSS
+)
+
 func main() {
 	os.Exit(run())
 }
 
+// configureRuntimeMemory applies safe Go GC / soft memory limit defaults when the
+// operator has not explicitly set GOMEMLIMIT or GOGC via environment variables.
+func configureRuntimeMemory() {
+	if strings.TrimSpace(os.Getenv("GOMEMLIMIT")) == "" {
+		debug.SetMemoryLimit(defaultGoMemLimitBytes)
+	}
+	if strings.TrimSpace(os.Getenv("GOGC")) == "" {
+		debug.SetGCPercent(defaultGoGCPercent)
+	}
+}
+
 func run() int {
+	configureRuntimeMemory()
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "OVH Nexus configuration error: %v\n", err)

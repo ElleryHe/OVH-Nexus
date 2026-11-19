@@ -22,9 +22,11 @@ OVH Nexus 在容器启动时通过 `.env` 文件或 `docker-compose.yml` 中的 
 | `TRUSTED_PROXIES` | 否 | *(空)* | 逗号分隔的受信反向代理 IP 或 CIDR 列表（如 `127.0.0.1,172.16.0.0/12`），仅来自受信代理的请求才会采信 `X-Forwarded-For` 与 `X-Real-IP`。 |
 | `PUID` | 否 | `65532` | 容器启动入口在初始化 `/data`（`0700`）后通过 `su-exec` 降权切换的目标数字 UID。可按需设为 Linux 非 Root 宿主机用户 UID（`id -u`）；若容器本身已以非 Root 启动（`id -u != 0`，如 Kubernetes `runAsNonRoot: true`）则直接保留当前运行身份。 |
 | `PGID` | 否 | `65532` | 容器启动入口在初始化 `/data`（`0700`）后通过 `su-exec` 降权切换的目标数字 GID。可按需设为与宿主机用户一致的 GID（`id -g`）。 |
+| `GOMEMLIMIT` | 否 | `256MiB` | Go 运行时软内存上限（在 `Dockerfile` 与二进制入口双层默认注入，可由环境变量覆盖），用于在目录解析后及时触发回收并将空闲物理页归还操作系统，保持极低常驻内存占用。 |
+| `GOGC` | 否 | `50` | Go 垃圾回收器触发比例（默认 `50` 以更积极地收敛常驻 RSS；若多子站并发高负载可按需调高至 `100`）。 |
 | `SECRET_KEY` | 否 | *(自动生成)* | 可选的 `ovh_session` HMAC-SHA256 会话签名覆盖密钥。若省略，系统首次启动时自动生成随机密钥并加密持久化在 `/data/nexus.db`（`kv_settings`）。 |
 | `CORS_ORIGINS` | 否 | `http://localhost:19999,http://127.0.0.1:19999` | 前后端分离本地开发时的跨域白名单（逗号分隔）。生产单二进制部署下前后端同源，无需设置。 |
-| `DOCKER_IMAGE` | 否 | `elleryhe/ovh-nexus:latest` | 供 `docker-compose.yml` 覆盖镜像版本标签（如 `elleryhe/ovh-nexus:1.3.0`）。 |
+| `DOCKER_IMAGE` | 否 | `elleryhe/ovh-nexus:latest` | 供 `docker-compose.yml` 覆盖镜像版本标签（如 `elleryhe/ovh-nexus:1.4.0`）。 |
 
 ## 生成高强度密钥
 

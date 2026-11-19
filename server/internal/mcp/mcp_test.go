@@ -110,6 +110,23 @@ type mockCatalog struct {
 	skuStatus   map[string]any
 	skuChanges  []map[string]any
 	trackedSkus []map[string]any
+	promotions  *catalog.CatalogPromotionsResponse
+}
+
+func (m *mockCatalog) GetPromotions(_ context.Context, opts catalog.PromotionsQueryOptions) (*catalog.CatalogPromotionsResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.promotions != nil {
+		return m.promotions, nil
+	}
+	return &catalog.CatalogPromotionsResponse{
+		Endpoint:           "ovh-eu",
+		Zone:               "IE",
+		Currency:           "EUR",
+		AutoAppliedCodes:   []string{},
+		Campaigns:          []catalog.CatalogPromoCampaign{},
+		Plans:              []catalog.CatalogPromoPlan{},
+	}, nil
 }
 
 func (m *mockCatalog) QueryAvailability(ctx context.Context, planFilter, dcFilter string, onlyAvailable, presaleOnly bool, offset, limit int) ([]CatalogEntry, int, error) {
@@ -230,15 +247,27 @@ func (m *mockCatalog) GetSKUChangesFiltered(_ context.Context, _ int, _ string, 
 }
 
 type mockProcurement struct {
-	mu       sync.Mutex
-	orderSeq int
-	lastReqs []UnpaidOrderRequest
-	failNext error
+	mu              sync.Mutex
+	orderSeq        int
+	lastReqs        []UnpaidOrderRequest
+	lastQuoteModes  []string
+	lastQuoteCoupons []string
+	failNext        error
 }
 
 func (m *mockProcurement) QuoteOrder(_ context.Context, accountID, planCode, datacenter string, options []string) (*OrderQuoteResult, error) {
+	return m.QuoteOrderWithMode(context.Background(), accountID, planCode, datacenter, options, "default", "P1M", "")
+}
+
+func (m *mockProcurement) QuoteOrderWithMode(_ context.Context, accountID, planCode, datacenter string, options []string, pricingMode, duration, coupon string) (*OrderQuoteResult, error) {
+	m.mu.Lock()
+	m.lastQuoteModes = append(m.lastQuoteModes, pricingMode+":"+duration)
+	m.lastQuoteCoupons = append(m.lastQuoteCoupons, coupon)
+	m.mu.Unlock()
 	return &OrderQuoteResult{
 		Price: map[string]any{
+			"pricingMode":  pricingMode,
+			"duration":     duration,
 			"totalWithTax": map[string]any{"text": "14.99 EUR", "value": 14.99},
 		},
 	}, nil
@@ -547,8 +576,8 @@ func TestMCPGatewayLifecycleAuthAndRateLimiting(t *testing.T) {
 		if data["enabled"] != false || data["operationsLockedByTotp"] != true {
 			t.Fatalf("unexpected default MCP settings on %s: %+v", path, data)
 		}
-		if tools, _ := data["toolCatalog"].([]any); len(tools) != 20 {
-			t.Fatalf("expected 20 tools in toolCatalog, got %d", len(tools))
+		if tools, _ := data["toolCatalog"].([]any); len(tools) != 21 {
+			t.Fatalf("expected 21 tools in toolCatalog, got %d", len(tools))
 		}
 	}
 
@@ -674,11 +703,11 @@ func TestMCP2FAHardSecurityLock(t *testing.T) {
 		t.Fatalf("runtime L3 lock failed: %+v", sData)
 	}
 
-	// tools/list hides L3 tools when TOTP is disabled (only 11 L1 + 5 L2 = 16 tools)
+	// tools/list hides L3 tools when TOTP is disabled (only 12 L1 + 5 L2 = 17 tools)
 	_, listRPC := mcpCall(t, env, token, 1, "tools/list", nil)
 	tools := listRPC["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 16 {
-		t.Fatalf("expected 16 tools (L1+L2 only) without 2FA, got %d", len(tools))
+	if len(tools) != 17 {
+		t.Fatalf("expected 17 tools (L1+L2 only) without 2FA, got %d", len(tools))
 	}
 	for _, item := range tools {
 		name := item.(map[string]any)["name"].(string)
@@ -708,8 +737,8 @@ func TestMCP2FAHardSecurityLock(t *testing.T) {
 
 	_, listRPC = mcpCall(t, env, token, 2, "tools/list", nil)
 	tools = listRPC["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 20 {
-		t.Fatalf("expected all 20 tools after enabling 2FA+L3, got %d", len(tools))
+	if len(tools) != 21 {
+		t.Fatalf("expected all 21 tools after enabling 2FA+L3, got %d", len(tools))
 	}
 }
 
@@ -742,7 +771,7 @@ func TestMCPStreamableHTTPProtocolAndAudit(t *testing.T) {
 		t.Fatalf("expected negotiated protocolVersion 2024-11-05, got %v", initRes["protocolVersion"])
 	}
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.4" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.4.0" {
 		t.Fatalf("unexpected serverInfo: %+v", srvInfo)
 	}
 
@@ -1824,4 +1853,155 @@ func TestMCPCatalogV133PromosSetupFeesAndPricingModes(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPCatalogPromotionsAndModeCouponProcurementFlow(t *testing.T) {
+	env := setupMCPTest(t)
+	if _, err := env.store.UpsertAccount(context.Background(), store.OVHAccount{
+		ID:          "acc-promo",
+		Alias:       "Promo Test Account",
+		Endpoint:    "ovh-eu",
+		Zone:        "IE",
+		AppKey:      "ak-promo",
+		AppSecret:   "as-promo",
+		ConsumerKey: "ck-promo",
+		IsDefault:   true,
+	}); err != nil {
+		t.Fatalf("UpsertAccount: %v", err)
+	}
+	rec := doHTTP(t, env.router, http.MethodPut, "/api/mcp/settings", map[string]any{
+		"enabled":          true,
+		"allowAllAccounts": true,
+		"scopes":           map[string]any{"read": true, "procurement": true},
+	}, nil)
+	token := decodeJSONMap(t, rec)["data"].(map[string]any)["revealedToken"].(string)
+
+	env.catalog.mu.Lock()
+	env.catalog.promotions = &catalog.CatalogPromotionsResponse{
+		UpdatedAt:          1794990000,
+		Endpoint:           "ovh-eu",
+		Zone:               "IE",
+		Currency:           "EUR",
+		TotalCampaigns:     1,
+		TotalPromotedPlans: 1,
+		InStockPlans:       1,
+		AutoAppliedCodes:   []string{"BF26_ECO_20OFF"},
+		Campaigns: []catalog.CatalogPromoCampaign{
+			{
+				PromoCode:        "BF26_ECO_20OFF",
+				Context:          "standard",
+				AutoApplied:      true,
+				Capacities:       []string{"renew"},
+				SupportedModes:   []string{"default", "upfront12"},
+				DiscountType:     "percentage",
+				DiscountValue:    20,
+				Badge:            "-20%",
+				Description:      "Black Friday : 20% off for 12 months on SYS-2 server.",
+				DurationMonths:   12,
+				PlanCount:        1,
+				InStockPlanCount: 1,
+				MaxSavingsAmount: 86.62,
+				Currency:         "EUR",
+				PlanCodes:        []string{"24sys02-v3"},
+			},
+		},
+		Plans: []catalog.CatalogPromoPlan{
+			{
+				PlanCode:             "24sys02-v3",
+				Name:                 "SYS-2",
+				Range:                "SYS",
+				ListingState:         "listed",
+				Currency:             "EUR",
+				StartingPrice:        30.39,
+				OriginalMonthlyPrice: 37.99,
+				HasRecurringPromo:    true,
+				AutoApplied:          true,
+				PromoCodes:           []string{"BF26_ECO_20OFF"},
+				PromoBadge:           "-20%",
+				SupportedPromoModes:  []string{"default", "upfront12"},
+				MissedPromoModes:     []string{"upfront24"},
+				AddonsDiscounted:     false,
+				InStockDatacenters:   []string{"gra"},
+				InStockCount:         1,
+			},
+		},
+	}
+	env.catalog.mu.Unlock()
+
+	// 1. L1 catalog_promotions returns campaigns, plans, autoAppliedCodes, and agentGuidance.
+	promoRes, isErr, raw := mcpCallTool(t, env, token, "catalog_promotions", map[string]any{
+		"plan_code":     "24sys02",
+		"only_in_stock": true,
+	})
+	if isErr {
+		t.Fatalf("catalog_promotions failed: %s", raw)
+	}
+	if int(promoRes["totalCampaigns"].(float64)) != 1 || int(promoRes["inStockPlans"].(float64)) != 1 {
+		t.Fatalf("unexpected catalog_promotions counts: %+v", promoRes)
+	}
+	autoCodes := promoRes["autoAppliedCodes"].([]any)
+	if len(autoCodes) != 1 || autoCodes[0] != "BF26_ECO_20OFF" {
+		t.Fatalf("expected autoAppliedCodes=[BF26_ECO_20OFF], got %+v", autoCodes)
+	}
+	guidance := promoRes["agentGuidance"].([]any)
+	if len(guidance) < 3 {
+		t.Fatalf("expected actionable agentGuidance, got %+v", guidance)
+	}
+
+	// 2. L2 order_quote with pricing_mode=upfront12 and private coupon -> order_create_unpaid preserves them with auto_pay=false & quantity=1.
+	qRes, isErr, raw := mcpCallTool(t, env, token, "order_quote", map[string]any{
+		"plan_code":    "24sys02-v3",
+		"datacenter":   "gra",
+		"pricing_mode": "upfront12",
+		"coupon":       "PRIVATE_VIP",
+	})
+	if isErr {
+		t.Fatalf("order_quote with pricing_mode+coupon failed: %s", raw)
+	}
+	if qRes["pricingMode"] != "upfront12" || qRes["duration"] != "P12M" || qRes["coupon"] != "PRIVATE_VIP" {
+		t.Fatalf("unexpected order_quote response: %+v", qRes)
+	}
+	quoteID := qRes["quoteId"].(string)
+
+	ordRes, isErr, raw := mcpCallTool(t, env, token, "order_create_unpaid", map[string]any{
+		"quote_id": quoteID,
+	})
+	if isErr {
+		t.Fatalf("order_create_unpaid failed: %s", raw)
+	}
+	if ordRes["pricingMode"] != "upfront12" || ordRes["coupon"] != "PRIVATE_VIP" || ordRes["autoPay"] != false || int(ordRes["quantity"].(float64)) != 1 {
+		t.Fatalf("unexpected order_create_unpaid response: %+v", ordRes)
+	}
+	reqs := env.proc.reqsCopy()
+	if len(reqs) == 0 {
+		t.Fatalf("expected procurement CreateUnpaidOrder invocation")
+	}
+	lastReq := reqs[len(reqs)-1]
+	if lastReq.PricingMode != "upfront12" || lastReq.Duration != "P12M" || lastReq.Coupon != "PRIVATE_VIP" || lastReq.AutoPay || lastReq.Quantity != 1 {
+		t.Fatalf("expected UnpaidOrderRequest to preserve mode/coupon with autoPay=false qty=1, got %+v", lastReq)
+	}
+
+	// 3. L2 queue_add with pricing_mode, coupon, and max_monthly_price persists them with auto_pay=false & quantity=1.
+	addRes, isErr, raw := mcpCallTool(t, env, token, "queue_add", map[string]any{
+		"plan_code":         "24sys02-v3",
+		"datacenters":       []string{"gra", "rbx"},
+		"pricing_mode":      "upfront12",
+		"coupon":            "PRIVATE_VIP",
+		"max_monthly_price": 32.5,
+	})
+	if isErr {
+		t.Fatalf("queue_add with pricing_mode+coupon+max_monthly_price failed: %s", raw)
+	}
+	if addRes["pricingMode"] != "upfront12" || addRes["coupon"] != "PRIVATE_VIP" || addRes["maxMonthlyPrice"].(float64) != 32.5 || addRes["autoPay"] != false {
+		t.Fatalf("unexpected queue_add response: %+v", addRes)
+	}
+	storedQueue, err := env.store.ListQueue(context.Background(), "")
+	if err != nil || len(storedQueue) == 0 {
+		t.Fatalf("expected stored queue item, err=%v len=%d", err, len(storedQueue))
+	}
+	lastQ := storedQueue[len(storedQueue)-1]
+	if lastQ.PricingMode != "upfront12" || lastQ.Duration != "P12M" || lastQ.Coupon != "PRIVATE_VIP" || lastQ.MaxMonthlyPrice != 32.5 || lastQ.AutoPay || lastQ.Quantity != 1 {
+		t.Fatalf("unexpected persisted queue item: %+v", lastQ)
+	}
+}
+
 

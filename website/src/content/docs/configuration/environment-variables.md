@@ -22,9 +22,11 @@ OVH Nexus is configured at startup via environment variables defined in `.env` o
 | `TRUSTED_PROXIES` | No | *(empty)* | Comma-separated reverse proxy IPs or CIDRs (e.g., `127.0.0.1,172.16.0.0/12`) trusted to supply `X-Forwarded-For` and `X-Real-IP` headers. |
 | `PUID` | No | `65532` | Numeric user ID that the container entrypoint (`su-exec`) drops privileges to after initializing `/data` (`0700`). Set to a non-root Linux host UID (`id -u`) if desired; skipped when already running as non-root (`id -u != 0`, e.g., Kubernetes `runAsNonRoot: true`). |
 | `PGID` | No | `65532` | Numeric group ID that the container entrypoint (`su-exec`) drops privileges to after initializing `/data` (`0700`). Set to match your Linux host GID (`id -g`) if desired. |
+| `GOMEMLIMIT` | No | `256MiB` | Soft Go runtime heap memory ceiling (applied in both `Dockerfile` and binary fallback when unset) to keep container RSS low and proactively return transient catalog parsing pages to the OS. |
+| `GOGC` | No | `50` | Go garbage collector target percentage (default `50` for tighter memory footprint; increase to `100` on large multi-subsidiary deployments if desired). |
 | `SECRET_KEY` | No | *(auto-generated)* | Optional override for the HMAC-SHA256 `ovh_session` signing key. If omitted, a random key is generated once and persisted encrypted in `/data/nexus.db` (`kv_settings`). |
 | `CORS_ORIGINS` | No | `http://localhost:19999,http://127.0.0.1:19999` | Comma-separated allowed origins for split local frontend/backend development. Not needed in single-binary production where the WebUI and `/api/*` share one origin. |
-| `DOCKER_IMAGE` | No | `elleryhe/ovh-nexus:latest` | Used by `docker-compose.yml` to override the container image tag (e.g., `elleryhe/ovh-nexus:1.3.0`). |
+| `DOCKER_IMAGE` | No | `elleryhe/ovh-nexus:latest` | Used by `docker-compose.yml` to override the container image tag (e.g., `elleryhe/ovh-nexus:1.4.0`). |
 
 ## Generating Strong Keys
 

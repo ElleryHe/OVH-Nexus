@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -34,25 +35,31 @@ var safeFileRegex = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 // PlanPricingMode describes a single billing/commitment mode (e.g. "default", "upfront12", "upfront24", "degressivity12", "degressivity24")
 // including recurring period price, monthly equivalent price, installation/setup fee, and any active catalog promotion.
 type PlanPricingMode struct {
-	Mode                   string  `json:"mode"`                   // "default", "upfront12", "upfront24", "degressivity12", "degressivity24"
-	Duration               string  `json:"duration"`               // "P1M", "P12M", "P24M"
-	IntervalMonths         int     `json:"intervalMonths"`         // 1, 12, 24
-	CommitmentMonths       int     `json:"commitmentMonths"`       // 0, 12, 24
-	PeriodPrice            float64 `json:"periodPrice"`            // recurring price for the interval AFTER promo
-	OriginalPeriodPrice    float64 `json:"originalPeriodPrice"`    // recurring price for the interval BEFORE promo
-	MonthlyEquivalentPrice float64 `json:"monthlyEquivalentPrice"` // roundCents(periodPrice / intervalMonths)
-	OriginalMonthlyPrice   float64 `json:"originalMonthlyPrice"`   // roundCents(originalPeriodPrice / intervalMonths)
-	SetupFee               float64 `json:"setupFee"`               // installation fee AFTER promo
-	OriginalSetupFee       float64 `json:"originalSetupFee"`       // installation fee BEFORE promo
-	FreeSetup              bool    `json:"freeSetup"`              // setupFee == 0
-	HasPromo               bool    `json:"hasPromo"`               // true if recurring promo or setup promo is active
-	PromoCode              string  `json:"promoCode,omitempty"`    // e.g. "BF26_ECO_20OFF" or "BF26_OVH_FREESETUP"
-	PromoBadge             string  `json:"promoBadge,omitempty"`   // e.g. "-20%", "FREE SETUP", "-20% + FREE SETUP"
-	PromoDescription       string  `json:"promoDescription,omitempty"`
-	PromoValue             float64 `json:"promoValue,omitempty"`
-	PromoType              string  `json:"promoType,omitempty"`
-	PromoDuration          int     `json:"promoDuration,omitempty"`
-	PromoEndDate           string  `json:"promoEndDate,omitempty"`
+	Mode                   string       `json:"mode"`                   // "default", "upfront12", "upfront24", "degressivity12", "degressivity24"
+	Duration               string       `json:"duration"`               // "P1M", "P12M", "P24M"
+	IntervalMonths         int          `json:"intervalMonths"`         // 1, 12, 24
+	CommitmentMonths       int          `json:"commitmentMonths"`       // 0, 12, 24
+	PeriodPrice            float64      `json:"periodPrice"`            // recurring price for the interval AFTER promo
+	OriginalPeriodPrice    float64      `json:"originalPeriodPrice"`    // recurring price for the interval BEFORE promo
+	MonthlyEquivalentPrice float64      `json:"monthlyEquivalentPrice"` // roundCents(periodPrice / intervalMonths)
+	OriginalMonthlyPrice   float64      `json:"originalMonthlyPrice"`   // roundCents(originalPeriodPrice / intervalMonths)
+	SetupFee               float64      `json:"setupFee"`               // installation fee AFTER promo
+	OriginalSetupFee       float64      `json:"originalSetupFee"`       // installation fee BEFORE promo
+	FreeSetup              bool         `json:"freeSetup"`              // setupFee == 0
+	HasPromo               bool         `json:"hasPromo"`               // true if recurring promo or setup promo is active
+	PromoCode              string       `json:"promoCode,omitempty"`    // e.g. "BF26_ECO_20OFF" or "BF26_OVH_FREESETUP"
+	PromoBadge             string       `json:"promoBadge,omitempty"`   // e.g. "-20%", "FREE SETUP", "-20% + FREE SETUP"
+	PromoDescription       string       `json:"promoDescription,omitempty"`
+	PromoValue             float64      `json:"promoValue,omitempty"`
+	PromoType              string       `json:"promoType,omitempty"`
+	PromoDuration          int          `json:"promoDuration,omitempty"`
+	PromoMinimumDuration   int          `json:"promoMinimumDuration,omitempty"`
+	PromoContext           string       `json:"promoContext,omitempty"` // "standard" (auto-applied) | "voucher"
+	AutoApplied            bool         `json:"autoApplied,omitempty"`
+	PromoStartDate         string       `json:"promoStartDate,omitempty"`
+	PromoEndDate           string       `json:"promoEndDate,omitempty"`
+	RenewPromo             *PromoDetail `json:"renewPromo,omitempty"`
+	SetupPromo             *PromoDetail `json:"setupPromo,omitempty"`
 }
 
 // ServerOption represents a default or selectable hardware addon option for a server plan.
@@ -258,6 +265,7 @@ type CatalogDictionary struct {
 	Currency        string                                `json:"currency,omitempty"`
 	Plans           map[string]CatalogPlanEntry           `json:"plans"`
 	RealPlans       map[string]CatalogPlanEntry           `json:"realPlans,omitempty"`
+	PlanAliases     map[string]string                     `json:"planAliases,omitempty"`
 	AddonPrices     map[string]float64                    `json:"addonPrices,omitempty"`
 	AddonModePrices map[string]map[string]PlanPricingMode `json:"addonModePrices,omitempty"`
 	Options         map[string]any                        `json:"options"`
@@ -382,28 +390,44 @@ type ServerPriceItem struct {
 	Prices      ServerPriceValues `json:"prices"`
 }
 
+// CartPriceLine represents a line item returned by OVH /order/cart/{cartId}/summary details[].
+type CartPriceLine struct {
+	DetailType         string   `json:"detailType,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	TotalWithoutTax    *float64 `json:"totalWithoutTax,omitempty"`
+	OriginalWithoutTax *float64 `json:"originalWithoutTax,omitempty"`
+	CurrencyCode       string   `json:"currencyCode,omitempty"`
+}
+
 // ServerPricePayload holds cart summary and item breakdown pricing.
 type ServerPricePayload struct {
 	PricingMode                 string            `json:"pricingMode"`
 	Duration                    string            `json:"duration,omitempty"`
 	IntervalMonths              int               `json:"intervalMonths,omitempty"`
 	MonthlyEquivalentWithoutTax *float64          `json:"monthlyEquivalentWithoutTax,omitempty"`
+	SetupFeeWithoutTax          *float64          `json:"setupFeeWithoutTax,omitempty"`
+	RecurringWithoutTax         *float64          `json:"recurringWithoutTax,omitempty"`
+	ReductionWithoutTax         *float64          `json:"reductionWithoutTax,omitempty"`
 	Prices                      ServerPriceValues `json:"prices"`
 	Items                       []ServerPriceItem `json:"items"`
+	Details                     []CartPriceLine   `json:"details,omitempty"`
 }
 
 // ServerPriceResult matches POST /api/servers/{planCode}/price.
 type ServerPriceResult struct {
-	Success     bool                `json:"success"`
-	Code        string              `json:"code,omitempty"`
-	PlanCode    string              `json:"planCode,omitempty"`
-	Datacenter  string              `json:"datacenter,omitempty"`
-	Options     []string            `json:"options,omitempty"`
-	PricingMode string              `json:"pricingMode,omitempty"`
-	Duration    string              `json:"duration,omitempty"`
-	Coupon      string              `json:"coupon,omitempty"`
-	Price       *ServerPricePayload `json:"price"`
-	Error       string              `json:"error,omitempty"`
+	Success                  bool                `json:"success"`
+	Code                     string              `json:"code,omitempty"`
+	PlanCode                 string              `json:"planCode,omitempty"`
+	Datacenter               string              `json:"datacenter,omitempty"`
+	Options                  []string            `json:"options,omitempty"`
+	PricingMode              string              `json:"pricingMode,omitempty"`
+	Duration                 string              `json:"duration,omitempty"`
+	Coupon                   string              `json:"coupon,omitempty"`
+	AutoAppliedPromoDetected bool                `json:"autoAppliedPromoDetected,omitempty"`
+	AutoAppliedPromoCode     string              `json:"autoAppliedPromoCode,omitempty"`
+	AutoAppliedPromoHint     string              `json:"autoAppliedPromoHint,omitempty"`
+	Price                    *ServerPricePayload `json:"price"`
+	Error                    string              `json:"error,omitempty"`
 }
 
 // VPSDatacenterStatus represents one datacenter inside /vps/order/rule/datacenter.
@@ -495,31 +519,25 @@ type Service struct {
 	cacheDir string
 	logsDir  string
 
-	mu           sync.RWMutex
-	dictCache    map[string]*CatalogDictionary
-	serversCache map[string]*cachedServersEntry
-	rawCatalogs  map[string]*mergedRawCatalogs
-	vpsCache     map[string]*cachedVPSCatalog
-	flights      flightGroup
+	mu             sync.RWMutex
+	dictCache      map[string]*CatalogDictionary
+	serversCache   map[string]*cachedServersEntry
+	catalogDigests map[string]*catalogDigestEntry
+	flights        flightGroup
 
 	publicBaseOverride string
 	accountClientFn    func(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error)
 	listedAtResolver   func(planCode string) string
 }
 
-type mergedRawCatalogs struct {
-	UpdatedAt int64
-	Eco       map[string]any
-	Baremetal map[string]any
-	VPS       map[string]any
+type catalogDigestEntry struct {
+	EcoHash       string
+	BaremetalHash string
+	VPSHash       string
+	UpdatedAt     int64
 }
 
-type cachedVPSCatalog struct {
-	UpdatedAt int64          `json:"updatedAt"`
-	Data      map[string]any `json:"data"`
-}
-
-// NewService constructs a catalog Service storing JSON cache artifacts under <dataDir>/cache.
+// NewService constructs a catalog Service storing compressed .json.gz cache artifacts under <dataDir>/cache.
 func NewService(st *store.Store, log *logger.Hub, ovhPool *ovhclient.Pool, dataDir string) *Service {
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = filepath.Join(os.TempDir(), "ovh-nexus-data")
@@ -528,17 +546,20 @@ func NewService(st *store.Store, log *logger.Hub, ovhPool *ovhclient.Pool, dataD
 	logsDir := filepath.Join(dataDir, "logs")
 	_ = os.MkdirAll(cacheDir, 0o700)
 
+	if removed := pruneLegacyCacheFiles(cacheDir); removed > 0 && log != nil {
+		log.Info(logger.SourceCatalog, "Pruned obsolete catalog cache files on startup", "removed", removed)
+	}
+
 	return &Service{
-		store:        st,
-		log:          log,
-		ovhPool:      ovhPool,
-		dataDir:      dataDir,
-		cacheDir:     cacheDir,
-		logsDir:      logsDir,
-		dictCache:    make(map[string]*CatalogDictionary),
-		serversCache: make(map[string]*cachedServersEntry),
-		rawCatalogs:  make(map[string]*mergedRawCatalogs),
-		vpsCache:     make(map[string]*cachedVPSCatalog),
+		store:          st,
+		log:            log,
+		ovhPool:        ovhPool,
+		dataDir:        dataDir,
+		cacheDir:       cacheDir,
+		logsDir:        logsDir,
+		dictCache:      make(map[string]*CatalogDictionary),
+		serversCache:   make(map[string]*cachedServersEntry),
+		catalogDigests: make(map[string]*catalogDigestEntry),
 	}
 }
 
@@ -625,14 +646,14 @@ func (s *Service) fetchPublicJSON(ctx context.Context, endpoint, apiPath string,
 			return err
 		}
 		defer resp.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-		if err != nil {
-			return err
-		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			return fmt.Errorf("public GET %s returned HTTP %d: %s", apiPath, resp.StatusCode, strings.TrimSpace(string(body)))
 		}
-		return json.Unmarshal(body, out)
+		if out != nil {
+			return json.NewDecoder(io.LimitReader(resp.Body, ovhclient.MaxPublicResponseBytes)).Decode(out)
+		}
+		return nil
 	}
 	if s.ovhPool == nil {
 		return errors.New("catalog: OVH client pool is not configured")
@@ -640,17 +661,53 @@ func (s *Service) fetchPublicJSON(ctx context.Context, endpoint, apiPath string,
 	return s.ovhPool.GetPublicJSON(ctx, endpoint, apiPath, out)
 }
 
-func (s *Service) fetchPublicCatalog(ctx context.Context, endpoint, zone, catName string) map[string]any {
+func (s *Service) fetchPublicRawCatalog(ctx context.Context, endpoint, zone, catName string) *ovhclient.PublicRawResponse {
 	sub := normalizeSubsidiary(endpoint, zone)
 	apiPath := fmt.Sprintf("/order/catalog/public/%s?ovhSubsidiary=%s", catName, url.QueryEscape(sub))
-	var payload map[string]any
-	if err := s.fetchPublicJSON(ctx, endpoint, apiPath, &payload); err != nil {
+
+	var raw *ovhclient.PublicRawResponse
+	var err error
+	if s.publicBaseOverride != "" {
+		client := &http.Client{Timeout: ovhclient.DefaultHTTPTimeout}
+		if s.ovhPool != nil {
+			client = s.ovhPool.PublicHTTPClient()
+		}
+		raw, err = ovhclient.FetchPublicRawFromURL(ctx, client, s.publicBaseOverride+apiPath, apiPath)
+	} else if s.ovhPool != nil {
+		raw, err = s.ovhPool.GetPublicRaw(ctx, endpoint, apiPath)
+	} else {
+		err = errors.New("catalog: OVH client pool is not configured")
+	}
+	if err != nil {
 		if s.log != nil {
 			s.log.Debug(logger.SourceCatalog, "Public catalog fetch skipped or failed", "catalog", catName, "endpoint", endpoint, "subsidiary", sub, "error", err.Error())
 		}
 		return nil
 	}
-	return payload
+	return raw
+}
+
+func decodeRawCatalogPayload(raw *ovhclient.PublicRawResponse) *rawCatalogPayload {
+	if raw == nil || len(raw.RawBytes) == 0 {
+		return nil
+	}
+	var payload rawCatalogPayload
+	if err := raw.DecodeJSON(&payload); err != nil {
+		raw.RawBytes = nil
+		return nil
+	}
+	// Release compressed wire buffer immediately after streaming decode completes.
+	raw.RawBytes = nil
+	return &payload
+}
+
+func (s *Service) fetchTypedPublicCatalog(ctx context.Context, endpoint, zone, catName string) (*rawCatalogPayload, string) {
+	raw := s.fetchPublicRawCatalog(ctx, endpoint, zone, catName)
+	if raw == nil {
+		return nil, ""
+	}
+	digest := raw.SHA256
+	return decodeRawCatalogPayload(raw), digest
 }
 
 // GetRawAvailabilities fetches raw datacenter availabilities from the OVH public API.
@@ -674,7 +731,7 @@ func (s *Service) GetRawAvailabilities(ctx context.Context, endpoint, planCode s
 	return val.([]RawAvailabilityItem), nil
 }
 
-// GetDictionary returns the merged Eco + Baremetal + VPS catalog dictionary, cached in memory & disk (12h TTL).
+// GetDictionary returns the merged Eco + Baremetal + VPS catalog dictionary, cached in memory & compressed disk (12h TTL).
 func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forceRefresh bool) (*CatalogDictionary, error) {
 	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
 	cacheKey := ep + ":" + zn
@@ -689,7 +746,7 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			return mem, nil
 		}
 
-		if diskDict, ok := readJSONFile[CatalogDictionary](diskPath); ok {
+		if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok {
 			if (now - diskDict.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
 				s.mu.Lock()
 				s.dictCache[cacheKey] = &diskDict
@@ -701,22 +758,84 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 
 	flightKey := fmt.Sprintf("dict:%s:%s:%v", ep, zn, forceRefresh)
 	val, err := s.flights.do(flightKey, func() (any, error) {
-		raw := s.fetchMergedRawCatalogs(ctx, ep, zn)
-		if raw.Eco != nil || raw.Baremetal != nil || raw.VPS != nil {
-			merged := BuildDictionaryFromCatalogs(raw.Eco, raw.Baremetal, raw.VPS)
-			_ = writeJSONFile(diskPath, merged)
+		var wg sync.WaitGroup
+		var ecoRaw, bmRaw, vpsRaw *ovhclient.PublicRawResponse
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			ecoRaw = s.fetchPublicRawCatalog(ctx, ep, zn, "eco")
+		}()
+		go func() {
+			defer wg.Done()
+			bmRaw = s.fetchPublicRawCatalog(ctx, ep, zn, "baremetalServers")
+		}()
+		go func() {
+			defer wg.Done()
+			vpsRaw = s.fetchPublicRawCatalog(ctx, ep, zn, "vps")
+		}()
+		wg.Wait()
+
+		ecoHash := rawDigest(ecoRaw)
+		bmHash := rawDigest(bmRaw)
+		vpsHash := rawDigest(vpsRaw)
+
+		if ecoRaw != nil || bmRaw != nil || vpsRaw != nil {
+			s.mu.RLock()
+			existing := s.dictCache[cacheKey]
+			prevDigest := s.catalogDigests[cacheKey]
+			s.mu.RUnlock()
+			if existing != nil && prevDigest != nil {
+				partialOutage := (ecoRaw == nil && prevDigest.EcoHash != "") || (bmRaw == nil && prevDigest.BaremetalHash != "")
+				if partialOutage {
+					clearRawBytes(ecoRaw, bmRaw, vpsRaw)
+					if s.log != nil {
+						s.log.Warn(logger.SourceCatalog, "Partial OVH catalog fetch failed; keeping previous complete dictionary",
+							"endpoint", ep, "zone", zn, "ecoOk", ecoRaw != nil, "baremetalOk", bmRaw != nil)
+					}
+					return existing, nil
+				}
+				if prevDigest.EcoHash == ecoHash &&
+					prevDigest.BaremetalHash == bmHash &&
+					prevDigest.VPSHash == vpsHash {
+					clearRawBytes(ecoRaw, bmRaw, vpsRaw)
+					ts := time.Now().Unix()
+					s.mu.Lock()
+					existing.UpdatedAt = ts
+					prevDigest.UpdatedAt = ts
+					s.mu.Unlock()
+					if s.log != nil {
+						s.log.Debug(logger.SourceCatalog, "OVH catalog unchanged (SHA-256 match); skipped decode and disk write", "endpoint", ep, "zone", zn)
+					}
+					return existing, nil
+				}
+			}
+
+			// Sequential streaming decode to halve peak transient heap allocations.
+			eco := decodeRawCatalogPayload(ecoRaw)
+			bm := decodeRawCatalogPayload(bmRaw)
+			vps := decodeRawCatalogPayload(vpsRaw)
+			merged := BuildDictionaryFromTypedCatalogs(eco, bm, vps)
+			eco, bm, vps = nil, nil, nil
+
+			_ = writeGzipJSONFile(diskPath, merged)
 			s.mu.Lock()
 			s.dictCache[cacheKey] = merged
-			s.rawCatalogs[cacheKey] = raw
+			s.catalogDigests[cacheKey] = &catalogDigestEntry{
+				EcoHash:       ecoHash,
+				BaremetalHash: bmHash,
+				VPSHash:       vpsHash,
+				UpdatedAt:     merged.UpdatedAt,
+			}
 			s.mu.Unlock()
+			debug.FreeOSMemory()
 			if s.log != nil {
-				s.log.Info(logger.SourceCatalog, "Refreshed OVH catalog dictionary", "endpoint", ep, "zone", zn, "plans", len(merged.Plans), "realPlans", len(merged.RealPlans))
+				s.log.Info(logger.SourceCatalog, "Refreshed OVH catalog dictionary", "endpoint", ep, "zone", zn, "plans", len(merged.Plans), "realPlans", len(merged.RealPlans), "aliases", len(merged.PlanAliases))
 			}
 			return merged, nil
 		}
 
 		// Fallback to stale disk cache if upstream failed.
-		if stale, ok := readJSONFile[CatalogDictionary](diskPath); ok {
+		if stale, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok {
 			s.mu.Lock()
 			s.dictCache[cacheKey] = &stale
 			s.mu.Unlock()
@@ -727,6 +846,7 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			Currency:        "EUR",
 			Plans:           make(map[string]CatalogPlanEntry),
 			RealPlans:       make(map[string]CatalogPlanEntry),
+			PlanAliases:     make(map[string]string),
 			AddonPrices:     make(map[string]float64),
 			AddonModePrices: make(map[string]map[string]PlanPricingMode),
 			Options:         make(map[string]any),
@@ -740,7 +860,8 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 }
 
 // GetBaremetalDictionary fetches ONLY the eco and baremetalServers public catalogs (skipping vps),
-// used by bare-metal SKU monitoring so VPS catalog latency/plans never affect bare-metal SKU checks.
+// used by bare-metal SKU monitoring and promotions radar. Uses deterministic SHA-256 short-circuiting
+// so routine 120s checks perform zero JSON decoding and zero disk writes when upstream catalogs are unchanged.
 func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone string, forceRefresh bool) (*CatalogDictionary, error) {
 	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
 	cacheKey := ep + ":" + zn
@@ -754,7 +875,7 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 		if mem != nil && len(mem.RealPlans) > 0 && (now-mem.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
 			return mem, nil
 		}
-		if diskDict, ok := readJSONFile[CatalogDictionary](diskPath); ok && len(diskDict.RealPlans) > 0 {
+		if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok && len(diskDict.RealPlans) > 0 {
 			if (now - diskDict.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
 				s.mu.Lock()
 				s.dictCache[cacheKey] = &diskDict
@@ -767,31 +888,94 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 	flightKey := fmt.Sprintf("bmdict:%s:%s:%v", ep, zn, forceRefresh)
 	val, err := s.flights.do(flightKey, func() (any, error) {
 		var wg sync.WaitGroup
-		var eco, bm map[string]any
+		var ecoRaw, bmRaw *ovhclient.PublicRawResponse
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			eco = s.fetchPublicCatalog(ctx, ep, zn, "eco")
+			ecoRaw = s.fetchPublicRawCatalog(ctx, ep, zn, "eco")
 		}()
 		go func() {
 			defer wg.Done()
-			bm = s.fetchPublicCatalog(ctx, ep, zn, "baremetalServers")
+			bmRaw = s.fetchPublicRawCatalog(ctx, ep, zn, "baremetalServers")
 		}()
 		wg.Wait()
 
-		if eco != nil || bm != nil {
-			merged := BuildDictionaryFromCatalogs(eco, bm, nil)
-			_ = writeJSONFile(diskPath, merged)
+		ecoHash := rawDigest(ecoRaw)
+		bmHash := rawDigest(bmRaw)
+
+		if ecoRaw != nil || bmRaw != nil {
+			s.mu.RLock()
+			existing := s.dictCache[cacheKey]
+			prevDigest := s.catalogDigests[cacheKey]
+			s.mu.RUnlock()
+
+			if existing != nil && len(existing.RealPlans) > 0 && prevDigest != nil {
+				// Guard against transient partial upstream failure (e.g. baremetalServers timed out while eco succeeded):
+				// never overwrite a healthy complete dictionary with a partial one-sided fetch.
+				partialOutage := (ecoRaw == nil && prevDigest.EcoHash != "") || (bmRaw == nil && prevDigest.BaremetalHash != "")
+				if partialOutage {
+					clearRawBytes(ecoRaw, bmRaw)
+					if s.log != nil {
+						s.log.Warn(logger.SourceCatalog, "Partial OVH baremetal catalog fetch failed; keeping previous complete dictionary",
+							"endpoint", ep, "zone", zn, "ecoOk", ecoRaw != nil, "baremetalOk", bmRaw != nil)
+					}
+					return existing, nil
+				}
+				if prevDigest.EcoHash == ecoHash && prevDigest.BaremetalHash == bmHash {
+					clearRawBytes(ecoRaw, bmRaw)
+					ts := time.Now().Unix()
+					s.mu.Lock()
+					existing.UpdatedAt = ts
+					prevDigest.UpdatedAt = ts
+					s.mu.Unlock()
+					if s.log != nil {
+						s.log.Debug(logger.SourceCatalog, "OVH baremetal catalog unchanged (SHA-256 match); skipped decode and disk write", "endpoint", ep, "zone", zn, "realPlans", len(existing.RealPlans))
+					}
+					return existing, nil
+				}
+			}
+
+			// Sequential streaming decode of eco then baremetalServers to keep peak transient heap low.
+			eco := decodeRawCatalogPayload(ecoRaw)
+			bm := decodeRawCatalogPayload(bmRaw)
+			merged := BuildDictionaryFromTypedCatalogs(eco, bm, nil)
+			eco, bm = nil, nil
+
+			// Preserve any previously loaded VPS plan entries in Plans so baremetal refreshes never wipe VPS labels.
+			var preservedVPSHash string
+			s.mu.RLock()
+			if existing != nil {
+				for k, v := range existing.Plans {
+					if strings.EqualFold(v.CatalogSource, "vps") {
+						if _, exists := merged.Plans[k]; !exists {
+							merged.Plans[k] = v
+						}
+					}
+				}
+			}
+			if prevDigest != nil {
+				preservedVPSHash = prevDigest.VPSHash
+			}
+			s.mu.RUnlock()
+
+			_ = writeGzipJSONFile(diskPath, merged)
 			s.mu.Lock()
 			s.dictCache[cacheKey] = merged
+			s.catalogDigests[cacheKey] = &catalogDigestEntry{
+				EcoHash:       ecoHash,
+				BaremetalHash: bmHash,
+				VPSHash:       preservedVPSHash,
+				UpdatedAt:     merged.UpdatedAt,
+			}
 			s.mu.Unlock()
+			debug.FreeOSMemory()
 			if s.log != nil {
 				s.log.Info(logger.SourceCatalog, "Refreshed OVH baremetal catalog dictionary", "endpoint", ep, "zone", zn, "realPlans", len(merged.RealPlans))
 			}
 			return merged, nil
 		}
 
-		if stale, ok := readJSONFile[CatalogDictionary](diskPath); ok {
+		if stale, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok {
 			s.mu.Lock()
 			s.dictCache[cacheKey] = &stale
 			s.mu.Unlock()
@@ -802,6 +986,7 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 			Currency:        "EUR",
 			Plans:           make(map[string]CatalogPlanEntry),
 			RealPlans:       make(map[string]CatalogPlanEntry),
+			PlanAliases:     make(map[string]string),
 			AddonPrices:     make(map[string]float64),
 			AddonModePrices: make(map[string]map[string]PlanPricingMode),
 			Options:         make(map[string]any),
@@ -814,481 +999,43 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 	return val.(*CatalogDictionary), nil
 }
 
-func (s *Service) fetchMergedRawCatalogs(ctx context.Context, endpoint, zone string) *mergedRawCatalogs {
-	var wg sync.WaitGroup
-	var eco, bm, vps map[string]any
+func rawDigest(r *ovhclient.PublicRawResponse) string {
+	if r == nil {
+		return ""
+	}
+	return r.SHA256
+}
 
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		eco = s.fetchPublicCatalog(ctx, endpoint, zone, "eco")
-	}()
-	go func() {
-		defer wg.Done()
-		bm = s.fetchPublicCatalog(ctx, endpoint, zone, "baremetalServers")
-	}()
-	go func() {
-		defer wg.Done()
-		vps = s.fetchPublicCatalog(ctx, endpoint, zone, "vps")
-		if vps != nil {
-			_ = writeJSONFile(s.vpsCachePath(endpoint, zone), cachedVPSCatalog{
-				UpdatedAt: time.Now().Unix(),
-				Data:      vps,
-			})
-			s.mu.Lock()
-			s.vpsCache[endpoint+":"+zone] = &cachedVPSCatalog{UpdatedAt: time.Now().Unix(), Data: vps}
-			s.mu.Unlock()
+func clearRawBytes(resps ...*ovhclient.PublicRawResponse) {
+	for _, r := range resps {
+		if r != nil {
+			r.RawBytes = nil
 		}
-	}()
-	wg.Wait()
-
-	return &mergedRawCatalogs{
-		UpdatedAt: time.Now().Unix(),
-		Eco:       eco,
-		Baremetal: bm,
-		VPS:       vps,
 	}
 }
 
-// GetVPSCatalog returns the public VPS catalog JSON (cached 12h on disk and in memory).
-func (s *Service) GetVPSCatalog(ctx context.Context, endpoint, zone string, forceRefresh bool) (map[string]any, error) {
-	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
-	cacheKey := ep + ":" + zn
-	diskPath := s.vpsCachePath(ep, zn)
-	now := time.Now().Unix()
-
-	if !forceRefresh {
-		s.mu.RLock()
-		mem := s.vpsCache[cacheKey]
-		s.mu.RUnlock()
-		if mem != nil && (now-mem.UpdatedAt) < int64(CatalogDictTTL.Seconds()) && mem.Data != nil {
-			return mem.Data, nil
-		}
-		if disk, ok := readJSONFile[cachedVPSCatalog](diskPath); ok && disk.Data != nil {
-			if (now - disk.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
-				s.mu.Lock()
-				s.vpsCache[cacheKey] = &disk
-				s.mu.Unlock()
-				return disk.Data, nil
-			}
-		}
-	}
-
-	val, err := s.flights.do(fmt.Sprintf("vps:%s:%v", cacheKey, forceRefresh), func() (any, error) {
-		data := s.fetchPublicCatalog(ctx, ep, zn, "vps")
-		if data == nil {
-			if stale, ok := readJSONFile[cachedVPSCatalog](diskPath); ok && stale.Data != nil {
-				return stale.Data, nil
-			}
-			return nil, errors.New("failed to fetch OVH VPS catalog")
-		}
-		entry := &cachedVPSCatalog{UpdatedAt: time.Now().Unix(), Data: data}
-		_ = writeJSONFile(diskPath, entry)
-		s.mu.Lock()
-		s.vpsCache[cacheKey] = entry
-		s.mu.Unlock()
-		return data, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return val.(map[string]any), nil
-}
-
-// BuildDictionaryFromCatalogs merges raw eco, baremetalServers, and vps catalogs into a CatalogDictionary.
+// BuildDictionaryFromCatalogs merges raw eco, baremetalServers, and vps map[string]any catalogs into a deduplicated CatalogDictionary.
 func BuildDictionaryFromCatalogs(eco, baremetal, vps map[string]any) *CatalogDictionary {
-	productsByName := make(map[string]map[string]any)
-	addonsPriceByCode := make(map[string]struct {
-		product string
-		price   *float64
-		modes   map[string]PlanPricingMode
-	})
-	plansMap := make(map[string]CatalogPlanEntry)
-	realPlansMap := make(map[string]CatalogPlanEntry)
-	globalAddonPrices := make(map[string]float64)
-	globalAddonModePrices := make(map[string]map[string]PlanPricingMode)
-	optionsMap := make(map[string]any)
-	defaultCurrency := "EUR"
+	return BuildDictionaryFromTypedCatalogs(
+		mapToRawCatalogPayload(eco),
+		mapToRawCatalogPayload(baremetal),
+		mapToRawCatalogPayload(vps),
+	)
+}
 
-	type catalogSourcePair struct {
-		source string
-		data   map[string]any
+func mapToRawCatalogPayload(src map[string]any) *rawCatalogPayload {
+	if src == nil {
+		return nil
 	}
-	sources := []catalogSourcePair{
-		{source: "eco", data: eco},
-		{source: "baremetalServers", data: baremetal},
-		{source: "vps", data: vps},
+	b, err := json.Marshal(src)
+	if err != nil {
+		return nil
 	}
-
-	for _, src := range sources {
-		cat := src.data
-		if cat == nil {
-			continue
-		}
-		if loc, ok := cat["locale"].(map[string]any); ok {
-			if cc, ok := loc["currencyCode"].(string); ok && strings.TrimSpace(cc) != "" {
-				defaultCurrency = strings.ToUpper(strings.TrimSpace(cc))
-			}
-		}
-		for _, rawAddon := range sliceOfMaps(cat["addons"]) {
-			ac := strings.TrimSpace(strFromMap(rawAddon, "planCode"))
-			if ac == "" {
-				continue
-			}
-			prodCode := strings.TrimSpace(strFromMap(rawAddon, "product"))
-			parsedModes := ParsePlanPricingModes(rawAddon)
-			modesMap := make(map[string]PlanPricingMode, len(parsedModes))
-			for _, m := range parsedModes {
-				modesMap[m.Mode] = m
-			}
-			pr := extractMonthlyPriceFromModes(rawAddon, parsedModes)
-			addonsPriceByCode[ac] = struct {
-				product string
-				price   *float64
-				modes   map[string]PlanPricingMode
-			}{product: prodCode, price: pr, modes: modesMap}
-			if pr != nil && src.source != "vps" {
-				globalAddonPrices[ac] = *pr
-				if len(modesMap) > 0 {
-					globalAddonModePrices[ac] = copyPricingModesMap(modesMap)
-				}
-				if prodCode != "" {
-					cur, exists := globalAddonPrices[prodCode]
-					if !exists || (cur == 0 && *pr > 0) {
-						globalAddonPrices[prodCode] = *pr
-						if len(modesMap) > 0 {
-							globalAddonModePrices[prodCode] = copyPricingModesMap(modesMap)
-						}
-					}
-				}
-			}
-		}
-		for _, prod := range sliceOfMaps(cat["products"]) {
-			pname, _ := prod["name"].(string)
-			if pname == "" {
-				continue
-			}
-			productsByName[pname] = prod
-			blobs, _ := prod["blobs"].(map[string]any)
-			tech, _ := blobs["technical"].(map[string]any)
-			if memMap, ok := tech["memory"].(map[string]any); ok {
-				optionsMap[pname] = map[string]any{
-					"kind":   "memory",
-					"parsed": ParseMemoryCode(pname, memMap),
-				}
-			} else if _, hasStorage := tech["storage"]; hasStorage ||
-				strings.HasPrefix(pname, "softraid-") ||
-				strings.HasPrefix(pname, "hardraid-") ||
-				strings.HasPrefix(pname, "hybridsoftraid-") ||
-				strings.HasPrefix(pname, "noraid-") {
-				optionsMap[pname] = map[string]any{
-					"kind":   "storage",
-					"parsed": ParseStorageCode(pname, strings.HasSuffix(pname, "-system")),
-				}
-			} else if _, hasGPU := tech["gpu"]; hasGPU || strings.HasPrefix(pname, "gpu-") {
-				optionsMap[pname] = map[string]any{
-					"kind":   "gpu",
-					"parsed": ParseGPUCode(pname),
-				}
-			}
-		}
+	var out rawCatalogPayload
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
 	}
-
-	for _, src := range sources {
-		cat := src.data
-		if cat == nil {
-			continue
-		}
-		catCurrency := defaultCurrency
-		if loc, ok := cat["locale"].(map[string]any); ok {
-			if cc, ok := loc["currencyCode"].(string); ok && strings.TrimSpace(cc) != "" {
-				catCurrency = strings.ToUpper(strings.TrimSpace(cc))
-			}
-		}
-		for _, plan := range sliceOfMaps(cat["plans"]) {
-			planCode := strings.TrimSpace(strFromMap(plan, "planCode"))
-			if planCode == "" {
-				continue
-			}
-			productKey := strings.TrimSpace(strFromMap(plan, "product"))
-			invoiceName := strings.TrimSpace(strFromMap(plan, "invoiceName"))
-			desc := strings.TrimSpace(strFromMap(plan, "description"))
-			if desc == "" {
-				desc = invoiceName
-			}
-			commName := nestedString(plan, "blobs", "commercial", "name")
-
-			parts := splitPipeNonEmpty(invoiceName)
-			displayName := commName
-			if displayName == "" && len(parts) > 0 {
-				displayName = parts[0]
-			}
-			if displayName == "" {
-				displayName = planCode
-			}
-			invoiceCPU := ""
-			if len(parts) > 1 {
-				invoiceCPU = parts[1]
-			}
-
-			prodEntry := productsByName[productKey]
-			if prodEntry == nil {
-				prodEntry = productsByName[planCode]
-			}
-			var srvTech map[string]any
-			if prodEntry != nil {
-				srvTech = nestedMap(prodEntry, "blobs", "technical", "server")
-			}
-			cpuRaw, _ := srvTech["cpu"].(map[string]any)
-			rawRange, _ := srvTech["range"].(string)
-			if src.source == "vps" && rawRange == "" {
-				rawRange = "vps"
-			}
-
-			var cpuInfo *CPUInfo
-			if model, _ := cpuRaw["model"].(string); model != "" || invoiceCPU != "" {
-				brand, _ := cpuRaw["brand"].(string)
-				if model == "" {
-					model = invoiceCPU
-				}
-				cpuInfo = &CPUInfo{
-					Brand:     brand,
-					Model:     model,
-					Cores:     intFromAny(cpuRaw["cores"]),
-					Threads:   intFromAny(cpuRaw["threads"]),
-					Frequency: floatFromAny(cpuRaw["frequency"]),
-					Boost:     floatFromAny(cpuRaw["boost"]),
-				}
-			}
-
-			normRange := ClassifyProductRange(displayName, rawRange, planCode)
-			baseCode, regionInfo := ParsePlanRegion(planCode)
-			noVerCode := StripPlanVersion(planCode)
-			pricingModes := ParsePlanPricingModes(plan)
-			planSum := summarizePricingModes(pricingModes)
-			basePrice := extractMonthlyPriceFromModes(plan, pricingModes)
-			basePriceVal := 0.0
-			if basePrice != nil {
-				basePriceVal = *basePrice
-			}
-			if basePrice != nil && src.source != "vps" {
-				globalAddonPrices[planCode] = *basePrice
-			}
-			if len(pricingModes) > 0 && src.source != "vps" {
-				pmMap := make(map[string]PlanPricingMode, len(pricingModes))
-				for _, m := range pricingModes {
-					pmMap[m.Mode] = m
-				}
-				globalAddonModePrices[planCode] = pmMap
-			}
-
-			addonPrices := make(map[string]float64)
-			addonModePrices := make(map[string]map[string]PlanPricingMode)
-			var defMemCode, defStoCode, defSysStoCode, defGPUCode, defBWStr, defVRackStr string
-			var defaultAddonOpts []string
-			defaultOpts := make([]ServerOption, 0)
-			availOpts := make([]ServerOption, 0)
-			hasMemory := false
-			hasStorage := false
-
-			for _, fam := range sliceOfMaps(plan["addonFamilies"]) {
-				famName := strings.ToLower(strings.TrimSpace(strFromMap(fam, "name")))
-				defAddon := strings.TrimSpace(strFromMap(fam, "default"))
-				addons := sliceOfStrings(fam["addons"])
-
-				isMemFam := strings.Contains(famName, "memory") || strings.Contains(famName, "ram")
-				isStoFam := (strings.Contains(famName, "storage") || strings.Contains(famName, "disk") || strings.Contains(famName, "drive")) && !strings.Contains(famName, "system")
-				isSysStoFam := strings.Contains(famName, "system-storage") || strings.Contains(famName, "system_storage")
-				isGPUFam := strings.Contains(famName, "gpu")
-				if isMemFam {
-					hasMemory = true
-				}
-				if isStoFam || isSysStoFam {
-					hasStorage = true
-				}
-
-				for _, rawAC := range addons {
-					rawAC = strings.TrimSpace(rawAC)
-					if rawAC == "" || isLicenseOrOSOption(rawAC) {
-						continue
-					}
-					ap, hasAP := addonsPriceByCode[rawAC]
-					isDef := rawAC == defAddon
-					prodKey := ap.product
-					if prodKey == "" {
-						prodKey = stripPlanAddonSuffix(rawAC, planCode, baseCode, noVerCode, productKey)
-					}
-					addonDelta := 0.0
-					if hasAP && ap.price != nil {
-						addonDelta = *ap.price
-						addonPrices[rawAC] = *ap.price
-						if prodKey != "" {
-							if _, exists := addonPrices[prodKey]; !exists || isDef {
-								addonPrices[prodKey] = *ap.price
-							}
-						}
-					}
-					if hasAP && len(ap.modes) > 0 {
-						addonModePrices[rawAC] = copyPricingModesMap(ap.modes)
-						if prodKey != "" {
-							if _, exists := addonModePrices[prodKey]; !exists || isDef {
-								addonModePrices[prodKey] = copyPricingModesMap(ap.modes)
-							}
-						}
-					}
-					estOptPrice := roundCents(basePriceVal + addonDelta)
-					var optModes []PlanPricingMode
-					if hasAP && len(ap.modes) > 0 {
-						for _, m := range ap.modes {
-							optModes = append(optModes, m)
-						}
-						sortPricingModes(optModes)
-					}
-					optSum := summarizePricingModes(optModes)
-					opt := ServerOption{
-						Label:                 rawAC,
-						Value:                 rawAC,
-						Family:                famName,
-						IsDefault:             isDef,
-						ConfigKey:             prodKey,
-						Options:               []string{rawAC},
-						EstimatedMonthlyPrice: estOptPrice,
-						Price:                 addonDelta,
-						OriginalPrice:         optSum.OriginalMonthlyPrice,
-						OriginalMonthlyPrice:  optSum.OriginalMonthlyPrice,
-						SetupFee:              optSum.SetupFee,
-						OriginalSetupFee:      optSum.OriginalSetupFee,
-						FreeSetup:             optSum.FreeSetup,
-						HasPromo:              optSum.HasPromo,
-						PromoCode:             optSum.PromoCode,
-						PromoBadge:            optSum.PromoBadge,
-						PromoDescription:      optSum.PromoDescription,
-						PricingModes:          optModes,
-						Currency:              catCurrency,
-					}
-					if isMemFam {
-						opt.Memory = prodKey
-					} else if isStoFam {
-						opt.Storage = prodKey
-					}
-					availOpts = append(availOpts, opt)
-					if isDef {
-						defaultOpts = append(defaultOpts, opt)
-					}
-				}
-
-				if defAddon != "" {
-					ap := addonsPriceByCode[defAddon]
-					prodKey := ap.product
-					if prodKey == "" {
-						prodKey = stripPlanAddonSuffix(defAddon, planCode, baseCode, noVerCode, productKey)
-					}
-					switch {
-					case isMemFam && defMemCode == "":
-						defMemCode = prodKey
-						if !slices.Contains(defaultAddonOpts, defAddon) {
-							defaultAddonOpts = append(defaultAddonOpts, defAddon)
-						}
-					case isStoFam && defStoCode == "":
-						defStoCode = prodKey
-						if !slices.Contains(defaultAddonOpts, defAddon) {
-							defaultAddonOpts = append(defaultAddonOpts, defAddon)
-						}
-					case isSysStoFam && defSysStoCode == "":
-						defSysStoCode = prodKey
-					case isGPUFam && defGPUCode == "":
-						defGPUCode = prodKey
-					case strings.Contains(famName, "vrack") && defVRackStr == "":
-						defVRackStr = FormatVRackCode(defAddon)
-					case (strings.Contains(famName, "bandwidth") || strings.Contains(famName, "traffic") || strings.Contains(famName, "network")) && defBWStr == "":
-						if strings.Contains(strings.ToLower(defAddon), "vrack") {
-							defVRackStr = FormatVRackCode(defAddon)
-						} else {
-							defBWStr = FormatBandwidthCode(defAddon)
-						}
-					}
-				}
-			}
-
-			prodName := productKey
-			if prodName == "" {
-				prodName = baseCode
-			}
-			defConfigKey := BuildConfigKey(defMemCode, defStoCode)
-
-			entry := CatalogPlanEntry{
-				PlanCode:             planCode,
-				Name:                 displayName,
-				Description:          desc,
-				Product:              prodName,
-				Range:                normRange,
-				CPU:                  cpuInfo,
-				Price:                basePrice,
-				OriginalPrice:        planSum.OriginalMonthlyPrice,
-				OriginalMonthlyPrice: planSum.OriginalMonthlyPrice,
-				SetupFee:             planSum.SetupFee,
-				OriginalSetupFee:     planSum.OriginalSetupFee,
-				FreeSetup:            planSum.FreeSetup,
-				HasPromo:             planSum.HasPromo,
-				PromoCode:            planSum.PromoCode,
-				PromoBadge:           planSum.PromoBadge,
-				PromoDescription:     planSum.PromoDescription,
-				PricingModes:         pricingModes,
-				Currency:             catCurrency,
-				AddonPrices:          addonPrices,
-				AddonModePrices:      addonModePrices,
-				CatalogSource:        src.source,
-				DefaultSpecs: CatalogPlanSpecs{
-					Memory:         defMemCode,
-					Storage:        defStoCode,
-					SystemStorage:  defSysStoCode,
-					GPU:            defGPUCode,
-					Bandwidth:      defBWStr,
-					VRackBandwidth: defVRackStr,
-				},
-				DefaultMemory:       defMemCode,
-				DefaultStorage:      defStoCode,
-				DefaultConfigKey:    defConfigKey,
-				DefaultAddonOptions: defaultAddonOpts,
-				DefaultOptions:      defaultOpts,
-				AvailableOptions:    availOpts,
-			}
-
-			if (src.source == "eco" || src.source == "baremetalServers") && !IsNonServerAddonCode(planCode) {
-				if (hasMemory && hasStorage) || (!hasMemory && !hasStorage) {
-					realPlansMap[planCode] = entry
-				}
-			}
-
-			plansMap[planCode] = entry
-			isRegional := regionInfo != nil && regionInfo.Code != ""
-			if baseCode != "" {
-				if _, exists := plansMap[baseCode]; !exists || !isRegional {
-					plansMap[baseCode] = entry
-				}
-			}
-			if noVerCode != "" {
-				if _, exists := plansMap[noVerCode]; !exists || !isRegional {
-					plansMap[noVerCode] = entry
-				}
-			}
-			if productKey != "" {
-				if _, exists := plansMap[productKey]; !exists || !isRegional {
-					plansMap[productKey] = entry
-				}
-			}
-		}
-	}
-
-	return &CatalogDictionary{
-		UpdatedAt:       time.Now().Unix(),
-		Currency:        defaultCurrency,
-		Plans:           plansMap,
-		RealPlans:       realPlansMap,
-		AddonPrices:     globalAddonPrices,
-		AddonModePrices: globalAddonModePrices,
-		Options:         optionsMap,
-	}
+	return &out
 }
 
 type pricingModesSummary struct {
@@ -1339,13 +1086,35 @@ func summarizePricingModes(modes []PlanPricingMode) pricingModesSummary {
 	return out
 }
 
+func clonePromoDetail(p *PromoDetail) *PromoDetail {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	if p.GlobalQuantity != nil {
+		v := *p.GlobalQuantity
+		cp.GlobalQuantity = &v
+	}
+	if p.Quantity != nil {
+		v := *p.Quantity
+		cp.Quantity = &v
+	}
+	return &cp
+}
+
+func clonePricingMode(m PlanPricingMode) PlanPricingMode {
+	m.RenewPromo = clonePromoDetail(m.RenewPromo)
+	m.SetupPromo = clonePromoDetail(m.SetupPromo)
+	return m
+}
+
 func copyPricingModesMap(src map[string]PlanPricingMode) map[string]PlanPricingMode {
 	if len(src) == 0 {
 		return nil
 	}
 	dst := make(map[string]PlanPricingMode, len(src))
 	for k, v := range src {
-		dst[k] = v
+		dst[k] = clonePricingMode(v)
 	}
 	return dst
 }
@@ -1355,7 +1124,9 @@ func copyPricingModesSlice(src []PlanPricingMode) []PlanPricingMode {
 		return nil
 	}
 	dst := make([]PlanPricingMode, len(src))
-	copy(dst, src)
+	for i := range src {
+		dst[i] = clonePricingMode(src[i])
+	}
 	return dst
 }
 
@@ -1408,249 +1179,22 @@ func sortPricingModes(modes []PlanPricingMode) {
 // ParsePlanPricingModes parses OVH catalog pricings[] (including installation fees and active promotions)
 // grouped by billing mode ("default", "upfront12", "upfront24", "degressivity12", "degressivity24").
 func ParsePlanPricingModes(item map[string]any) []PlanPricingMode {
-	pricings := sliceOfMaps(item["pricings"])
-	if len(pricings) == 0 {
+	if item == nil {
 		return nil
 	}
-
-	type rawModeBucket struct {
-		mode       string
-		hasRenew   bool
-		renewEntry map[string]any
-		hasInst    bool
-		instEntry  map[string]any
+	rawPricings, ok := item["pricings"]
+	if !ok || rawPricings == nil {
+		return nil
 	}
-
-	buckets := make(map[string]*rawModeBucket)
-	var modeOrder []string
-
-	for _, pr := range pricings {
-		mode := strings.TrimSpace(strFromMap(pr, "mode"))
-		if mode == "" {
-			mode = "default"
-		}
-		caps := sliceOfStrings(pr["capacities"])
-		isRenew := slices.Contains(caps, "renew")
-		isInst := slices.Contains(caps, "installation") && !isRenew
-		if !isRenew && !isInst {
-			continue
-		}
-		b, exists := buckets[mode]
-		if !exists {
-			b = &rawModeBucket{mode: mode}
-			buckets[mode] = b
-			modeOrder = append(modeOrder, mode)
-		}
-		if isRenew && !b.hasRenew {
-			b.hasRenew = true
-			b.renewEntry = pr
-		}
-		if isInst && !b.hasInst {
-			b.hasInst = true
-			b.instEntry = pr
-		}
+	b, err := json.Marshal(rawPricings)
+	if err != nil {
+		return nil
 	}
-
-	out := make([]PlanPricingMode, 0, len(modeOrder))
-	for _, mode := range modeOrder {
-		b := buckets[mode]
-		if !b.hasRenew && !b.hasInst {
-			continue
-		}
-
-		// 1. Parse installation / setup fee
-		originalSetupFee := 0.0
-		setupFee := 0.0
-		hasInstPromo := false
-		var instPromoCode, instPromoDesc, instPromoType, instPromoEnd string
-		var instPromoVal float64
-		var instPromoDur int
-
-		if b.hasInst {
-			originalSetupFee = roundCents(floatFromAny(b.instEntry["price"]) / 1e8)
-			setupFee = originalSetupFee
-			instPromos := sliceOfMaps(b.instEntry["promotions"])
-			if len(instPromos) > 0 {
-				p0 := instPromos[0]
-				instPromoCode = nonEmpty(strFromMap(p0, "name"), strFromMap(p0, "code"))
-				instPromoDesc = strFromMap(p0, "description")
-				instPromoVal = floatFromAny(p0["value"])
-				instPromoType = strFromMap(p0, "type")
-				instPromoDur = intFromAny(p0["duration"])
-				instPromoEnd = strFromMap(p0, "endDate")
-
-				if totMap := nestedMap(p0, "total"); totMap != nil {
-					if rawVal, ok := totMap["value"]; ok && rawVal != nil {
-						setupFee = math.Max(0, roundCents(floatFromAny(rawVal)/1e8))
-					}
-				} else if discMap := nestedMap(p0, "discount"); discMap != nil {
-					if rawVal, ok := discMap["value"]; ok && rawVal != nil {
-						setupFee = math.Max(0, roundCents(originalSetupFee-floatFromAny(rawVal)/1e8))
-					}
-				} else if (strings.EqualFold(instPromoType, "percentage") || instPromoType == "") && instPromoVal > 0 && instPromoVal <= 100 {
-					setupFee = math.Max(0, roundCents(originalSetupFee*(1.0-instPromoVal/100.0)))
-				} else if instPromoVal > 1e5 {
-					setupFee = math.Max(0, roundCents(originalSetupFee-instPromoVal/1e8))
-				} else if instPromoVal > 0 {
-					setupFee = math.Max(0, roundCents(originalSetupFee-instPromoVal))
-				} else if strings.Contains(strings.ToUpper(instPromoCode), "FREESETUP") || strings.Contains(strings.ToUpper(instPromoDesc), "FREE SETUP") {
-					setupFee = 0
-				}
-				hasInstPromo = originalSetupFee > 0 && setupFee < originalSetupFee
-			}
-		}
-
-		// 2. Parse recurring renew price
-		intervalMonths := 1
-		commitmentMonths := 0
-		if b.hasRenew {
-			intervalMonths = max(1, intFromAny(b.renewEntry["interval"]))
-			commitmentMonths = max(0, intFromAny(b.renewEntry["commitment"]))
-		}
-		switch strings.ToLower(mode) {
-		case "upfront12":
-			intervalMonths = 12
-			if commitmentMonths == 0 {
-				commitmentMonths = 12
-			}
-		case "upfront24":
-			intervalMonths = 24
-			if commitmentMonths == 0 {
-				commitmentMonths = 24
-			}
-		case "degressivity12":
-			if commitmentMonths == 0 {
-				commitmentMonths = 12
-			}
-		case "degressivity24":
-			if commitmentMonths == 0 {
-				commitmentMonths = 24
-			}
-		}
-		duration := DurationForModeAndInterval(mode, intervalMonths)
-
-		originalPeriodPrice := 0.0
-		periodPrice := 0.0
-		hasRenewPromo := false
-		var renewPromoCode, renewPromoDesc, renewPromoType, renewPromoEnd string
-		var renewPromoVal float64
-		var renewPromoDur int
-
-		if b.hasRenew {
-			originalPeriodPrice = roundCents(floatFromAny(b.renewEntry["price"]) / 1e8)
-			periodPrice = originalPeriodPrice
-			renewPromos := sliceOfMaps(b.renewEntry["promotions"])
-			if len(renewPromos) > 0 {
-				p0 := renewPromos[0]
-				renewPromoCode = nonEmpty(strFromMap(p0, "name"), strFromMap(p0, "code"))
-				renewPromoDesc = strFromMap(p0, "description")
-				renewPromoVal = floatFromAny(p0["value"])
-				renewPromoType = strFromMap(p0, "type")
-				renewPromoDur = intFromAny(p0["duration"])
-				renewPromoEnd = strFromMap(p0, "endDate")
-
-				if totMap := nestedMap(p0, "total"); totMap != nil {
-					if rawVal, ok := totMap["value"]; ok && rawVal != nil {
-						periodPrice = math.Max(0, roundCents(floatFromAny(rawVal)/1e8))
-					}
-				} else if discMap := nestedMap(p0, "discount"); discMap != nil {
-					if rawVal, ok := discMap["value"]; ok && rawVal != nil {
-						periodPrice = math.Max(0, roundCents(originalPeriodPrice-floatFromAny(rawVal)/1e8))
-					}
-				} else if (strings.EqualFold(renewPromoType, "percentage") || renewPromoType == "") && renewPromoVal > 0 && renewPromoVal <= 100 {
-					periodPrice = math.Max(0, roundCents(originalPeriodPrice*(1.0-renewPromoVal/100.0)))
-				} else if renewPromoVal > 1e5 {
-					periodPrice = math.Max(0, roundCents(originalPeriodPrice-renewPromoVal/1e8))
-				} else if renewPromoVal > 0 {
-					periodPrice = math.Max(0, roundCents(originalPeriodPrice-renewPromoVal))
-				}
-				hasRenewPromo = originalPeriodPrice > 0 && periodPrice < originalPeriodPrice
-			}
-		}
-
-		originalMonthlyPrice := roundCents(originalPeriodPrice / float64(intervalMonths))
-		monthlyEquivalentPrice := roundCents(periodPrice / float64(intervalMonths))
-		hasPromo := hasRenewPromo || hasInstPromo
-
-		var renewBadge, instBadge string
-		if hasRenewPromo {
-			if (strings.EqualFold(renewPromoType, "percentage") || renewPromoType == "") && renewPromoVal > 0 && renewPromoVal <= 100 {
-				renewBadge = fmt.Sprintf("-%g%%", math.Round(renewPromoVal*10)/10)
-			} else if originalPeriodPrice > 0 {
-				pct := math.Round(((originalPeriodPrice - periodPrice) / originalPeriodPrice) * 100)
-				if pct > 0 {
-					renewBadge = fmt.Sprintf("-%g%%", pct)
-				} else {
-					renewBadge = "PROMO"
-				}
-			}
-		}
-		if hasInstPromo {
-			if setupFee <= 0 {
-				instBadge = "FREE SETUP"
-			} else if (strings.EqualFold(instPromoType, "percentage") || instPromoType == "") && instPromoVal > 0 && instPromoVal <= 100 {
-				instBadge = fmt.Sprintf("-%g%% SETUP", math.Round(instPromoVal*10)/10)
-			} else {
-				instBadge = "SETUP PROMO"
-			}
-		}
-
-		promoBadge := ""
-		if renewBadge != "" && instBadge != "" {
-			promoBadge = renewBadge + " + " + instBadge
-		} else if renewBadge != "" {
-			promoBadge = renewBadge
-		} else if instBadge != "" {
-			promoBadge = instBadge
-		}
-
-		var promoCode, promoDesc, promoType, promoEnd string
-		var promoVal float64
-		var promoDur int
-		if hasRenewPromo {
-			promoCode = renewPromoCode
-			promoDesc = renewPromoDesc
-			if hasInstPromo && instPromoDesc != "" && instPromoDesc != renewPromoDesc {
-				promoDesc = joinNonEmpty(" · ", renewPromoDesc, instPromoDesc)
-			}
-			promoVal = renewPromoVal
-			promoType = renewPromoType
-			promoDur = renewPromoDur
-			promoEnd = nonEmpty(renewPromoEnd, instPromoEnd)
-		} else if hasInstPromo {
-			promoCode = instPromoCode
-			promoDesc = instPromoDesc
-			promoVal = instPromoVal
-			promoType = instPromoType
-			promoDur = instPromoDur
-			promoEnd = instPromoEnd
-		}
-
-		out = append(out, PlanPricingMode{
-			Mode:                   mode,
-			Duration:               duration,
-			IntervalMonths:         intervalMonths,
-			CommitmentMonths:       commitmentMonths,
-			PeriodPrice:            periodPrice,
-			OriginalPeriodPrice:    originalPeriodPrice,
-			MonthlyEquivalentPrice: monthlyEquivalentPrice,
-			OriginalMonthlyPrice:   originalMonthlyPrice,
-			SetupFee:               setupFee,
-			OriginalSetupFee:       originalSetupFee,
-			FreeSetup:              setupFee <= 0,
-			HasPromo:               hasPromo,
-			PromoCode:              promoCode,
-			PromoBadge:             promoBadge,
-			PromoDescription:       promoDesc,
-			PromoValue:             promoVal,
-			PromoType:              promoType,
-			PromoDuration:          promoDur,
-			PromoEndDate:           promoEnd,
-		})
+	var typed []rawCatalogPricing
+	if err := json.Unmarshal(b, &typed); err != nil {
+		return nil
 	}
-
-	sortPricingModes(out)
-	return out
+	return ParseTypedPlanPricingModes(typed)
 }
 
 func stripPlanAddonSuffix(addonCode string, suffixes ...string) string {
@@ -1704,7 +1248,13 @@ func stripCrossPlanPromoModes(src map[string]PlanPricingMode) map[string]PlanPri
 		m.PromoValue = 0
 		m.PromoType = ""
 		m.PromoDuration = 0
+		m.PromoMinimumDuration = 0
+		m.PromoContext = ""
+		m.AutoApplied = false
+		m.PromoStartDate = ""
 		m.PromoEndDate = ""
+		m.RenewPromo = nil
+		m.SetupPromo = nil
 		dst[k] = m
 	}
 	return dst
@@ -1943,9 +1493,9 @@ func ResolvePlanWithDict(planCode, serverCode string, dict *CatalogDictionary) P
 				break
 			}
 		}
-		if match == nil && len(dict.Plans) > 0 {
+		if match == nil {
 			for _, candidate := range []string{planCode, serverCode, baseCode, noVer, cleanBase} {
-				if entry, ok := lookupPlanCaseInsensitive(dict.Plans, candidate); ok {
+				if entry, ok := dict.LookupPlan(candidate); ok {
 					copyEntry := entry
 					match = &copyEntry
 					break
@@ -2044,7 +1594,7 @@ func (s *Service) GetPlans(ctx context.Context, opts ListServersOptions) (*Serve
 	return s.ListServers(ctx, opts)
 }
 
-// ListServers fetches/returns the enriched bare-metal server list with TTL + disk caching and singleflight dedup.
+// ListServers fetches/returns the enriched bare-metal server list with TTL + compressed disk caching and singleflight dedup.
 func (s *Service) ListServers(ctx context.Context, opts ListServersOptions) (*ServerListResponse, error) {
 	ep, zn := s.resolveEndpointAndZone(ctx, opts.AccountID, opts.Endpoint, opts.Zone)
 	cacheKey := ep + ":" + zn
@@ -2059,7 +1609,7 @@ func (s *Service) ListServers(ctx context.Context, opts ListServersOptions) (*Se
 		if mem != nil && len(mem.Servers) > 0 && (now-mem.UpdatedAt) < ttlSec {
 			return buildServerListResp(mem.Servers, mem.UpdatedAt, true, false, ttlSec, now), nil
 		}
-		if disk, ok := readJSONFile[cachedServersEntry](diskPath); ok && len(disk.Servers) > 0 {
+		if disk, ok := readGzipJSONFile[cachedServersEntry](diskPath); ok && len(disk.Servers) > 0 {
 			if (now - disk.UpdatedAt) < ttlSec {
 				s.mu.Lock()
 				s.serversCache[cacheKey] = &disk
@@ -2077,7 +1627,7 @@ func (s *Service) ListServers(ctx context.Context, opts ListServersOptions) (*Se
 				UpdatedAt: time.Now().Unix(),
 				Servers:   servers,
 			}
-			_ = writeJSONFile(diskPath, entry)
+			_ = writeGzipJSONFile(diskPath, entry)
 			s.mu.Lock()
 			s.serversCache[cacheKey] = entry
 			s.mu.Unlock()
@@ -2097,7 +1647,7 @@ func (s *Service) ListServers(ctx context.Context, opts ListServersOptions) (*Se
 			}
 			return buildServerListResp(staleMem.Servers, staleMem.UpdatedAt, false, true, ttlSec, time.Now().Unix()), nil
 		}
-		if staleDisk, ok := readJSONFile[cachedServersEntry](diskPath); ok && len(staleDisk.Servers) > 0 {
+		if staleDisk, ok := readGzipJSONFile[cachedServersEntry](diskPath); ok && len(staleDisk.Servers) > 0 {
 			s.mu.Lock()
 			s.serversCache[cacheKey] = &staleDisk
 			s.mu.Unlock()
@@ -2129,29 +1679,22 @@ func (s *Service) RefreshCatalog(ctx context.Context, endpoint, zone string) (*S
 
 func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) ([]ServerPlan, error) {
 	var wg sync.WaitGroup
-	var eco, bm, vps map[string]any
+	var ecoRaw, bmRaw, vpsRaw *ovhclient.PublicRawResponse
 	var availItems []RawAvailabilityItem
 	var availErr error
 
 	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		eco = s.fetchPublicCatalog(ctx, endpoint, zone, "eco")
+		ecoRaw = s.fetchPublicRawCatalog(ctx, endpoint, zone, "eco")
 	}()
 	go func() {
 		defer wg.Done()
-		bm = s.fetchPublicCatalog(ctx, endpoint, zone, "baremetalServers")
+		bmRaw = s.fetchPublicRawCatalog(ctx, endpoint, zone, "baremetalServers")
 	}()
 	go func() {
 		defer wg.Done()
-		vps = s.fetchPublicCatalog(ctx, endpoint, zone, "vps")
-		if vps != nil {
-			entry := &cachedVPSCatalog{UpdatedAt: time.Now().Unix(), Data: vps}
-			_ = writeJSONFile(s.vpsCachePath(endpoint, zone), entry)
-			s.mu.Lock()
-			s.vpsCache[endpoint+":"+zone] = entry
-			s.mu.Unlock()
-		}
+		vpsRaw = s.fetchPublicRawCatalog(ctx, endpoint, zone, "vps")
 	}()
 	go func() {
 		defer wg.Done()
@@ -2159,18 +1702,56 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 	}()
 	wg.Wait()
 
-	if eco == nil && bm == nil {
+	if ecoRaw == nil && bmRaw == nil {
+		clearRawBytes(vpsRaw)
 		if availErr != nil {
 			return nil, fmt.Errorf("failed to fetch OVH public catalogs and availabilities: %w", availErr)
 		}
 		return nil, errors.New("failed to fetch OVH public catalogs")
 	}
 
-	dict := BuildDictionaryFromCatalogs(eco, bm, vps)
-	_ = writeJSONFile(s.dictCachePath(endpoint, zone), dict)
-	s.mu.Lock()
-	s.dictCache[endpoint+":"+zone] = dict
-	s.mu.Unlock()
+	cacheKey := endpoint + ":" + zone
+	ecoHash := rawDigest(ecoRaw)
+	bmHash := rawDigest(bmRaw)
+	vpsHash := rawDigest(vpsRaw)
+
+	var dict *CatalogDictionary
+	rebuiltDict := false
+	s.mu.RLock()
+	existingDict := s.dictCache[cacheKey]
+	prevDigest := s.catalogDigests[cacheKey]
+	s.mu.RUnlock()
+
+	if existingDict != nil && len(existingDict.RealPlans) > 0 && prevDigest != nil &&
+		prevDigest.EcoHash == ecoHash && prevDigest.BaremetalHash == bmHash &&
+		(vpsHash == "" || prevDigest.VPSHash == vpsHash) {
+		clearRawBytes(ecoRaw, bmRaw, vpsRaw)
+		ts := time.Now().Unix()
+		s.mu.Lock()
+		existingDict.UpdatedAt = ts
+		prevDigest.UpdatedAt = ts
+		s.mu.Unlock()
+		dict = existingDict
+	} else {
+		// Sequential streaming decode so transient raw payloads are released immediately.
+		eco := decodeRawCatalogPayload(ecoRaw)
+		bm := decodeRawCatalogPayload(bmRaw)
+		vps := decodeRawCatalogPayload(vpsRaw)
+		dict = BuildDictionaryFromTypedCatalogs(eco, bm, vps)
+		eco, bm, vps = nil, nil, nil
+		rebuiltDict = true
+
+		_ = writeGzipJSONFile(s.dictCachePath(endpoint, zone), dict)
+		s.mu.Lock()
+		s.dictCache[cacheKey] = dict
+		s.catalogDigests[cacheKey] = &catalogDigestEntry{
+			EcoHash:       ecoHash,
+			BaremetalHash: bmHash,
+			VPSHash:       vpsHash,
+			UpdatedAt:     dict.UpdatedAt,
+		}
+		s.mu.Unlock()
+	}
 
 	// Index datacenter availabilities and raw items by planCode.
 	availByPlan := make(map[string]map[string]string)
@@ -2200,50 +1781,47 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 		}
 	}
 
-	seen := make(map[string]struct{})
-	seenLow := make(map[string]struct{})
-	out := make([]ServerPlan, 0, 128)
+	seen := make(map[string]struct{}, len(dict.RealPlans))
+	seenLow := make(map[string]struct{}, len(dict.RealPlans))
+	out := make([]ServerPlan, 0, len(dict.RealPlans)+16)
 
-	type catPair struct {
-		source string
-		data   map[string]any
+	// Build deterministic ServerPlan entries directly from deduplicated dict.RealPlans (eco first, then baremetalServers).
+	realPlanCodes := make([]string, 0, len(dict.RealPlans))
+	for pc := range dict.RealPlans {
+		realPlanCodes = append(realPlanCodes, pc)
 	}
-	for _, cat := range []catPair{{source: "eco", data: eco}, {source: "baremetalServers", data: bm}} {
-		if cat.data == nil {
-			continue
+	slices.SortFunc(realPlanCodes, func(a, b string) int {
+		sa := dict.RealPlans[a].CatalogSource
+		sb := dict.RealPlans[b].CatalogSource
+		if sa != sb {
+			if sa == "eco" {
+				return -1
+			}
+			if sb == "eco" {
+				return 1
+			}
 		}
-		for _, plan := range sliceOfMaps(cat.data["plans"]) {
-			pc := strings.TrimSpace(strFromMap(plan, "planCode"))
-			if pc == "" {
-				continue
-			}
-			if _, isReal := lookupPlanCaseInsensitive(dict.RealPlans, pc); !isReal {
-				continue
-			}
-			if _, dup := seen[pc]; dup {
-				continue
-			}
-			seen[pc] = struct{}{}
-			seenLow[strings.ToLower(pc)] = struct{}{}
+		return strings.Compare(a, b)
+	})
 
-			meta := ResolvePlanWithDict(pc, "", dict)
-			planEntry, _ := lookupPlanCaseInsensitive(dict.RealPlans, pc)
-			sp := buildSingleServerPlan(plan, &planEntry, meta, dict, cat.source, availByPlan[pc], itemsByPlan[strings.ToLower(pc)], s.resolveListedAt(pc))
-			out = append(out, sp)
-		}
-	}
-
-	// Ensure any plan in dict.RealPlans not yet in out is synthesized as "announced".
-	for pc, entry := range dict.RealPlans {
-		if _, ok := seenLow[strings.ToLower(pc)]; ok {
+	for _, pc := range realPlanCodes {
+		if _, dup := seen[pc]; dup {
 			continue
 		}
 		seen[pc] = struct{}{}
 		seenLow[strings.ToLower(pc)] = struct{}{}
+
+		planEntry := dict.RealPlans[pc]
 		meta := ResolvePlanWithDict(pc, "", dict)
-		entryCopy := entry
-		sp := buildSynthesizedAnnouncedPlan(pc, &entryCopy, meta, dict, s.resolveListedAt(pc))
-		out = append(out, sp)
+		dcAvail := availByPlan[pc]
+		planAvailItems := itemsByPlan[strings.ToLower(pc)]
+		if len(planAvailItems) == 0 && len(dcAvail) == 0 {
+			sp := buildSynthesizedAnnouncedPlan(pc, &planEntry, meta, dict, s.resolveListedAt(pc))
+			out = append(out, sp)
+		} else {
+			sp := buildSingleServerPlanFromEntry(pc, &planEntry, meta, dict, planEntry.CatalogSource, dcAvail, planAvailItems, s.resolveListedAt(pc))
+			out = append(out, sp)
+		}
 	}
 
 	var presalePlans []ServerPlan
@@ -2316,6 +1894,9 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 	})
 	out = append(out, presalePlans...)
 
+	if rebuiltDict {
+		debug.FreeOSMemory()
+	}
 	return out, nil
 }
 
@@ -2341,8 +1922,8 @@ func buildSortedDatacenterAvailabilities(dcAvail map[string]string) []Datacenter
 	return dcs
 }
 
-func buildSingleServerPlan(
-	plan map[string]any,
+func buildSingleServerPlanFromEntry(
+	planCode string,
 	planEntry *CatalogPlanEntry,
 	meta PlanMeta,
 	dict *CatalogDictionary,
@@ -2351,20 +1932,15 @@ func buildSingleServerPlan(
 	planAvailItems []RawAvailabilityItem,
 	listedAt string,
 ) ServerPlan {
-	planCode, _ := plan["planCode"].(string)
-	invoiceName, _ := plan["invoiceName"].(string)
-	desc, _ := plan["description"].(string)
+	desc := ""
+	if planEntry != nil {
+		desc = planEntry.Description
+	}
 	if desc == "" {
-		desc = invoiceName
+		desc = nonEmpty(meta.Name, planCode)
 	}
 
 	cpuStr := FormatCPU(meta.CPU, "en")
-	if cpuStr == "" {
-		parts := splitPipeNonEmpty(invoiceName)
-		if len(parts) > 1 {
-			cpuStr = parts[1]
-		}
-	}
 	if cpuStr == "" {
 		cpuStr = "N/A"
 	}
@@ -2409,8 +1985,11 @@ func buildSingleServerPlan(
 
 	dcs := buildSortedDatacenterAvailabilities(dcAvail)
 	displayName := meta.Name
+	if displayName == "" && planEntry != nil {
+		displayName = planEntry.Name
+	}
 	if displayName == "" {
-		displayName = nonEmpty(invoiceName, planCode)
+		displayName = planCode
 	}
 
 	startingPrice := 0.0
@@ -2670,7 +2249,7 @@ func (s *Service) GetCatalogAvailabilities(ctx context.Context, endpoint, zone, 
 				}
 			}
 			if planEntry == nil {
-				if e, ok := lookupPlanCaseInsensitive(dict.Plans, pc); ok {
+				if e, ok := dict.LookupPlan(pc); ok {
 					copyE := e
 					planEntry = &copyE
 				}
@@ -2887,7 +2466,7 @@ func (s *Service) GetPlanConfigs(ctx context.Context, endpoint, zone, planCode s
 			}
 		}
 		if planEntry == nil {
-			if e, ok := lookupPlanCaseInsensitive(dict.Plans, pc); ok && !strings.EqualFold(e.CatalogSource, "vps") {
+			if e, ok := dict.LookupPlan(pc); ok && !strings.EqualFold(e.CatalogSource, "vps") {
 				copyE := e
 				planEntry = &copyE
 				if len(dict.RealPlans) == 0 {
@@ -3380,16 +2959,17 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 		}
 	}
 
-	var catalogPlan map[string]any
+	var catalogPlan *rawCatalogPlan
 	if planEntry == nil {
 		for _, catName := range []string{"eco", "baremetalServers"} {
-			cat := s.fetchPublicCatalog(ctx, ep, zn, catName)
+			cat, _ := s.fetchTypedPublicCatalog(ctx, ep, zn, catName)
 			if cat == nil {
 				continue
 			}
-			for _, p := range sliceOfMaps(cat["plans"]) {
-				if strings.EqualFold(strFromMap(p, "planCode"), planCode) {
-					catalogPlan = p
+			for i := range cat.Plans {
+				if strings.EqualFold(cat.Plans[i].PlanCode, planCode) {
+					cp := cat.Plans[i]
+					catalogPlan = &cp
 					break
 				}
 			}
@@ -3449,7 +3029,7 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 
 		matchedOptions := matchOptionsFromPlanEntry(planEntry, item.Memory, item.Storage)
 		if len(matchedOptions) == 0 && catalogPlan != nil {
-			matchedOptions = matchAddonOptionsForConfig(catalogPlan, item.Memory, item.Storage)
+			matchedOptions = matchAddonOptionsForTypedPlan(catalogPlan, item.Memory, item.Storage)
 		}
 		cfgKey := BuildConfigKey(item.Memory, item.Storage)
 		isDef := isDefaultPlanConfig(planEntry, item.Memory, item.Storage, cfgKey)
@@ -3509,7 +3089,7 @@ func (s *Service) GetConfigLevelAvailabilities(ctx context.Context, endpoint, zo
 	return out, nil
 }
 
-func matchAddonOptionsForConfig(catalogPlan map[string]any, memoryCode, storageCode string) []string {
+func matchAddonOptionsForTypedPlan(catalogPlan *rawCatalogPlan, memoryCode, storageCode string) []string {
 	if catalogPlan == nil {
 		return nil
 	}
@@ -3526,18 +3106,17 @@ func matchAddonOptionsForConfig(catalogPlan map[string]any, memoryCode, storageC
 	}
 
 	var opts []string
-	for _, fam := range sliceOfMaps(catalogPlan["addonFamilies"]) {
-		famName := strings.ToLower(strFromMap(fam, "name"))
-		addons := sliceOfStrings(fam["addons"])
+	for _, fam := range catalogPlan.AddonFamilies {
+		famName := strings.ToLower(strings.TrimSpace(fam.Name))
 		if (famName == "memory" || famName == "ram") && memStd != "" {
-			for _, a := range addons {
+			for _, a := range fam.Addons {
 				if StandardizeConfig(a) == memStd && !slices.Contains(opts, a) {
 					opts = append(opts, a)
 				}
 			}
 		}
 		if (famName == "storage" || famName == "disk") && stoStd != "" {
-			for _, a := range addons {
+			for _, a := range fam.Addons {
 				if StandardizeConfig(a) == stoStd && !slices.Contains(opts, a) {
 					opts = append(opts, a)
 				}
@@ -3714,10 +3293,7 @@ func (s *Service) GetServerPriceWithMode(
 
 	if trimmedCoupon != "" {
 		if couponErr := ApplyCartCoupon(ctx, client, cartID, trimmedCoupon); couponErr != nil {
-			if s.log != nil {
-				s.log.Warn(logger.SourceCatalog, "Cart coupon rejected during price quote", "planCode", planCode, "coupon", trimmedCoupon, "error", couponErr.Error())
-			}
-			return &ServerPriceResult{
+			res := &ServerPriceResult{
 				Success:     false,
 				Code:        "INVALID_COUPON",
 				PlanCode:    planCode,
@@ -3727,7 +3303,20 @@ func (s *Service) GetServerPriceWithMode(
 				Duration:    dur,
 				Coupon:      trimmedCoupon,
 				Error:       fmt.Sprintf("Invalid or rejected coupon code %q: %v", trimmedCoupon, couponErr),
-			}, couponErr
+			}
+			if camp, isAuto := s.LookupAutoAppliedPromo(ctx, ep, zone, trimmedCoupon); isAuto && camp != nil {
+				res.AutoAppliedPromoDetected = true
+				res.AutoAppliedPromoCode = camp.PromoCode
+				res.AutoAppliedPromoHint = fmt.Sprintf(
+					"%s is an automatic OVH catalog promotion (context=%s, modes=%s) applied automatically without a coupon code. Leave the Coupon field empty to receive it.",
+					camp.PromoCode, camp.Context, strings.Join(camp.SupportedModes, "/"),
+				)
+				res.Error = res.AutoAppliedPromoHint
+			}
+			if s.log != nil {
+				s.log.Warn(logger.SourceCatalog, "Cart coupon rejected during price quote", "planCode", planCode, "coupon", trimmedCoupon, "autoAppliedPromo", res.AutoAppliedPromoDetected, "error", couponErr.Error())
+			}
+			return res, couponErr
 		}
 	}
 
@@ -3957,6 +3546,50 @@ func ExtractCartPricePayload(summary, info map[string]any) *ServerPricePayload {
 		if pricesMap, ok := summary["prices"].(map[string]any); ok {
 			out.Prices = parsePriceValues(pricesMap)
 		}
+		var setupSum, recurringSum, reductionSum float64
+		hasSetup, hasRec, hasRed := false, false, false
+		for _, det := range sliceOfMaps(summary["details"]) {
+			dt := strings.TrimSpace(strFromMap(det, "detailType"))
+			desc := strings.TrimSpace(strFromMap(det, "description"))
+			totVal, curr := extractPriceValAndCurrency(det["totalPrice"])
+			origVal, _ := extractPriceValAndCurrency(det["originalTotalPrice"])
+			if curr == "" {
+				curr = out.Prices.CurrencyCode
+			}
+			out.Details = append(out.Details, CartPriceLine{
+				DetailType:         dt,
+				Description:        desc,
+				TotalWithoutTax:    totVal,
+				OriginalWithoutTax: origVal,
+				CurrencyCode:       curr,
+			})
+			if totVal != nil {
+				upDT := strings.ToUpper(dt)
+				switch {
+				case upDT == "INSTALLATION":
+					setupSum += *totVal
+					hasSetup = true
+				case upDT == "DISCOUNT" || upDT == "VOUCHER" || *totVal < 0:
+					reductionSum += math.Abs(*totVal)
+					hasRed = true
+				case upDT == "DURATION" || upDT == "DELIVERY" || upDT == "SUBSCRIPTION" || upDT == "":
+					recurringSum += *totVal
+					hasRec = true
+				}
+			}
+		}
+		if hasSetup {
+			v := roundCents(setupSum)
+			out.SetupFeeWithoutTax = &v
+		}
+		if hasRec {
+			v := roundCents(recurringSum)
+			out.RecurringWithoutTax = &v
+		}
+		if hasRed {
+			v := roundCents(reductionSum)
+			out.ReductionWithoutTax = &v
+		}
 	}
 	if info != nil {
 		for _, it := range sliceOfMaps(info["items"]) {
@@ -4080,7 +3713,7 @@ func (s *Service) GetCacheInfo(_ context.Context) *CacheInfoResponse {
 	resp.Storage.LogsDir = s.logsDir
 
 	dbExists := fileExists(filepath.Join(s.dataDir, "nexus.db"))
-	hasCacheFiles := dirHasJSONFiles(s.cacheDir)
+	hasCacheFiles := dirHasCacheFiles(s.cacheDir)
 	resp.Storage.Files.Config = dbExists
 	resp.Storage.Files.Servers = hasCacheFiles
 	resp.Storage.Files.Logs = dbExists
@@ -4101,9 +3734,9 @@ func (s *Service) ClearCache(_ context.Context, cacheType string) ([]string, err
 		s.mu.Lock()
 		clear(s.dictCache)
 		clear(s.serversCache)
-		clear(s.rawCatalogs)
-		clear(s.vpsCache)
+		clear(s.catalogDigests)
 		s.mu.Unlock()
+		debug.FreeOSMemory()
 		cleared = append(cleared, "memory")
 		if s.log != nil {
 			s.log.Info(logger.SourceCatalog, "Cleared in-memory catalog caches")
@@ -4120,7 +3753,7 @@ func (s *Service) ClearCache(_ context.Context, cacheType string) ([]string, err
 						return cleared, rmErr
 					}
 					cleared = append(cleared, ent.Name())
-				} else if strings.HasSuffix(ent.Name(), ".json") {
+				} else if strings.HasSuffix(ent.Name(), ".json.gz") || strings.HasSuffix(ent.Name(), ".json") || strings.HasSuffix(ent.Name(), ".tmp") {
 					if rmErr := os.Remove(target); rmErr != nil {
 						return cleared, rmErr
 					}
@@ -4149,19 +3782,13 @@ func (s *Service) getAccountClient(ctx context.Context, accountID string) (*ovh.
 func (s *Service) dictCachePath(endpoint, zone string) string {
 	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
 	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
-	return filepath.Join(s.cacheDir, fmt.Sprintf("catalog_dict_v3_%s_%s.json", ep, zn))
+	return filepath.Join(s.cacheDir, fmt.Sprintf("catalog_dict_v4_%s_%s.json.gz", ep, zn))
 }
 
 func (s *Service) serversCachePath(endpoint, zone string) string {
 	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
 	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
-	return filepath.Join(s.cacheDir, fmt.Sprintf("servers_v3_%s_%s.json", ep, zn))
-}
-
-func (s *Service) vpsCachePath(endpoint, zone string) string {
-	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
-	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
-	return filepath.Join(s.cacheDir, fmt.Sprintf("vps_catalog_%s_%s.json", ep, zn))
+	return filepath.Join(s.cacheDir, fmt.Sprintf("servers_v4_%s_%s.json.gz", ep, zn))
 }
 
 func buildServerListResp(servers []ServerPlan, ts int64, valid, usingExpired bool, duration, now int64) *ServerListResponse {

@@ -89,7 +89,7 @@ func TestPoolClientResolutionAndPublicHTTP(t *testing.T) {
 		t.Fatalf("expected header acct-ca client, got acc=%+v err=%v", acc2, err)
 	}
 
-	if pool.PublicHTTPClient().Timeout != DefaultHTTPTimeout {
-		t.Fatalf("expected 30s timeout, got %v", pool.PublicHTTPClient().Timeout)
+	if pool.PublicHTTPClient().Timeout != DefaultPublicHTTPTimeout {
+		t.Fatalf("expected %v timeout, got %v", DefaultPublicHTTPTimeout, pool.PublicHTTPClient().Timeout)
 	}
 }

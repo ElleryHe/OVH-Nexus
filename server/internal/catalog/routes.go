@@ -26,6 +26,7 @@ func (s *Service) MountRoutes(r chi.Router) {
 	r.Post("/availability/{planCode}", s.HandleGetPlanAvailability)
 
 	r.Get("/catalog/dictionary", s.HandleGetDictionary)
+	r.Get("/catalog/promotions", s.HandleGetPromotions)
 	r.Get("/catalog/plans", s.HandleListServers)
 	r.Get("/catalog/plans/{planCode}/configs", s.HandleGetPlanConfigs)
 	r.Get("/catalog/availability", s.HandleGetGlobalAvailability)
@@ -219,13 +220,13 @@ func (s *Service) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	etag := fmt.Sprintf(`W/"%d-%d"`, dict.UpdatedAt, len(dict.Plans))
+	etag := fmt.Sprintf(`W/"%d-%d-%d"`, dict.UpdatedAt, len(dict.RealPlans), len(dict.PlanAliases))
 	if !force && r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("ETag", etag)
-	writeJSON(w, http.StatusOK, dict)
+	writeJSON(w, http.StatusOK, toWireCatalogDictionary(dict))
 }
 
 // HandleGetCacheInfo handles GET /api/cache/info.
