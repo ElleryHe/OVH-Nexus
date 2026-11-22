@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -61,11 +61,27 @@ export const OrderPromoDebugPanel: React.FC<OrderPromoDebugPanelProps> = ({
   const { t } = useLocale();
   const [isProbing, setIsProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<ServerPriceProbeResult | null>(null);
+  const probeAbortRef = useRef<AbortController | null>(null);
+  const probeSeqRef = useRef(0);
 
-  // Reset stale cart probe whenever plan/mode/options/coupon/dc changes.
-  const probeKey = `${server.planCode}|${activeModeKey}|${selectedDatacenter}|${selectedOptions.join(',')}|${coupon.trim()}`;
+  // Reset stale cart probe and cancel any in-flight request whenever plan/mode/duration/options/coupon/dc changes.
+  const sortedOptionsKey = [...selectedOptions].sort().join(',');
+  const probeKey = `${server.planCode}|${activeModeKey}|${activeDuration}|${selectedDatacenter}|${sortedOptionsKey}|${coupon.trim()}`;
   useEffect(() => {
+    probeSeqRef.current += 1;
+    if (probeAbortRef.current) {
+      probeAbortRef.current.abort();
+      probeAbortRef.current = null;
+    }
+    setIsProbing(false);
     setProbeResult(null);
+    return () => {
+      probeSeqRef.current += 1;
+      if (probeAbortRef.current) {
+        probeAbortRef.current.abort();
+        probeAbortRef.current = null;
+      }
+    };
   }, [probeKey]);
 
   const symbol = getCurrencySymbol(server.currency || promotions?.currency || 'EUR');
@@ -110,18 +126,41 @@ export const OrderPromoDebugPanel: React.FC<OrderPromoDebugPanelProps> = ({
 
   const runLiveCartProbe = async () => {
     if (!isAuthenticated || isProbing) return;
+    if (probeAbortRef.current) {
+      probeAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    probeAbortRef.current = controller;
+    const reqSeq = ++probeSeqRef.current;
+
     setIsProbing(true);
     setProbeResult(null);
     try {
-      const res = await api.post(`/servers/${encodeURIComponent(server.planCode)}/price`, {
-        datacenter: selectedDatacenter || 'gra',
-        options: selectedOptions,
-        pricingMode: activeModeKey,
-        duration: activeDuration,
-        coupon: trimmedCoupon || undefined,
-      });
+      const res = await api.post(
+        `/servers/${encodeURIComponent(server.planCode)}/price`,
+        {
+          datacenter: selectedDatacenter || 'gra',
+          options: selectedOptions,
+          pricingMode: activeModeKey,
+          duration: activeDuration,
+          coupon: trimmedCoupon || undefined,
+        },
+        { signal: controller.signal }
+      );
+      if (reqSeq !== probeSeqRef.current || controller.signal.aborted) {
+        return;
+      }
       setProbeResult(res.data as ServerPriceProbeResult);
     } catch (err: any) {
+      if (
+        reqSeq !== probeSeqRef.current ||
+        controller.signal.aborted ||
+        err?.name === 'CanceledError' ||
+        err?.name === 'AbortError' ||
+        err?.code === 'ERR_CANCELED'
+      ) {
+        return;
+      }
       const payload = err?.response?.data as ServerPriceProbeResult | undefined;
       if (payload && typeof payload === 'object') {
         setProbeResult({
@@ -136,7 +175,12 @@ export const OrderPromoDebugPanel: React.FC<OrderPromoDebugPanelProps> = ({
         });
       }
     } finally {
-      setIsProbing(false);
+      if (reqSeq === probeSeqRef.current) {
+        setIsProbing(false);
+        if (probeAbortRef.current === controller) {
+          probeAbortRef.current = null;
+        }
+      }
     }
   };
 

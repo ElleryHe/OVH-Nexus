@@ -372,7 +372,18 @@ func TestTOTPEnrollmentAntiReplayRecoveryAndGatekeeper(t *testing.T) {
 		t.Fatalf("expected 8 regenerated recovery codes, got %+v", regenResp)
 	}
 
-	// Old recovery code #1 must no longer work after regeneration
+	// Regenerating recovery codes rotates session_epoch, immediately revoking the previous cookie.
+	recStaleSession := doJSONReq(t, router, http.MethodPost, "/api/auth/totp/disable",
+		map[string]any{}, cookies, map[string]string{"X-TOTP-Code": actResp.RecoveryCodes[1]}, "")
+	if recStaleSession.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old session cookie to be revoked (401) after recovery code regeneration, got %d", recStaleSession.Code)
+	}
+	if len(recRegen.Result().Cookies()) == 0 {
+		t.Fatalf("expected fresh rotated session cookie after recovery code regeneration")
+	}
+	cookies = recRegen.Result().Cookies()
+
+	// Old recovery code #1 must no longer work after regeneration (with rotated session cookie)
 	recOldRec := doJSONReq(t, router, http.MethodPost, "/api/auth/totp/disable",
 		map[string]any{}, cookies, map[string]string{"X-TOTP-Code": actResp.RecoveryCodes[1]}, "")
 	if recOldRec.Code != http.StatusForbidden {
@@ -399,5 +410,69 @@ func TestTOTPEnrollmentAntiReplayRecoveryAndGatekeeper(t *testing.T) {
 		map[string]any{}, cookies, map[string]string{"X-TOTP-Code": code2}, "")
 	if recDisable.Code != http.StatusOK || !strings.Contains(recDisable.Body.String(), `"totpEnabled":false`) {
 		t.Fatalf("expected disable success, got %d body=%s", recDisable.Code, recDisable.Body.String())
+	}
+}
+
+func TestSessionEpochAndKeyFingerprintRevocation(t *testing.T) {
+	svc, st, cfg, _ := newTestAuthEnv(t, "")
+	router := chi.NewRouter()
+	router.Use(svc.RequireAuthAndTOTPGate)
+	router.Route("/api", func(api chi.Router) {
+		svc.MountRoutes(api)
+		api.Get("/servers", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+
+	// Two devices log in concurrently.
+	rec1 := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
+	rec2 := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
+	if rec1.Code != http.StatusOK || rec2.Code != http.StatusOK {
+		t.Fatalf("logins failed: %d %d", rec1.Code, rec2.Code)
+	}
+	dev1 := rec1.Result().Cookies()
+	dev2 := rec2.Result().Cookies()
+
+	// Unauthenticated POST /api/auth/logout MUST NOT bump session epoch or kick out logged-in devices.
+	recAnonLogout := doJSONReq(t, router, http.MethodPost, "/api/auth/logout", nil, nil, nil, "")
+	if recAnonLogout.Code != http.StatusOK {
+		t.Fatalf("anonymous logout status=%d", recAnonLogout.Code)
+	}
+	recCheck := doJSONReq(t, router, http.MethodGet, "/api/servers", nil, dev2, nil, "")
+	if recCheck.Code != http.StatusOK {
+		t.Fatalf("expected dev2 session to remain valid after unauthenticated logout, got %d", recCheck.Code)
+	}
+
+	// Authenticated logout from dev1 bumps persistent session_epoch -> immediately revokes dev2!
+	recLogout := doJSONReq(t, router, http.MethodPost, "/api/auth/logout", nil, dev1, nil, "")
+	if recLogout.Code != http.StatusOK {
+		t.Fatalf("authenticated logout status=%d", recLogout.Code)
+	}
+	recRevoked := doJSONReq(t, router, http.MethodGet, "/api/servers", nil, dev2, nil, "")
+	if recRevoked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected dev2 cookie to be immediately revoked (401) after dev1 logout, got %d", recRevoked.Code)
+	}
+
+	// Fresh login after logout works on the bumped epoch.
+	rec3 := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
+	dev3 := rec3.Result().Cookies()
+	if rec3.Code != http.StatusOK || len(dev3) == 0 {
+		t.Fatalf("re-login failed: %d", rec3.Code)
+	}
+
+	// Rotating API_SECRET_KEY and recreating auth.Service on the same DB invalidates dev3 via keyFp mismatch!
+	rotatedCfg := *cfg
+	rotatedCfg.APISecretKey = "rotated-brand-new-secret-key-9999"
+	svcRotated, err := NewService(context.Background(), &rotatedCfg, st, nil)
+	if err != nil {
+		t.Fatalf("NewService rotated: %v", err)
+	}
+	rRotated := chi.NewRouter()
+	rRotated.Use(svcRotated.RequireAuthAndTOTPGate)
+	rRotated.Route("/api", func(api chi.Router) {
+		svcRotated.MountRoutes(api)
+		api.Get("/servers", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+	recKeyRotated := doJSONReq(t, rRotated, http.MethodGet, "/api/servers", nil, dev3, nil, "")
+	if recKeyRotated.Code != http.StatusUnauthorized {
+		t.Fatalf("expected cookie from old API_SECRET_KEY to be rejected (401) after rotation, got %d", recKeyRotated.Code)
 	}
 }

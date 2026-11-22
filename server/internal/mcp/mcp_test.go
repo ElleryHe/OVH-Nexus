@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -2001,6 +2002,101 @@ func TestMCPCatalogPromotionsAndModeCouponProcurementFlow(t *testing.T) {
 	lastQ := storedQueue[len(storedQueue)-1]
 	if lastQ.PricingMode != "upfront12" || lastQ.Duration != "P12M" || lastQ.Coupon != "PRIVATE_VIP" || lastQ.MaxMonthlyPrice != 32.5 || lastQ.AutoPay || lastQ.Quantity != 1 {
 		t.Fatalf("unexpected persisted queue item: %+v", lastQ)
+	}
+}
+
+func TestSecurityHotfixQuoteCapNegativeLimitsInvalidModeAndAutoCouponStrip(t *testing.T) {
+	env := setupMCPTest(t)
+	if _, err := env.store.UpsertAccount(context.Background(), store.OVHAccount{
+		ID:          "acc-sec",
+		Alias:       "Security Test Account",
+		Endpoint:    "ovh-eu",
+		Zone:        "IE",
+		AppKey:      "ak-sec",
+		AppSecret:   "as-sec",
+		ConsumerKey: "ck-sec",
+		IsDefault:   true,
+	}); err != nil {
+		t.Fatalf("UpsertAccount: %v", err)
+	}
+	rec := doHTTP(t, env.router, http.MethodPut, "/api/mcp/settings", map[string]any{
+		"enabled":          true,
+		"allowAllAccounts": true,
+		"scopes":           map[string]any{"read": true, "procurement": true},
+	}, nil)
+	token := decodeJSONMap(t, rec)["data"].(map[string]any)["revealedToken"].(string)
+
+	env.catalog.mu.Lock()
+	env.catalog.promotions = &catalog.CatalogPromotionsResponse{
+		UpdatedAt:        time.Now().Unix(),
+		Endpoint:         "ovh-eu",
+		Zone:             "IE",
+		Currency:         "EUR",
+		AutoAppliedCodes: []string{"BF26_ECO_20OFF"},
+	}
+	env.catalog.mu.Unlock()
+
+	// 1. Invalid pricing_mode rejected strictly (P1-07).
+	if _, isErr, raw := mcpCallTool(t, env, token, "order_quote", map[string]any{
+		"plan_code":    "24sys02-v3",
+		"datacenter":   "gra",
+		"pricing_mode": "upfront99_typo",
+	}); !isErr || !strings.Contains(raw, "invalid `pricing_mode`") {
+		t.Fatalf("expected invalid pricing_mode error, got isErr=%v raw=%s", isErr, raw)
+	}
+
+	// 2. Auto-applied campaign ID is stripped with couponStripped=true instead of failing (Decision 4).
+	qRes, isErr, raw := mcpCallTool(t, env, token, "order_quote", map[string]any{
+		"plan_code":  "24sys02-v3",
+		"datacenter": "gra",
+		"coupon":     "bf26_eco_20off",
+	})
+	if isErr || qRes["couponStripped"] != true || qRes["autoAppliedPromoCode"] != "BF26_ECO_20OFF" {
+		t.Fatalf("expected order_quote to strip auto-applied coupon, got isErr=%v res=%+v raw=%s", isErr, qRes, raw)
+	}
+	if _, hasCoupon := qRes["coupon"]; hasCoupon {
+		t.Fatalf("expected stripped coupon omitted from quote response, got %+v", qRes)
+	}
+
+	// 3. order_create_unpaid passes EnforceQuoteCap=true & quoted caps, and maps PRICE_CHANGED_SINCE_QUOTE cleanly (P0-05).
+	env.proc.failNext = errors.New("PRICE_CHANGED_SINCE_QUOTE: live price jumped")
+	_, isErr, raw = mcpCallTool(t, env, token, "order_create_unpaid", map[string]any{
+		"quote_id": qRes["quoteId"].(string),
+	})
+	if !isErr || !strings.Contains(raw, "PRICE_CHANGED_SINCE_QUOTE") {
+		t.Fatalf("expected PRICE_CHANGED_SINCE_QUOTE error, got isErr=%v raw=%s", isErr, raw)
+	}
+	reqs := env.proc.reqsCopy()
+	lastReq := reqs[len(reqs)-1]
+	if !lastReq.EnforceQuoteCap || lastReq.MaxMonthlyPrice != 14.99 || lastReq.MaxSetupFee != 0 {
+		t.Fatalf("expected order_create_unpaid to forward EnforceQuoteCap=true & MaxMonthlyPrice=14.99, got %+v", lastReq)
+	}
+
+	// 4. queue_add rejects <= 0 max_monthly_price / max_setup_fee (P0-06) and persists positive max_setup_fee + strips auto coupon.
+	for _, badArgs := range []map[string]any{
+		{"plan_code": "24sys02-v3", "datacenters": []string{"gra"}, "max_monthly_price": -10},
+		{"plan_code": "24sys02-v3", "datacenters": []string{"gra"}, "max_monthly_price": 0},
+		{"plan_code": "24sys02-v3", "datacenters": []string{"gra"}, "max_setup_fee": -5},
+		{"plan_code": "24sys02-v3", "datacenters": []string{"gra"}, "pricing_mode": "bogus"},
+	} {
+		if _, isErr, raw := mcpCallTool(t, env, token, "queue_add", badArgs); !isErr {
+			t.Fatalf("expected queue_add validation error for %+v, got raw=%s", badArgs, raw)
+		}
+	}
+
+	addRes, isErr, raw := mcpCallTool(t, env, token, "queue_add", map[string]any{
+		"plan_code":         "24sys02-v3",
+		"datacenters":       []string{"gra"},
+		"coupon":            "BF26_ECO_20OFF",
+		"max_monthly_price": 30.0,
+		"max_setup_fee":     15.0,
+	})
+	if isErr || addRes["couponStripped"] != true || addRes["maxSetupFee"].(float64) != 15.0 {
+		t.Fatalf("unexpected queue_add response: isErr=%v res=%+v raw=%s", isErr, addRes, raw)
+	}
+	items, _ := env.store.ListQueue(context.Background(), "")
+	if len(items) == 0 || items[len(items)-1].MaxSetupFee != 15.0 || items[len(items)-1].Coupon != "" {
+		t.Fatalf("expected persisted MaxSetupFee=15.0 and empty stripped coupon, got %+v", items[len(items)-1])
 	}
 }
 

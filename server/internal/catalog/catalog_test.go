@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1474,21 +1475,22 @@ func TestV140CacheSlimmingSHA256ShortCircuitPromotionsRadarAndAutoPromoGuard(t *
 		}
 	}
 
-	// Verify disk file is compressed .json.gz and record mtime before SHA-256 short-circuit test.
-	dictPath := svc.dictCachePath("ovh-eu", "IE")
+	// Verify baremetal dictionary writes to its isolated compressed .json.gz file (never clobbering full dict).
+	dictPath := svc.bmDictCachePath("ovh-eu", "IE")
 	stat1, err := os.Stat(dictPath)
 	if err != nil {
-		t.Fatalf("expected compressed dict cache file %s: %v", dictPath, err)
+		t.Fatalf("expected compressed baremetal dict cache file %s: %v", dictPath, err)
 	}
 
-	// 2. Second forceRefresh with unchanged upstream JSON must short-circuit via SHA-256 without rewriting disk.
+	// 2. Second forceRefresh with unchanged upstream JSON must short-circuit via SHA-256 without rewriting disk
+	// and return an immutable shallow copy (preventing concurrent mutation races on UpdatedAt).
 	time.Sleep(20 * time.Millisecond)
 	dict2, err := svc.GetBaremetalDictionary(context.Background(), "ovh-eu", "IE", true)
 	if err != nil {
 		t.Fatalf("second GetBaremetalDictionary failed: %v", err)
 	}
-	if dict2 != dict1 {
-		t.Fatalf("expected SHA-256 short-circuit to reuse exact in-memory dictionary pointer")
+	if dict2 == dict1 || len(dict2.RealPlans) != len(dict1.RealPlans) {
+		t.Fatalf("expected SHA-256 short-circuit to publish immutable shallow copy sharing RealPlans")
 	}
 	stat2, err := os.Stat(dictPath)
 	if err != nil {
@@ -1550,6 +1552,171 @@ func TestV140CacheSlimmingSHA256ShortCircuitPromotionsRadarAndAutoPromoGuard(t *
 	camp, isAuto := svc.LookupAutoAppliedPromo(context.Background(), "ovh-eu", "IE", "bf26_eco_20off")
 	if !isAuto || camp == nil || camp.PromoCode != "BF26_ECO_20OFF" {
 		t.Fatalf("expected LookupAutoAppliedPromo to detect BF26_ECO_20OFF, got isAuto=%v camp=%+v", isAuto, camp)
+	}
+}
+
+func TestSecurityHotfixGzipPartialOutageConcurrentWritePromosAndThrottle(t *testing.T) {
+	svc, st, dataDir, router := newTestCatalog(t)
+	ctx := context.Background()
+
+	var failBM atomic.Bool
+	writeGzip := func(w http.ResponseWriter, body string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte(body))
+		_ = gz.Close()
+	}
+
+	pastEnd := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	futureStart := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+	validEnd := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+
+	ecoJSON := fmt.Sprintf(`{
+		"locale":{"currencyCode":"EUR"},
+		"plans":[{
+			"planCode":"24eco-commit-v1",
+			"product":"24eco-commit",
+			"invoiceName":"Eco Commit",
+			"pricings":[
+				{
+					"mode":"default","capacities":["renew"],"price":5000000000,"interval":1,"commitment":0,
+					"promotions":[
+						{"name":"EXPIRED_PROMO","context":"standard","type":"percentage","value":50,"endDate":%q},
+						{"name":"FUTURE_PROMO","context":"standard","type":"percentage","value":40,"startDate":%q,"endDate":%q},
+						{"name":"SOLDOUT_PROMO","context":"standard","type":"percentage","value":30,"isGlobalQuantityLimited":true,"quantity":0,"endDate":%q},
+						{"name":"VIP_VOUCHER","context":"voucher","type":"percentage","value":25,"endDate":%q}
+					]
+				},
+				{
+					"mode":"upfront12","capacities":["renew"],"price":60000000000,"interval":12,"commitment":12,
+					"promotions":[
+						{"name":"COMMIT_12M_20OFF","context":"standard","type":"percentage","value":20,"endDate":%q}
+					]
+				}
+			]
+		}]
+	}`, pastEnd, futureStart, validEnd, validEnd, validEnd, validEnd)
+	bmJSON := `{"locale":{"currencyCode":"EUR"},"plans":[{"planCode":"24rise01","product":"24rise01","invoiceName":"RISE-1","pricings":[{"mode":"default","capacities":["renew"],"price":9000000000,"interval":1}]}]}`
+	vpsJSON := `{"locale":{"currencyCode":"EUR"},"plans":[{"planCode":"vps-starter","product":"vps-starter","invoiceName":"VPS Starter","pricings":[{"mode":"default","capacities":["renew"],"price":500000000,"interval":1}]}]}`
+	availJSON := `[{"fqn":"24eco-commit-v1","planCode":"24eco-commit-v1","server":"24eco-commit","memory":"ram-32g","storage":"softraid-2x480ssd","datacenters":[{"datacenter":"gra","availability":"1H-high"}]}]`
+
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/order/catalog/public/eco"):
+			writeGzip(w, ecoJSON)
+		case strings.Contains(r.URL.Path, "/order/catalog/public/baremetalServers"):
+			if failBM.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			writeGzip(w, bmJSON)
+		case strings.Contains(r.URL.Path, "/order/catalog/public/vps"):
+			writeGzip(w, vpsJSON)
+		case strings.Contains(r.URL.Path, "/dedicated/server/datacenter/availabilities"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(availJSON))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockOVH.Close()
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+
+	// 1. Gzip fetch + isolated full vs bm caches: VPS plan in full dict survives baremetal refresh!
+	fullDict, err := svc.GetDictionary(ctx, "ovh-eu", "IE", true)
+	if err != nil || len(fullDict.RealPlans) != 2 || len(fullDict.Plans) != 1 {
+		t.Fatalf("expected 2 baremetal + 1 vps plan in full dict, got err=%v real=%d extra=%d", err, len(fullDict.RealPlans), len(fullDict.Plans))
+	}
+	bmDict, err := svc.GetBaremetalDictionary(ctx, "ovh-eu", "IE", true)
+	if err != nil || len(bmDict.RealPlans) != 2 {
+		t.Fatalf("expected 2 real plans in bm dict, got err=%v real=%d", err, len(bmDict.RealPlans))
+	}
+	fullAfter, _ := svc.GetDictionary(ctx, "ovh-eu", "IE", false)
+	if _, ok := fullAfter.Plans["vps-starter"]; !ok {
+		t.Fatalf("expected full dictionary to preserve vps-starter independently of bm dictionary")
+	}
+
+	// 2. Promo filtering + voucher separation + commitment-only savings + monthly-normalized MaxSavingsAmount.
+	ecoPlan := bmDict.RealPlans["24eco-commit-v1"]
+	if ecoPlan.PricingModes[0].Mode != "default" || ecoPlan.PricingModes[0].PeriodPrice != 50 || ecoPlan.PricingModes[0].HasPromo {
+		t.Fatalf("expected expired/future/soldout/voucher promos NOT to discount automatic default price, got %+v", ecoPlan.PricingModes[0])
+	}
+	if len(ecoPlan.PricingModes[0].VoucherPromos) != 1 || ecoPlan.PricingModes[0].VoucherPromos[0].Code != "VIP_VOUCHER" {
+		t.Fatalf("expected VIP_VOUCHER recorded in VoucherPromos without auto-applying, got %+v", ecoPlan.PricingModes[0].VoucherPromos)
+	}
+	promoResp, err := svc.GetPromotions(ctx, PromotionsQueryOptions{Endpoint: "ovh-eu", Zone: "IE"})
+	if err != nil || len(promoResp.Plans) != 1 {
+		t.Fatalf("unexpected promotions response: err=%v resp=%+v", err, promoResp)
+	}
+	p0 := promoResp.Plans[0]
+	if p0.MonthlySavings != 10 || p0.BestPromoMode != "upfront12" {
+		t.Fatalf("expected commitment-only upfront12 promo to report MonthlySavings=10 & BestPromoMode=upfront12, got %+v", p0)
+	}
+	for _, c := range promoResp.Campaigns {
+		if c.PromoCode == "COMMIT_12M_20OFF" && c.MaxSavingsAmount != 10 {
+			t.Fatalf("expected 12m campaign MaxSavingsAmount normalized to monthly equivalent 10, got %.2f", c.MaxSavingsAmount)
+		}
+		if c.PromoCode == "EXPIRED_PROMO" || c.PromoCode == "FUTURE_PROMO" || c.PromoCode == "SOLDOUT_PROMO" {
+			t.Fatalf("inactive promo %s leaked into campaigns", c.PromoCode)
+		}
+	}
+
+	// 3. Cold-start disk digest recovery + partial outage guard in BOTH GetBaremetalDictionary AND buildServerPlans!
+	svcRestart := NewService(st, nil, ovhclient.NewPool(st, nil), dataDir)
+	svcRestart.SetPublicAPIBaseURL(mockOVH.URL)
+	failBM.Store(true)
+	bmSafe, err := svcRestart.GetBaremetalDictionary(ctx, "ovh-eu", "IE", true)
+	if err != nil || len(bmSafe.RealPlans) != 2 {
+		t.Fatalf("expected cold-start partial outage guard to preserve both plans from disk digest, got err=%v len=%d", err, len(bmSafe.RealPlans))
+	}
+	srvList, err := svcRestart.ListServers(ctx, ListServersOptions{Endpoint: "ovh-eu", Zone: "IE", ForceRefresh: true})
+	if err != nil || len(srvList.Servers) < 2 {
+		t.Fatalf("expected buildServerPlans partial outage guard to preserve complete dictionary, got err=%v count=%d", err, len(srvList.Servers))
+	}
+	failBM.Store(false)
+
+	// 4. Concurrent writeGzipJSONFile safety (P0-03) under -race.
+	concurrentPath := filepath.Join(dataDir, "cache", "concurrent_atomic.json.gz")
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_ = writeGzipJSONFile(concurrentPath, map[string]int{"seq": idx})
+		}(i)
+	}
+	wg.Wait()
+	if got, ok := readGzipJSONFile[map[string]int](concurrentPath); !ok || got == nil {
+		t.Fatalf("expected valid readable gzip JSON after concurrent writes")
+	}
+	entries, _ := os.ReadDir(filepath.Join(dataDir, "cache"))
+	for _, ent := range entries {
+		if strings.HasSuffix(ent.Name(), ".tmp") {
+			t.Fatalf("unexpected leftover temp file: %s", ent.Name())
+		}
+	}
+
+	// 5. GET /servers/{planCode}/price removed (405), /cache/info omits host absolute path, rapid refresh throttled (429).
+	recGetPrice := httptest.NewRecorder()
+	router.ServeHTTP(recGetPrice, httptest.NewRequest(http.MethodGet, "/api/servers/24eco-commit-v1/price", nil))
+	if recGetPrice.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 Method Not Allowed for GET /servers/{planCode}/price, got %d", recGetPrice.Code)
+	}
+	recInfo := httptest.NewRecorder()
+	router.ServeHTTP(recInfo, httptest.NewRequest(http.MethodGet, "/api/cache/info", nil))
+	if strings.Contains(recInfo.Body.String(), dataDir) {
+		t.Fatalf("expected /api/cache/info NOT to leak host absolute path %q: %s", dataDir, recInfo.Body.String())
+	}
+	recRef1 := httptest.NewRecorder()
+	router.ServeHTTP(recRef1, httptest.NewRequest(http.MethodPost, "/api/servers/refresh", nil))
+	if recRef1.Code != http.StatusOK {
+		t.Fatalf("first POST /api/servers/refresh failed: %d", recRef1.Code)
+	}
+	recRef2 := httptest.NewRecorder()
+	router.ServeHTTP(recRef2, httptest.NewRequest(http.MethodPost, "/api/servers/refresh", nil))
+	if recRef2.Code != http.StatusTooManyRequests || recRef2.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected second rapid POST /api/servers/refresh to return 429 with Retry-After, got %d hdr=%v", recRef2.Code, recRef2.Header())
 	}
 }
 

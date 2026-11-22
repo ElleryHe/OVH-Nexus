@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"ovh-nexus/server/internal/auth"
+	"ovh-nexus/server/internal/catalog"
 	"ovh-nexus/server/internal/config"
 	"ovh-nexus/server/internal/logger"
 	"ovh-nexus/server/internal/store"
@@ -56,7 +57,21 @@ type Service struct {
 	checkoutMu  sync.Mutex
 	checkoutMap map[string]*sync.Mutex
 
+	fallbackCatOnce sync.Once
+	fallbackCat     *catalog.Service
+
 	clientForAccountFn func(ctx context.Context, accountID string) (OVHClient, *store.OVHAccount, error)
+}
+
+func (s *Service) getFallbackCatalog() *catalog.Service {
+	s.fallbackCatOnce.Do(func() {
+		dataDir := ""
+		if s.deps.Config != nil {
+			dataDir = s.deps.Config.DataDir
+		}
+		s.fallbackCat = catalog.NewService(s.store, s.deps.Log, s.deps.OVHPool, dataDir)
+	})
+	return s.fallbackCat
 }
 
 // NewService creates a new MCP Gateway service.

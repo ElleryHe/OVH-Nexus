@@ -148,6 +148,7 @@ export const zhV132Translations: Record<string, string> = {
   'promoDebug.missedModeWarn': '当前所选「{currentMode}」未命中此机型官促；切换至 {eligibleModes} 可自动激活 {code}',
   'promoDebug.switchToMode': '一键切至 {mode}',
   'promoDebug.autoCouponWarn': '检测到「{code}」是 OVH 自动生效活动码（context=standard），无需填入优惠码框——提交到购物车优惠码接口会被 OVH 拒绝。',
+  'promoDebug.autoCouponStripped': '已自动清空目录自动活动码「{code}」（OVH 会按计费模式自动应用，无需手动填券）并继续提交。',
   'promoDebug.clearAutoCoupon': '清空误填活动码',
   'promoDebug.verifyBtn': '实测校验',
   'promoDebug.verifying': '购物车试算中...',

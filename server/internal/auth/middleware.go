@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -45,10 +47,12 @@ var whitelistPaths = map[string]struct{}{
 
 // SessionPayload represents the signed cookie claims stored in ovh_session.
 type SessionPayload struct {
-	Authenticated bool  `json:"auth"`
-	LoginAt       int64 `json:"loginAt"`
-	SudoUntil     int64 `json:"sudoUntil,omitempty"`
-	ExpiresAt     int64 `json:"exp"`
+	Authenticated bool   `json:"auth"`
+	LoginAt       int64  `json:"loginAt"`
+	SudoUntil     int64  `json:"sudoUntil,omitempty"`
+	ExpiresAt     int64  `json:"exp"`
+	Epoch         int64  `json:"epoch,omitempty"`
+	KeyFP         string `json:"kfp,omitempty"`
 }
 
 // Service manages session authentication, rate limiting, and RFC 6238 TOTP gatekeeping.
@@ -57,6 +61,8 @@ type Service struct {
 	store         *store.Store
 	log           *logger.Hub
 	sessionSecret []byte
+	keyFP         string
+	sessionEpoch  atomic.Int64
 	nowFn         func() time.Time
 
 	totpMu       sync.Mutex
@@ -82,16 +88,45 @@ func NewService(ctx context.Context, cfg *config.Config, st *store.Store, log *l
 		}
 	}
 
+	epoch, err := st.GetSessionEpoch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("auth: failed to load session epoch: %w", err)
+	}
+	if epoch < 1 {
+		epoch = 1
+	}
+
+	secretBytes := []byte(secretStr)
 	nowFn := func() time.Time { return time.Now().UTC() }
-	return &Service{
+	svc := &Service{
 		cfg:           cfg,
 		store:         st,
 		log:           log,
-		sessionSecret: []byte(secretStr),
+		sessionSecret: secretBytes,
+		keyFP:         computeKeyFingerprint(secretBytes, cfg.APISecretKey),
 		nowFn:         nowFn,
 		loginLimiter:  newSlidingRateLimiter(LoginMaxAttempts, LoginWindowSeconds*time.Second, nowFn),
 		totpLimiter:   newSlidingRateLimiter(TOTPMaxFailures, TOTPLockoutSeconds*time.Second, nowFn),
-	}, nil
+	}
+	svc.sessionEpoch.Store(epoch)
+	return svc, nil
+}
+
+func computeKeyFingerprint(sessionSecret []byte, apiSecretKey string) string {
+	mac := hmac.New(sha256.New, sessionSecret)
+	_, _ = mac.Write([]byte("ovh-nexus-keyfp:"))
+	_, _ = mac.Write([]byte(apiSecretKey))
+	return hex.EncodeToString(mac.Sum(nil))[:16]
+}
+
+func (s *Service) bumpSessionEpoch(ctx context.Context) int64 {
+	if s.store != nil {
+		if next, err := s.store.BumpSessionEpoch(ctx); err == nil && next > 0 {
+			s.sessionEpoch.Store(next)
+			return next
+		}
+	}
+	return s.sessionEpoch.Add(1)
 }
 
 // SetNowFunc overrides the clock (intended for deterministic unit tests).
@@ -402,7 +437,13 @@ func (s *Service) HandleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleLogout processes POST /api/auth/logout.
-func (s *Service) HandleLogout(w http.ResponseWriter, _ *http.Request) {
+func (s *Service) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	if _, hasSession := s.readSessionCookie(r); hasSession {
+		nextEpoch := s.bumpSessionEpoch(r.Context())
+		if s.log != nil {
+			s.log.Info(logger.SourceAuth, "Session logged out; revoked active sessions across devices", "sessionEpoch", nextEpoch)
+		}
+	}
 	s.clearSessionCookie(w)
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"authenticated": false,
@@ -502,13 +543,15 @@ func (s *Service) HandleTOTPActivate(w http.ResponseWriter, r *http.Request) {
 
 	nowTS := s.nowFn().Unix()
 	sudoUntil := nowTS + SudoDurationSeconds
-	if sess, ok := s.readSessionCookie(r); ok {
+	sess, hadSession := s.readSessionCookie(r)
+	nextEpoch := s.bumpSessionEpoch(r.Context())
+	if hadSession {
 		sess.SudoUntil = sudoUntil
 		s.writeSessionCookie(w, sess)
 	}
 
 	if s.log != nil {
-		s.log.Info(logger.SourceTOTP, "Two-factor authentication enabled")
+		s.log.Info(logger.SourceTOTP, "Two-factor authentication enabled; rotated session epoch", "sessionEpoch", nextEpoch)
 	}
 
 	writeAuthJSON(w, http.StatusOK, map[string]any{
@@ -575,6 +618,7 @@ func (s *Service) HandleTOTPVerifySudo(w http.ResponseWriter, r *http.Request) {
 
 // HandleTOTPDisable processes POST /api/auth/totp/disable (protected by strict TOTP gate).
 func (s *Service) HandleTOTPDisable(w http.ResponseWriter, r *http.Request) {
+	sess, hadSession := s.readSessionCookie(r)
 	if err := s.DisableTOTP(r.Context()); err != nil {
 		writeAuthJSON(w, http.StatusInternalServerError, map[string]any{
 			"success": false,
@@ -583,12 +627,13 @@ func (s *Service) HandleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if sess, ok := s.readSessionCookie(r); ok {
+	nextEpoch := s.bumpSessionEpoch(r.Context())
+	if hadSession {
 		sess.SudoUntil = 0
 		s.writeSessionCookie(w, sess)
 	}
 	if s.log != nil {
-		s.log.Warn(logger.SourceTOTP, "Two-factor authentication disabled")
+		s.log.Warn(logger.SourceTOTP, "Two-factor authentication disabled; rotated session epoch", "sessionEpoch", nextEpoch)
 	}
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"success":     true,
@@ -600,6 +645,7 @@ func (s *Service) HandleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 // HandleTOTPRegenerateRecovery processes POST /api/auth/totp/recovery-codes/regenerate (strict gate).
 func (s *Service) HandleTOTPRegenerateRecovery(w http.ResponseWriter, r *http.Request) {
+	sess, hadSession := s.readSessionCookie(r)
 	codes, err := s.RegenerateRecoveryCodes(r.Context())
 	if err != nil {
 		writeAuthJSON(w, http.StatusBadRequest, map[string]any{
@@ -609,8 +655,12 @@ func (s *Service) HandleTOTPRegenerateRecovery(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
+	nextEpoch := s.bumpSessionEpoch(r.Context())
+	if hadSession {
+		s.writeSessionCookie(w, sess)
+	}
 	if s.log != nil {
-		s.log.Info(logger.SourceTOTP, "Regenerated 2FA recovery codes", "count", len(codes))
+		s.log.Info(logger.SourceTOTP, "Regenerated 2FA recovery codes; rotated session epoch", "count", len(codes), "sessionEpoch", nextEpoch)
 	}
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"success":                true,
@@ -871,6 +921,12 @@ func (s *Service) parseSession(token string) (SessionPayload, bool) {
 	if !payload.Authenticated || payload.ExpiresAt <= s.nowFn().Unix() {
 		return SessionPayload{}, false
 	}
+	if payload.Epoch != s.sessionEpoch.Load() {
+		return SessionPayload{}, false
+	}
+	if payload.KeyFP == "" || !hmac.Equal([]byte(payload.KeyFP), []byte(s.keyFP)) {
+		return SessionPayload{}, false
+	}
 	return payload, true
 }
 
@@ -882,10 +938,30 @@ func (s *Service) readSessionCookie(r *http.Request) (SessionPayload, bool) {
 	return s.parseSession(cookie.Value)
 }
 
+func stripSessionSetCookie(w http.ResponseWriter) {
+	existing := w.Header().Values("Set-Cookie")
+	if len(existing) == 0 {
+		return
+	}
+	prefix := SessionCookieName + "="
+	kept := make([]string, 0, len(existing))
+	for _, raw := range existing {
+		if !strings.HasPrefix(strings.TrimSpace(raw), prefix) {
+			kept = append(kept, raw)
+		}
+	}
+	w.Header().Del("Set-Cookie")
+	for _, raw := range kept {
+		w.Header().Add("Set-Cookie", raw)
+	}
+}
+
 func (s *Service) writeSessionCookie(w http.ResponseWriter, payload SessionPayload) {
 	if payload.ExpiresAt == 0 {
 		payload.ExpiresAt = s.nowFn().Add(SessionLifetimeHours * time.Hour).Unix()
 	}
+	payload.Epoch = s.sessionEpoch.Load()
+	payload.KeyFP = s.keyFP
 	val, err := s.signSession(payload)
 	if err != nil {
 		return
@@ -894,6 +970,7 @@ func (s *Service) writeSessionCookie(w http.ResponseWriter, payload SessionPaylo
 	if maxAge < 1 {
 		maxAge = SessionLifetimeHours * 3600
 	}
+	stripSessionSetCookie(w)
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    val,
@@ -906,6 +983,7 @@ func (s *Service) writeSessionCookie(w http.ResponseWriter, payload SessionPaylo
 }
 
 func (s *Service) clearSessionCookie(w http.ResponseWriter) {
+	stripSessionSetCookie(w)
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    "",

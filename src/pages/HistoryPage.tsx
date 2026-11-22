@@ -34,6 +34,16 @@ interface PurchaseHistory {
   accountId?: string;
 }
 
+const safeExternalOrderUrl = (raw?: string): string | null => {
+  if (!raw || typeof raw !== "string") return null;
+  try {
+    const parsed = new URL(raw.trim());
+    return parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+};
+
 const HistoryPage = () => {
   const isMobile = useIsMobile();
   const { locale } = useLocale();
@@ -338,8 +348,8 @@ const HistoryPage = () => {
                             {item.orderId && (
                               <div className="text-[10px] text-cyber-text-dimmed mt-1">订单ID：{item.orderId}</div>
                             )}
-                            {item.status === "success" && item.orderUrl ? (
-                              <a href={item.orderUrl} target="_blank" rel="noopener noreferrer" className="inline-block mt-2 px-2 py-0.5 text-[10px] text-cyber-accent border border-cyber-accent/30 rounded">查看订单</a>
+                            {item.status === "success" && safeExternalOrderUrl(item.orderUrl) ? (
+                              <a href={safeExternalOrderUrl(item.orderUrl)!} target="_blank" rel="noopener noreferrer" className="inline-block mt-2 px-2 py-0.5 text-[10px] text-cyber-accent border border-cyber-accent/30 rounded">查看订单</a>
                             ) : item.status === "failed" && item.errorMessage ? (
                               <button onClick={() => toast.info(item.errorMessage)} className="inline-block mt-2 px-2 py-0.5 text-[10px] text-red-400 border border-red-400/30 rounded">查看错误</button>
                             ) : null}
@@ -421,9 +431,9 @@ const HistoryPage = () => {
                   </div>
                 )}
                 
-                {item.status === "success" && item.orderUrl ? (
+                {item.status === "success" && safeExternalOrderUrl(item.orderUrl) ? (
                   <a 
-                    href={item.orderUrl} 
+                    href={safeExternalOrderUrl(item.orderUrl)!} 
                     target="_blank" 
                     rel="noopener noreferrer"
                     className="inline-block mt-2 px-3 py-1 text-xs text-cyber-accent border border-cyber-accent/30 rounded hover:bg-cyber-accent/10 transition-colors"
@@ -523,9 +533,9 @@ const HistoryPage = () => {
                       </div>
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
-                      {item.status === "success" && item.orderUrl ? (
+                      {item.status === "success" && safeExternalOrderUrl(item.orderUrl) ? (
                         <a 
-                          href={item.orderUrl} 
+                          href={safeExternalOrderUrl(item.orderUrl)!} 
                           target="_blank" 
                           rel="noopener noreferrer"
                           className="text-cyber-accent hover:text-cyber-accent/80 transition-colors text-xs"

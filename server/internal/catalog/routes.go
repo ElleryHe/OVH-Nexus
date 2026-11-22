@@ -17,7 +17,6 @@ import (
 func (s *Service) MountRoutes(r chi.Router) {
 	r.Get("/servers", s.HandleListServers)
 	r.Post("/servers/refresh", s.HandleRefreshServers)
-	r.Get("/servers/{planCode}/price", s.HandleGetServerPrice)
 	r.Post("/servers/{planCode}/price", s.HandleGetServerPrice)
 	r.Get("/servers/{planCode}/configs", s.HandleGetPlanConfigs)
 
@@ -38,6 +37,17 @@ func (s *Service) MountRoutes(r chi.Router) {
 func (s *Service) HandleListServers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	force := parseBoolQuery(q.Get("force")) || parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("forceRefresh"))
+	if force {
+		if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":      "Refresh throttled",
+				"message":    fmt.Sprintf("Catalog refresh is rate-limited; retry in %ds", retryAfter),
+				"retryAfter": retryAfter,
+			})
+			return
+		}
+	}
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
 	zone := nonEmpty(q.Get("subsidiary"), q.Get("zone"))
 
@@ -88,6 +98,15 @@ func (s *Service) HandleGetPlanConfigs(w http.ResponseWriter, r *http.Request) {
 
 // HandleRefreshServers handles POST /api/servers/refresh.
 func (s *Service) HandleRefreshServers(w http.ResponseWriter, r *http.Request) {
+	if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":      "Refresh throttled",
+			"message":    fmt.Sprintf("Catalog refresh is rate-limited; retry in %ds", retryAfter),
+			"retryAfter": retryAfter,
+		})
+		return
+	}
 	q := r.URL.Query()
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
 	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), q.Get("zone"))
@@ -103,7 +122,7 @@ func (s *Service) HandleRefreshServers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// HandleGetServerPrice handles GET|POST /api/servers/{planCode}/price.
+// HandleGetServerPrice handles POST /api/servers/{planCode}/price.
 func (s *Service) HandleGetServerPrice(w http.ResponseWriter, r *http.Request) {
 	planCode := strings.TrimSpace(chi.URLParam(r, "planCode"))
 	q := r.URL.Query()
@@ -210,6 +229,17 @@ func (s *Service) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
 	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), q.Get("zone"))
 	force := parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("force"))
+	if force {
+		if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":      "Refresh throttled",
+				"message":    fmt.Sprintf("Catalog refresh is rate-limited; retry in %ds", retryAfter),
+				"retryAfter": retryAfter,
+			})
+			return
+		}
+	}
 
 	dict, err := s.GetDictionary(r.Context(), ep, zn, force)
 	if err != nil {
@@ -220,7 +250,23 @@ func (s *Service) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	etag := fmt.Sprintf(`W/"%d-%d-%d"`, dict.UpdatedAt, len(dict.RealPlans), len(dict.PlanAliases))
+	digestPrefix := "none"
+	if dict.UpstreamDigests != nil {
+		parts := make([]string, 0, 3)
+		if len(dict.UpstreamDigests.EcoHash) >= 8 {
+			parts = append(parts, dict.UpstreamDigests.EcoHash[:8])
+		}
+		if len(dict.UpstreamDigests.BaremetalHash) >= 8 {
+			parts = append(parts, dict.UpstreamDigests.BaremetalHash[:8])
+		}
+		if len(dict.UpstreamDigests.VPSHash) >= 8 {
+			parts = append(parts, dict.UpstreamDigests.VPSHash[:8])
+		}
+		if len(parts) > 0 {
+			digestPrefix = strings.Join(parts, ".")
+		}
+	}
+	etag := fmt.Sprintf(`W/"%d-%d-%d-%d-%s"`, dict.UpdatedAt, len(dict.Plans), len(dict.RealPlans), len(dict.PlanAliases), digestPrefix)
 	if !force && r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -236,6 +282,16 @@ func (s *Service) HandleGetCacheInfo(w http.ResponseWriter, r *http.Request) {
 
 // HandleClearCache handles POST /api/cache/clear.
 func (s *Service) HandleClearCache(w http.ResponseWriter, r *http.Request) {
+	if ok, retryAfter := s.allowManualAction(&s.lastCacheClearUnix); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"status":     "error",
+			"error":      "Cache clear throttled",
+			"message":    fmt.Sprintf("Cache clear is rate-limited; retry in %ds", retryAfter),
+			"retryAfter": retryAfter,
+		})
+		return
+	}
 	var body struct {
 		Type string `json:"type"`
 	}

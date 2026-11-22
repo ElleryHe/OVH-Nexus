@@ -1028,13 +1028,14 @@ func TestUpfront12MonthlyEquivalentGuardAndFailFastCouponValidation(t *testing.T
 	}
 	mu.Unlock()
 
-	// Duplicate upfront12 QuickOrder while active MUST return 429 DUPLICATE_QUEUE_TASK.
+	// Duplicate upfront12 QuickOrder (same coupon) while active MUST return 429 DUPLICATE_QUEUE_TASK.
 	dupRes, dupStatus, _ := env.svc.QuickOrder(context.Background(), QuickOrderRequest{
-		AccountID:   "acc-1",
-		PlanCode:    "24sys02-v3",
-		Datacenter:  "gra",
-		Options:     opts,
-		PricingMode: "upfront12",
+		AccountID:      "acc-1",
+		PlanCode:       "24sys02-v3",
+		Datacenter:     "gra",
+		Options:        opts,
+		PricingMode:    "upfront12",
+		Coupon:         "BF26",
 		SkipPriceCheck: true,
 	})
 	if dupStatus != http.StatusTooManyRequests || dupRes == nil || dupRes.Code != "DUPLICATE_QUEUE_TASK" {
@@ -1129,5 +1130,163 @@ func TestUpfront12MonthlyEquivalentGuardAndFailFastCouponValidation(t *testing.T
 	couponWarns, _ := env.st.QueryLogs(context.Background(), "WARNING", "queue", "rejected cart coupon", 10)
 	if len(couponWarns) < 2 {
 		t.Fatalf("expected WARNING logs for rejected coupons in both QuickOrder and purchaseServer, got %d", len(couponWarns))
+	}
+}
+
+func TestSecurityHotfixTransientCouponInflightLockWildcardAndQuotePriceCap(t *testing.T) {
+	env := newTestProcurementEnv(t, nil)
+	ctx := context.Background()
+
+	var couponStatus atomic.Int32
+	var summaryMonthlyCents atomic.Int64
+	var summarySetupCents atomic.Int64
+	couponStatus.Store(http.StatusTooManyRequests)
+	summaryMonthlyCents.Store(3000) // €30.00
+	summarySetupCents.Store(0)      // €0.00
+
+	ovhServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/auth/time"):
+			_, _ = w.Write([]byte("1763200000"))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/dedicated/server/datacenter/availabilities"):
+			_, _ = w.Write([]byte(`[{"fqn":"24ska01","planCode":"24ska01","memory":"ram-32g","storage":"softraid-2x480ssd","datacenters":[{"datacenter":"gra","availability":"1H-high"}]}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/1.0/order/cart":
+			_, _ = w.Write([]byte(`{"cartId":"cart-sec-1"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/assign"):
+			_, _ = w.Write([]byte(`null`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/eco"):
+			_, _ = w.Write([]byte(`{"itemId":101}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/configuration"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/coupons"):
+			code := int(couponStatus.Load())
+			if code != http.StatusOK {
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(`{"message":"temporary rate limit"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/summary"):
+			mVal := float64(summaryMonthlyCents.Load()) / 100.0
+			sVal := float64(summarySetupCents.Load()) / 100.0
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withoutTax": map[string]any{"value": mVal + sVal, "currencyCode": "EUR"},
+					"withTax":    map[string]any{"value": (mVal + sVal) * 1.2, "currencyCode": "EUR"},
+				},
+				"details": []map[string]any{
+					{"detailType": "DURATION", "totalPrice": map[string]any{"value": mVal, "currencyCode": "EUR"}},
+					{"detailType": "INSTALLATION", "totalPrice": map[string]any{"value": sVal, "currencyCode": "EUR"}},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/1.0/order/cart/cart-sec-1":
+			_, _ = w.Write([]byte(`{"cartId":"cart-sec-1","items":[]}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/checkout"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/checkout"):
+			_, _ = w.Write([]byte(`{"orderId":778899,"url":"https://www.ovh.com/order/778899"}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/1.0/order/cart/"):
+			_, _ = w.Write([]byte(`null`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ovhServer.Close()
+
+	client, err := ovh.NewClient(ovhServer.URL+"/1.0", "ak", "as", "ck")
+	if err != nil {
+		t.Fatalf("ovh.NewClient: %v", err)
+	}
+	client.Client = ovhServer.Client()
+	env.svc.SetAccountClientFunc(func(context.Context, string) (*ovh.Client, *store.OVHAccount, error) {
+		return client, &store.OVHAccount{ID: "acc-1", Endpoint: "ovh-eu", Zone: "IE"}, nil
+	})
+	env.cat.SetPublicAPIBaseURL(ovhServer.URL + "/1.0")
+
+	// 1. P0-08: Transient HTTP 429 on ApplyCartCoupon keeps queue item running (does NOT fail-fast as INVALID_COUPON).
+	task, err := env.svc.CreateQueueTask(ctx, CreateQueueRequest{
+		AccountID:     "acc-1",
+		PlanCode:      "24ska01",
+		Datacenters:   []string{"gra"},
+		Options:       []string{"ram-32g"},
+		Coupon:        "VIP_429_TEST",
+		MaxRetryCount: 10,
+	})
+	if err != nil {
+		t.Fatalf("CreateQueueTask: %v", err)
+	}
+	env.svc.ProcessDueTasksOnce(ctx)
+	after429, _ := env.st.GetQueueItem(ctx, task.ID)
+	if after429 == nil || after429.Status != "running" || after429.NextAttemptAt == 0 {
+		t.Fatalf("expected transient 429 on coupon to keep task running with backoff, got %+v", after429)
+	}
+	_ = env.st.DeleteQueueItem(ctx, task.ID)
+	couponStatus.Store(http.StatusOK)
+
+	// 2. P0-05: CreateUnpaidOrder with EnforceQuoteCap aborts with ErrPriceChangedSinceQuote if monthly OR setup increases!
+	summaryMonthlyCents.Store(3500) // jumped from €30 to €35
+	_, err = env.svc.CreateUnpaidOrder(ctx, UnpaidOrderRequest{
+		AccountID:       "acc-1",
+		PlanCode:        "24ska01",
+		Datacenter:      "gra",
+		MaxMonthlyPrice: 30.00,
+		MaxSetupFee:     0,
+		EnforceQuoteCap: true,
+	})
+	if !errors.Is(err, ErrPriceChangedSinceQuote) {
+		t.Fatalf("expected ErrPriceChangedSinceQuote on monthly jump, got %v", err)
+	}
+	summaryMonthlyCents.Store(3000)
+	summarySetupCents.Store(5000) // setup jumped from €0 to €50!
+	_, err = env.svc.CreateUnpaidOrder(ctx, UnpaidOrderRequest{
+		AccountID:       "acc-1",
+		PlanCode:        "24ska01",
+		Datacenter:      "gra",
+		MaxMonthlyPrice: 30.00,
+		MaxSetupFee:     0,
+		EnforceQuoteCap: true,
+	})
+	if !errors.Is(err, ErrPriceChangedSinceQuote) {
+		t.Fatalf("expected ErrPriceChangedSinceQuote when free setup jumped to €50, got %v", err)
+	}
+	summarySetupCents.Store(0)
+
+	// 3. P0-09: Concurrent QuickOrder serialization via inflightLocks + "any" datacenter wildcard dedup.
+	var okCount, dupCount atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, stCode, _ := env.svc.QuickOrder(ctx, QuickOrderRequest{
+				AccountID:      "acc-1",
+				PlanCode:       "24ska01",
+				Datacenter:     "gra",
+				Options:        []string{"ram-32g"},
+				SkipPriceCheck: true,
+			})
+			if stCode == http.StatusOK {
+				okCount.Add(1)
+			} else if stCode == http.StatusTooManyRequests {
+				dupCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if okCount.Load() != 1 || dupCount.Load() != 5 {
+		t.Fatalf("expected exactly 1 QuickOrder success and 5 duplicate rejections, got ok=%d dup=%d", okCount.Load(), dupCount.Load())
+	}
+
+	// "any" wildcard matches existing "gra" queue task!
+	_, wildStatus, _ := env.svc.QuickOrder(ctx, QuickOrderRequest{
+		AccountID:      "acc-1",
+		PlanCode:       "24ska01",
+		Datacenter:     "any",
+		Options:        []string{"ram-32g"},
+		SkipPriceCheck: true,
+	})
+	if wildStatus != http.StatusTooManyRequests {
+		t.Fatalf("expected datacenter='any' to match active 'gra' task as 429 duplicate, got %d", wildStatus)
 	}
 }

@@ -1161,6 +1161,25 @@ const ServersPage = () => {
     return dcMap[displayDc.toLowerCase()] || displayDc.toLowerCase();
   };
 
+  const sanitizeCouponForSubmit = useCallback(
+    (planCode: string, rawCoupon?: string): string => {
+      const trimmed = (rawCoupon || '').trim();
+      if (!trimmed) return '';
+      const matched = promotions?.autoAppliedCodes?.find(
+        (c) => c.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (matched) {
+        setSelectedCouponMap((prev) =>
+          prev[planCode] ? { ...prev, [planCode]: '' } : prev
+        );
+        toast.info(t('promoDebug.autoCouponStripped', { code: matched }));
+        return '';
+      }
+      return trimmed;
+    },
+    [promotions, t]
+  );
+
   const handleOpenAddToQueue = (
     server: ServerPlan,
     activeConfig: UnifiedCardConfig | null,
@@ -1193,7 +1212,10 @@ const ServersPage = () => {
         mode,
         activeConfig?.pricingModes || server.pricingModes
       );
-    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+    const coupon = sanitizeCouponForSubmit(
+      server.planCode,
+      selectedCouponMap[server.planCode]
+    );
 
     setQueueAutoPay(false);
     setQueueWaiveRetractation(false);
@@ -1271,7 +1293,10 @@ const ServersPage = () => {
         mode,
         activeCfg?.pricingModes || server.pricingModes
       );
-    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+    const coupon = sanitizeCouponForSubmit(
+      server.planCode,
+      selectedCouponMap[server.planCode]
+    );
 
     setIsQuickOrdering(true);
     try {
@@ -1323,6 +1348,7 @@ const ServersPage = () => {
               .map((o) => o.value);
       const mergedOptions = Array.from(new Set([...configOpts, ...extraOptions]));
       const apiDatacenters = datacenters.map((dc) => convertDisplayDcToApiDc(dc));
+      const cleanCoupon = sanitizeCouponForSubmit(server.planCode, coupon);
 
       await api.post('/queue', {
         planCode: server.planCode,
@@ -1333,7 +1359,7 @@ const ServersPage = () => {
         currency: selectedConfig?.currency || server.currency || undefined,
         pricingMode: pricingMode || 'default',
         duration: duration || 'P1M',
-        coupon: coupon || undefined,
+        coupon: cleanCoupon || undefined,
         auto_pay: queueAutoPay,
         waive_retractation_period: queueWaiveRetractation,
       });
@@ -1431,8 +1457,9 @@ const ServersPage = () => {
     }
 
     if (selectedPromoCode) {
+      const targetPromoLow = selectedPromoCode.toLowerCase();
       const targetCamp = promotions?.campaigns.find(
-        (c) => c.promoCode === selectedPromoCode
+        (c) => c.promoCode.toLowerCase() === targetPromoLow
       );
       const codeSet = new Set(
         (targetCamp?.planCodes || []).map((c) => c.toLowerCase())
@@ -1441,12 +1468,15 @@ const ServersPage = () => {
         if (codeSet.size > 0 && codeSet.has(srv.planCode.toLowerCase())) {
           return true;
         }
-        if (srv.promoCode === selectedPromoCode) return true;
+        if (srv.promoCode?.toLowerCase() === targetPromoLow) return true;
         return (srv.pricingModes || []).some(
           (m) =>
-            m.promoCode === selectedPromoCode ||
-            m.renewPromo?.code === selectedPromoCode ||
-            m.setupPromo?.code === selectedPromoCode
+            m.promoCode?.toLowerCase() === targetPromoLow ||
+            m.renewPromo?.code?.toLowerCase() === targetPromoLow ||
+            m.setupPromo?.code?.toLowerCase() === targetPromoLow ||
+            (m.voucherPromos || []).some(
+              (v) => v.code?.toLowerCase() === targetPromoLow
+            )
         );
       });
     }
@@ -3446,6 +3476,7 @@ const ServersPage = () => {
         initialSelectedDcs={quickMonitorTarget?.initialSelectedDcs}
         initialConfig={quickMonitorTarget?.initialConfig}
         initialConfigs={quickMonitorTarget?.initialConfigs}
+        autoAppliedCodes={promotions?.autoAppliedCodes}
         onSuccess={(planCode) => {
           const nextSet = new Set([...subscribedServersRef.current, planCode]);
           subscribedServersRef.current = nextSet;

@@ -17,7 +17,7 @@ COPY eslint.config.js ./
 
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS go-builder
 
 WORKDIR /src/server
 

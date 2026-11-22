@@ -219,6 +219,43 @@ func normalizePromoContext(rawCtx string) (ctx string, autoApplied bool) {
 	return c, c == "standard"
 }
 
+func parsePromoTimestamp(raw string) (time.Time, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func isPromoWindowAndQtyActive(startDate, endDate string, isLimited bool, qty *int, now time.Time) bool {
+	if isLimited && qty != nil && *qty <= 0 {
+		return false
+	}
+	if start, ok := parsePromoTimestamp(startDate); ok && now.Before(start) {
+		return false
+	}
+	if end, ok := parsePromoTimestamp(endDate); ok && !now.Before(end) {
+		return false
+	}
+	return true
+}
+
+func isRawPromoActiveAt(p rawCatalogPromotion, now time.Time) bool {
+	return isPromoWindowAndQtyActive(p.StartDate, p.EndDate, p.IsGlobalQuantityLimited, p.Quantity, now)
+}
+
+func isPromoDetailActiveAt(pd *PromoDetail, now time.Time) bool {
+	if pd == nil {
+		return false
+	}
+	return isPromoWindowAndQtyActive(pd.StartDate, pd.EndDate, pd.IsGlobalQuantityLimited, pd.Quantity, now)
+}
+
 func computePromoPriceAndDetail(
 	capacity string,
 	originalPrice float64,
@@ -295,6 +332,7 @@ func buildPlanPricingModeFromParsed(
 	renewPromo *PromoDetail,
 	originalSetupFee, setupFee float64,
 	setupPromo *PromoDetail,
+	voucherPromos []PromoDetail,
 ) PlanPricingMode {
 	switch strings.ToLower(mode) {
 	case "upfront12":
@@ -414,6 +452,7 @@ func buildPlanPricingModeFromParsed(
 		PromoEndDate:           promoEnd,
 		RenewPromo:             renewPromo,
 		SetupPromo:             setupPromo,
+		VoucherPromos:          voucherPromos,
 	}
 }
 
@@ -433,6 +472,10 @@ func setupPromoEnd(p *PromoDetail) string {
 
 // ParseTypedPlanPricingModes extracts structured billing modes, setup fees, and dual-channel promotions from typed pricings.
 func ParseTypedPlanPricingModes(pricings []rawCatalogPricing) []PlanPricingMode {
+	return parseTypedPlanPricingModesAt(pricings, time.Now())
+}
+
+func parseTypedPlanPricingModesAt(pricings []rawCatalogPricing, now time.Time) []PlanPricingMode {
 	if len(pricings) == 0 {
 		return nil
 	}
@@ -491,17 +534,29 @@ func ParseTypedPlanPricingModes(pricings []rawCatalogPricing) []PlanPricingMode 
 			continue
 		}
 
+		var voucherPromos []PromoDetail
+
 		originalSetupFee := 0.0
 		setupFee := 0.0
 		var setupPromo *PromoDetail
 		if b.instEntry != nil {
 			originalSetupFee = roundCents(b.instEntry.Price / 1e8)
 			setupFee = originalSetupFee
-			if len(b.instEntry.Promotions) > 0 {
-				var active bool
-				setupFee, setupPromo, active = computePromoPriceAndDetail("installation", originalSetupFee, b.instEntry.Promotions[0])
-				if !active {
-					setupPromo = nil
+			for _, rawPromo := range b.instEntry.Promotions {
+				if !isRawPromoActiveAt(rawPromo, now) {
+					continue
+				}
+				candFee, candDetail, active := computePromoPriceAndDetail("installation", originalSetupFee, rawPromo)
+				if !active || candDetail == nil {
+					continue
+				}
+				if candDetail.AutoApplied {
+					if setupPromo == nil || candFee < setupFee {
+						setupFee = candFee
+						setupPromo = candDetail
+					}
+				} else {
+					voucherPromos = append(voucherPromos, *candDetail)
 				}
 			}
 		}
@@ -516,11 +571,21 @@ func ParseTypedPlanPricingModes(pricings []rawCatalogPricing) []PlanPricingMode 
 			commitmentMonths = max(0, b.renewEntry.Commitment)
 			originalPeriodPrice = roundCents(b.renewEntry.Price / 1e8)
 			periodPrice = originalPeriodPrice
-			if len(b.renewEntry.Promotions) > 0 {
-				var active bool
-				periodPrice, renewPromo, active = computePromoPriceAndDetail("renew", originalPeriodPrice, b.renewEntry.Promotions[0])
-				if !active {
-					renewPromo = nil
+			for _, rawPromo := range b.renewEntry.Promotions {
+				if !isRawPromoActiveAt(rawPromo, now) {
+					continue
+				}
+				candPrice, candDetail, active := computePromoPriceAndDetail("renew", originalPeriodPrice, rawPromo)
+				if !active || candDetail == nil {
+					continue
+				}
+				if candDetail.AutoApplied {
+					if renewPromo == nil || candPrice < periodPrice {
+						periodPrice = candPrice
+						renewPromo = candDetail
+					}
+				} else {
+					voucherPromos = append(voucherPromos, *candDetail)
 				}
 			}
 		}
@@ -535,6 +600,7 @@ func ParseTypedPlanPricingModes(pricings []rawCatalogPricing) []PlanPricingMode 
 			originalSetupFee,
 			setupFee,
 			setupPromo,
+			voucherPromos,
 		))
 	}
 
@@ -994,8 +1060,10 @@ func BuildDictionaryFromTypedCatalogs(eco, baremetal, vps *rawCatalogPayload) *C
 			if isRealBaremetal {
 				realPlansMap[planCode] = entry
 				delete(extraPlansMap, planCode)
+				delete(planAliases, planCode)
 			} else if _, alreadyReal := realPlansMap[planCode]; !alreadyReal {
 				extraPlansMap[planCode] = entry
+				delete(planAliases, planCode)
 			}
 
 			isRegional := regionInfo != nil && regionInfo.Code != ""
@@ -1045,18 +1113,33 @@ func (d *CatalogDictionary) CanonicalPlanCode(key string) (string, bool) {
 	if target, ok := d.PlanAliases[low]; ok && target != "" {
 		return target, true
 	}
+	realKeys := make([]string, 0, len(d.RealPlans))
 	for rk := range d.RealPlans {
+		realKeys = append(realKeys, rk)
+	}
+	slices.Sort(realKeys)
+	for _, rk := range realKeys {
 		if strings.EqualFold(rk, low) {
 			return rk, true
 		}
 	}
+	planKeys := make([]string, 0, len(d.Plans))
 	for pk := range d.Plans {
+		planKeys = append(planKeys, pk)
+	}
+	slices.Sort(planKeys)
+	for _, pk := range planKeys {
 		if strings.EqualFold(pk, low) {
 			return pk, true
 		}
 	}
-	for ak, target := range d.PlanAliases {
-		if strings.EqualFold(ak, low) && target != "" {
+	aliasKeys := make([]string, 0, len(d.PlanAliases))
+	for ak := range d.PlanAliases {
+		aliasKeys = append(aliasKeys, ak)
+	}
+	slices.Sort(aliasKeys)
+	for _, ak := range aliasKeys {
+		if target := d.PlanAliases[ak]; strings.EqualFold(ak, low) && target != "" {
 			return target, true
 		}
 	}
@@ -1187,21 +1270,31 @@ func toWireCatalogDictionary(d *CatalogDictionary) *WireCatalogDictionary {
 	}
 }
 
-// writeGzipJSONFile streams JSON directly through gzip.NewWriter into a temp file and atomically renames it,
-// avoiding large contiguous json.Marshal []byte allocations and cutting disk footprint by >95%.
+// writeGzipJSONFile streams JSON directly through gzip.NewWriter into a unique temp file and atomically renames it,
+// avoiding large contiguous json.Marshal []byte allocations, preventing concurrent writer truncation, and cutting disk footprint by >95%.
 func writeGzipJSONFile(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
 		return err
 	}
 	gz, err := gzip.NewWriterLevel(f, gzip.BestSpeed)
 	if err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
 		return err
 	}
 	enc := json.NewEncoder(gz)
@@ -1209,19 +1302,20 @@ func writeGzipJSONFile(path string, v any) error {
 	if err := enc.Encode(v); err != nil {
 		_ = gz.Close()
 		_ = f.Close()
-		_ = os.Remove(tmp)
 		return err
 	}
 	if err := gz.Close(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 func readGzipJSONFile[T any](path string) (T, bool) {

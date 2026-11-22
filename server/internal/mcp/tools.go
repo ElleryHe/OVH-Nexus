@@ -7,12 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"ovh-nexus/server/internal/catalog"
+	"ovh-nexus/server/internal/logger"
+	"ovh-nexus/server/internal/procurement"
 	"ovh-nexus/server/internal/store"
 )
 
@@ -263,7 +267,8 @@ var toolDefinitions = []ToolDefinition{
 				},
 				"pricing_mode":      map[string]any{"type": "string", "enum": []string{"default", "upfront12", "upfront24"}, "default": "default", "description": "Billing / commitment pricing mode ('default', 'upfront12', or 'upfront24')."},
 				"coupon":            map[string]any{"type": "string", "description": "Optional private OVH cart voucher/coupon code (fail-fast if rejected by OVH). Do NOT pass auto-applied catalog campaign IDs here."},
-				"max_monthly_price": map[string]any{"type": "number", "description": "Optional maximum acceptable monthly equivalent price (ex-VAT). Aborts auto-order if live cart quote exceeds this cap."},
+				"max_monthly_price": map[string]any{"type": "number", "description": "Optional maximum acceptable monthly equivalent price (ex-VAT, must be > 0). Aborts auto-order if live cart quote exceeds this cap."},
+				"max_setup_fee":     map[string]any{"type": "number", "description": "Optional maximum acceptable installation/setup fee (ex-VAT, must be > 0). Aborts auto-order if live cart setup fee exceeds this cap."},
 				"profile":           map[string]any{"type": "string", "description": "Optional account profile alias (e.g. 'acct-01')."},
 			},
 			"required":             []string{"plan_code", "datacenters"},
@@ -1891,13 +1896,8 @@ func (s *Service) toolCatalogPromotions(ctx context.Context, args map[string]any
 	if promoReader, ok := s.deps.Catalog.(CatalogPromotionsReader); ok && promoReader != nil {
 		resp, err = promoReader.GetPromotions(ctx, opts)
 	} else {
-		// Standalone fallback: query OVH public catalog directly without API keys.
-		dataDir := ""
-		if s.deps.Config != nil {
-			dataDir = s.deps.Config.DataDir
-		}
-		tmpCat := catalog.NewService(s.store, s.deps.Log, s.deps.OVHPool, dataDir)
-		resp, err = tmpCat.GetPromotions(ctx, opts)
+		// Standalone fallback: reuse lazily-initialized singleton catalog service.
+		resp, err = s.getFallbackCatalog().GetPromotions(ctx, opts)
 	}
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to inspect OVH catalog promotions: %w", err)
@@ -1957,6 +1957,7 @@ func (s *Service) toolCatalogPromotions(ctx context.Context, args map[string]any
 			"originalSetupFee":     p.OriginalSetupFee,
 			"monthlySavings":       p.MonthlySavings,
 			"setupSavings":         p.SetupSavings,
+			"bestPromoMode":        p.BestPromoMode,
 			"hasRecurringPromo":    p.HasRecurringPromo,
 			"hasSetupPromo":        p.HasSetupPromo,
 			"autoApplied":          p.AutoApplied,
@@ -1995,6 +1996,147 @@ func (s *Service) toolCatalogPromotions(ctx context.Context, args map[string]any
 
 // ==================== L2 Tool Handlers (Hardcoded auto_pay=false & quantity=1) ====================
 
+func validateMCPPricingMode(raw string) (string, string, int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed != "" {
+		switch strings.ToLower(trimmed) {
+		case "default", "upfront12", "upfront24", "degressivity12", "degressivity24":
+		default:
+			return "", "", 0, fmt.Errorf("invalid `pricing_mode` %q: allowed values are 'default', 'upfront12', 'upfront24', 'degressivity12', 'degressivity24'", trimmed)
+		}
+	}
+	mode, dur, interval := catalog.NormalizePricingModeAndDuration(trimmed, "")
+	return mode, dur, interval, nil
+}
+
+func parseOptionalPositiveFloat(args map[string]any, key string) (float64, bool, error) {
+	raw, exists := args[key]
+	if !exists || raw == nil {
+		return 0, false, nil
+	}
+	var val float64
+	switch v := raw.(type) {
+	case float64:
+		val = v
+	case float32:
+		val = float64(v)
+	case int:
+		val = float64(v)
+	case int64:
+		val = float64(v)
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, true, fmt.Errorf("`%s` must be a valid positive number", key)
+		}
+		val = f
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return 0, false, nil
+		}
+		f, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return 0, true, fmt.Errorf("`%s` must be a valid positive number", key)
+		}
+		val = f
+	default:
+		return 0, true, fmt.Errorf("`%s` must be a positive number", key)
+	}
+	if math.IsNaN(val) || math.IsInf(val, 0) || val <= 0 {
+		return 0, true, fmt.Errorf("`%s` must be greater than 0 (omit the parameter if no limit is desired)", key)
+	}
+	return val, true, nil
+}
+
+func numericFieldFromMap(m map[string]any, key string) (float64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return v, !math.IsNaN(v) && !math.IsInf(v, 0)
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	case map[string]any:
+		return numericFieldFromMap(v, "value")
+	default:
+		return 0, false
+	}
+}
+
+func extractQuotedPrices(priceMap map[string]any, intervalMonths int) (monthlyExVAT float64, setupFeeExVAT float64, ok bool) {
+	if len(priceMap) == 0 {
+		return 0, 0, false
+	}
+	if intervalMonths < 1 {
+		intervalMonths = 1
+	}
+	if iv, hasIV := numericFieldFromMap(priceMap, "intervalMonths"); hasIV && iv >= 1 {
+		intervalMonths = int(iv)
+	}
+	if sf, hasSF := numericFieldFromMap(priceMap, "setupFeeWithoutTax"); hasSF && sf >= 0 {
+		setupFeeExVAT = math.Round(sf*100) / 100
+	}
+	if m, hasM := numericFieldFromMap(priceMap, "monthlyEquivalentWithoutTax"); hasM && m > 0 {
+		return math.Round(m*100) / 100, setupFeeExVAT, true
+	}
+	if rec, hasRec := numericFieldFromMap(priceMap, "recurringWithoutTax"); hasRec && rec > 0 {
+		return math.Round((rec/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+	}
+	if pricesObj, _ := priceMap["prices"].(map[string]any); pricesObj != nil {
+		if wt, hasWT := numericFieldFromMap(pricesObj, "withoutTax"); hasWT && wt > 0 {
+			return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+		}
+		if wt, hasWT := numericFieldFromMap(pricesObj, "withTax"); hasWT && wt > 0 {
+			return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+		}
+	}
+	if wt, hasWT := numericFieldFromMap(priceMap, "totalWithoutTax"); hasWT && wt > 0 {
+		return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+	}
+	if wt, hasWT := numericFieldFromMap(priceMap, "totalWithTax"); hasWT && wt > 0 {
+		return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+	}
+	return 0, setupFeeExVAT, false
+}
+
+func (s *Service) stripAutoAppliedCouponForMCP(ctx context.Context, rawCoupon string) (cleanCoupon string, strippedCode string) {
+	trimmed := strings.TrimSpace(rawCoupon)
+	if trimmed == "" {
+		return "", ""
+	}
+	promoReader, ok := s.deps.Catalog.(CatalogPromotionsReader)
+	if !ok || promoReader == nil {
+		return trimmed, ""
+	}
+	resp, err := promoReader.GetPromotions(ctx, catalog.PromotionsQueryOptions{})
+	if err != nil || resp == nil {
+		return trimmed, ""
+	}
+	for _, code := range resp.AutoAppliedCodes {
+		if strings.EqualFold(strings.TrimSpace(code), trimmed) {
+			if s.log != nil {
+				s.log.Warn(logger.SourceMCP, "Stripped auto-applied OVH catalog campaign code from MCP coupon argument (applied automatically by OVH)",
+					"coupon", trimmed, "campaign", code)
+			}
+			return "", code
+		}
+	}
+	return trimmed, ""
+}
+
 func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args map[string]any) (map[string]any, string, error) {
 	if s.deps.Procurement == nil {
 		return nil, "", errors.New("procurement service is not configured")
@@ -2008,8 +2150,11 @@ func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args
 		datacenter = "gra"
 	}
 	options := extractStringSlice(args["options"])
-	pricingMode, duration, _ := catalog.NormalizePricingModeAndDuration(asString(args["pricing_mode"]), "")
-	coupon := strings.TrimSpace(asString(args["coupon"]))
+	pricingMode, duration, intervalMonths, modeErr := validateMCPPricingMode(asString(args["pricing_mode"]))
+	if modeErr != nil {
+		return nil, "", modeErr
+	}
+	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, asString(args["coupon"]))
 
 	targets, err := s.resolveTargetAccounts(ctx, cfg, asString(args["profile"]))
 	if err != nil {
@@ -2033,8 +2178,13 @@ func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args
 	if quoteRes != nil && quoteRes.Price != nil {
 		priceInfo = quoteRes.Price
 	}
+	quotedMonthly, quotedSetup, hasQuotedPrice := extractQuotedPrices(priceInfo, intervalMonths)
 
-	q := s.quotes.createWithMode(planCode, datacenter, options, pricingMode, duration, coupon, target.Account.ID, target.Alias, priceInfo)
+	q := s.quotes.createWithQuotePrices(
+		planCode, datacenter, options, pricingMode, duration, coupon,
+		target.Account.ID, target.Alias, priceInfo,
+		quotedMonthly, quotedSetup, hasQuotedPrice,
+	)
 	modelName := planCode
 	if s.deps.Catalog != nil {
 		if resolved, rErr := s.deps.Catalog.ResolveModelName(ctx, planCode); rErr == nil && strings.TrimSpace(resolved) != "" {
@@ -2060,6 +2210,10 @@ func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args
 	if coupon != "" {
 		resMap["coupon"] = coupon
 	}
+	if strippedCode != "" {
+		resMap["couponStripped"] = true
+		resMap["autoAppliedPromoCode"] = strippedCode
+	}
 	return resMap, fmt.Sprintf("Generated 5-min price quote %s for %s @ %s (%s, profile %s).", q.QuoteID, planCode, strings.ToUpper(datacenter), pricingMode, target.Alias), nil
 }
 
@@ -2083,13 +2237,17 @@ func (s *Service) toolOrderCreateUnpaid(ctx context.Context, cfg *store.MCPConfi
 	if !ok {
 		return nil, "", errors.New("invalid or expired `quote_id`. Quotes expire after 5 minutes and can only be used once. Call `order_quote` again")
 	}
+	if !quote.HasQuotedPrice {
+		return nil, "", errors.New("quote did not contain a verifiable price; call `order_quote` again before creating an unpaid order")
+	}
 
 	// Re-verify account is still permitted by the whitelist.
 	if _, err := s.resolveTargetAccounts(ctx, cfg, quote.ProfileAlias); err != nil {
 		return nil, "", err
 	}
 
-	// SECURITY REDLINE: auto_pay and waive_retractation_period are unconditionally false and quantity is unconditionally 1.
+	// SECURITY REDLINE: auto_pay and waive_retractation_period are unconditionally false, quantity is unconditionally 1,
+	// and live checkout price is strictly re-verified against the quoted ex-VAT monthly price and setup fee.
 	req := UnpaidOrderRequest{
 		TaskID:                  "mcp-order-" + randomHex(4),
 		AccountID:               quote.AccountID,
@@ -2099,6 +2257,9 @@ func (s *Service) toolOrderCreateUnpaid(ctx context.Context, cfg *store.MCPConfi
 		PricingMode:             quote.PricingMode,
 		Duration:                quote.Duration,
 		Coupon:                  quote.Coupon,
+		MaxMonthlyPrice:         quote.QuotedMonthlyExVAT,
+		MaxSetupFee:             quote.QuotedSetupFeeExVAT,
+		EnforceQuoteCap:         true,
 		Quantity:                1,
 		AutoPay:                 false,
 		WaiveRetractationPeriod: false,
@@ -2109,6 +2270,9 @@ func (s *Service) toolOrderCreateUnpaid(ctx context.Context, cfg *store.MCPConfi
 	orderRes, err := s.deps.Procurement.CreateUnpaidOrder(ctx, req)
 	mu.Unlock()
 	if err != nil {
+		if errors.Is(err, procurement.ErrPriceChangedSinceQuote) || strings.Contains(err.Error(), "PRICE_CHANGED_SINCE_QUOTE") {
+			return nil, "", fmt.Errorf("PRICE_CHANGED_SINCE_QUOTE: live price for %s @ %s increased above quoted price (monthly<=%.2f, setup<=%.2f): %w. Call `order_quote` again to confirm the new price with the user", quote.PlanCode, strings.ToUpper(quote.Datacenter), quote.QuotedMonthlyExVAT, quote.QuotedSetupFeeExVAT, err)
+		}
 		return nil, "", fmt.Errorf("could not place unpaid order for %s @ %s: %w. Consider using `queue_add` to watch for restock", quote.PlanCode, strings.ToUpper(quote.Datacenter), err)
 	}
 
@@ -2168,12 +2332,20 @@ func (s *Service) toolQueueAdd(ctx context.Context, cfg *store.MCPConfig, args m
 		}
 	}
 	options := extractStringSlice(args["options"])
-	pricingMode, duration, _ := catalog.NormalizePricingModeAndDuration(asString(args["pricing_mode"]), "")
-	coupon := strings.TrimSpace(asString(args["coupon"]))
-	maxMonthlyPrice := asFloat(args["max_monthly_price"], 0)
-	if maxMonthlyPrice < 0 {
-		maxMonthlyPrice = 0
+	pricingMode, duration, _, modeErr := validateMCPPricingMode(asString(args["pricing_mode"]))
+	if modeErr != nil {
+		return nil, "", modeErr
 	}
+	maxMonthlyPrice, _, mErr := parseOptionalPositiveFloat(args, "max_monthly_price")
+	if mErr != nil {
+		return nil, "", mErr
+	}
+	maxSetupFee, _, sErr := parseOptionalPositiveFloat(args, "max_setup_fee")
+	if sErr != nil {
+		return nil, "", sErr
+	}
+	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, asString(args["coupon"]))
+
 	if planCode == "" || len(dcs) == 0 {
 		return nil, "", errors.New("both `plan_code` and a non-empty `datacenters` list are required")
 	}
@@ -2197,6 +2369,7 @@ func (s *Service) toolQueueAdd(ctx context.Context, cfg *store.MCPConfig, args m
 		Duration:                duration,
 		Coupon:                  coupon,
 		MaxMonthlyPrice:         maxMonthlyPrice,
+		MaxSetupFee:             maxSetupFee,
 		Quantity:                1,
 		MaxRetryCount:           50,
 		Status:                  "running",
@@ -2223,8 +2396,15 @@ func (s *Service) toolQueueAdd(ctx context.Context, cfg *store.MCPConfig, args m
 	if coupon != "" {
 		resMap["coupon"] = coupon
 	}
+	if strippedCode != "" {
+		resMap["couponStripped"] = true
+		resMap["autoAppliedPromoCode"] = strippedCode
+	}
 	if maxMonthlyPrice > 0 {
 		resMap["maxMonthlyPrice"] = maxMonthlyPrice
+	}
+	if maxSetupFee > 0 {
+		resMap["maxSetupFee"] = maxSetupFee
 	}
 	return resMap, fmt.Sprintf("Added Auto-Order Queue task %s for %s @ %s (%s, auto_pay=false, quantity=1).", created.ID, planCode, strings.ToUpper(strings.Join(dcs, ",")), pricingMode), nil
 }

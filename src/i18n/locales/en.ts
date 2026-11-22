@@ -148,6 +148,7 @@ export const enV132Translations: Record<string, string> = {
   'promoDebug.missedModeWarn': 'Current mode "{currentMode}" misses this plan\'s promo — switch to {eligibleModes} to activate {code}',
   'promoDebug.switchToMode': 'Switch to {mode}',
   'promoDebug.autoCouponWarn': '"{code}" is an automatic OVH catalog promotion (context=standard). Leave the Coupon field empty — submitting it as a coupon triggers INVALID_COUPON.',
+  'promoDebug.autoCouponStripped': 'Automatically cleared auto-applied catalog campaign "{code}" (applied automatically by OVH) before submitting.',
   'promoDebug.clearAutoCoupon': 'Clear Campaign ID',
   'promoDebug.verifyBtn': 'Verify in Cart',
   'promoDebug.verifying': 'Probing OVH Cart...',

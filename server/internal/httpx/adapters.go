@@ -383,14 +383,17 @@ func (a *procurementAdapter) CreateUnpaidOrder(ctx context.Context, req mcp.Unpa
 		return nil, errors.New("procurement service is not configured")
 	}
 	res, err := a.proc.CreateUnpaidOrder(ctx, procurement.UnpaidOrderRequest{
-		TaskID:      req.TaskID,
-		AccountID:   req.AccountID,
-		PlanCode:    req.PlanCode,
-		Datacenter:  req.Datacenter,
-		Options:     req.Options,
-		PricingMode: req.PricingMode,
-		Duration:    req.Duration,
-		Coupon:      req.Coupon,
+		TaskID:          req.TaskID,
+		AccountID:       req.AccountID,
+		PlanCode:        req.PlanCode,
+		Datacenter:      req.Datacenter,
+		Options:         req.Options,
+		PricingMode:     req.PricingMode,
+		Duration:        req.Duration,
+		Coupon:          req.Coupon,
+		MaxMonthlyPrice: req.MaxMonthlyPrice,
+		MaxSetupFee:     req.MaxSetupFee,
+		EnforceQuoteCap: req.EnforceQuoteCap,
 	})
 	if err != nil {
 		return nil, err

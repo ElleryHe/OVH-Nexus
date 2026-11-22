@@ -73,6 +73,7 @@ type CatalogPromoPlan struct {
 	OriginalSetupFee     float64           `json:"originalSetupFee"`
 	MonthlySavings       float64           `json:"monthlySavings"`
 	SetupSavings         float64           `json:"setupSavings"`
+	BestPromoMode        string            `json:"bestPromoMode,omitempty"`
 	HasRecurringPromo    bool              `json:"hasRecurringPromo"`
 	HasSetupPromo        bool              `json:"hasSetupPromo"`
 	AutoApplied          bool              `json:"autoApplied"`
@@ -190,14 +191,16 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 			continue
 		}
 
-		// Record all auto-applied codes globally BEFORE applying user filters so AutoAppliedCodes is always complete.
+		// Record all active auto-applied codes globally BEFORE applying user filters so AutoAppliedCodes is always complete.
 		for _, m := range entry.PricingModes {
 			for _, pd := range []*PromoDetail{m.RenewPromo, m.SetupPromo} {
-				if pd != nil && pd.Code != "" && pd.AutoApplied {
+				if isPromoDetailActiveAt(pd, now) && pd.Code != "" && pd.AutoApplied {
 					autoCodesSet[pd.Code] = struct{}{}
 				}
 			}
-			if m.HasPromo && m.PromoCode != "" && (m.AutoApplied || m.PromoContext == "" || strings.EqualFold(m.PromoContext, "standard")) {
+			if m.RenewPromo == nil && m.SetupPromo == nil && m.HasPromo && m.PromoCode != "" &&
+				isPromoWindowAndQtyActive(m.PromoStartDate, m.PromoEndDate, false, nil, now) &&
+				(m.AutoApplied || m.PromoContext == "" || strings.EqualFold(m.PromoContext, "standard")) {
 				autoCodesSet[m.PromoCode] = struct{}{}
 			}
 		}
@@ -222,33 +225,96 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 			}
 		}
 
+		var monthlySavings, setupSavings float64
+		bestPromoMode := ""
+		bestPromoScore := -1.0
+		var fallbackBadge, fallbackDesc string
+
 		for _, m := range entry.PricingModes {
-			modeHasRec := m.RenewPromo != nil || (m.OriginalPeriodPrice > 0 && m.PeriodPrice < m.OriginalPeriodPrice)
-			modeHasSetup := m.SetupPromo != nil || (m.OriginalSetupFee > 0 && m.SetupFee < m.OriginalSetupFee)
+			var activeRenew, activeSetup *PromoDetail
+			if isPromoDetailActiveAt(m.RenewPromo, now) {
+				activeRenew = m.RenewPromo
+			}
+			if isPromoDetailActiveAt(m.SetupPromo, now) {
+				activeSetup = m.SetupPromo
+			}
+			var activeVouchers []*PromoDetail
+			for i := range m.VoucherPromos {
+				vp := &m.VoucherPromos[i]
+				if isPromoDetailActiveAt(vp, now) {
+					activeVouchers = append(activeVouchers, vp)
+				}
+			}
+
+			legacyActive := m.RenewPromo == nil && m.SetupPromo == nil && m.HasPromo &&
+				isPromoWindowAndQtyActive(m.PromoStartDate, m.PromoEndDate, false, nil, now)
+			modeHasRec := activeRenew != nil || (legacyActive && m.OriginalPeriodPrice > 0 && m.PeriodPrice < m.OriginalPeriodPrice)
+			modeHasSetup := activeSetup != nil || (legacyActive && m.OriginalSetupFee > 0 && m.SetupFee < m.OriginalSetupFee)
+			for _, vp := range activeVouchers {
+				if vp.Capacity == "renew" {
+					modeHasRec = true
+				} else if vp.Capacity == "installation" {
+					modeHasSetup = true
+				}
+			}
+
 			if modeHasRec {
 				hasRecurring = true
 			}
 			if modeHasSetup {
 				hasSetup = true
 			}
-			if m.HasPromo || modeHasRec || modeHasSetup {
+			if modeHasRec || modeHasSetup {
 				supportedPromoModes = append(supportedPromoModes, m.Mode)
-				if m.RenewPromo != nil {
-					addPlanPromoCode(m.RenewPromo.Code)
-					if m.RenewPromo.AutoApplied {
+				if activeRenew != nil {
+					addPlanPromoCode(activeRenew.Code)
+					if activeRenew.AutoApplied {
 						hasAnyAuto = true
 					}
 				}
-				if m.SetupPromo != nil {
-					addPlanPromoCode(m.SetupPromo.Code)
-					if m.SetupPromo.AutoApplied {
+				if activeSetup != nil {
+					addPlanPromoCode(activeSetup.Code)
+					if activeSetup.AutoApplied {
 						hasAnyAuto = true
 					}
 				}
-				if len(planPromoCodes) == 0 && m.PromoCode != "" {
+				for _, vp := range activeVouchers {
+					addPlanPromoCode(vp.Code)
+				}
+				if len(planPromoCodes) == 0 && legacyActive && m.PromoCode != "" {
 					addPlanPromoCode(m.PromoCode)
 					if m.AutoApplied || m.PromoContext == "" || strings.EqualFold(m.PromoContext, "standard") {
 						hasAnyAuto = true
+					}
+				}
+
+				// Compute savings across ALL promoted modes (so commitment-only promos never report €0 savings).
+				ms := 0.0
+				ss := 0.0
+				if activeRenew != nil || (legacyActive && m.OriginalMonthlyPrice > m.MonthlyEquivalentPrice) {
+					ms = math.Max(0, roundCents(m.OriginalMonthlyPrice-m.MonthlyEquivalentPrice))
+				}
+				if activeSetup != nil || (legacyActive && m.OriginalSetupFee > m.SetupFee) {
+					ss = math.Max(0, roundCents(m.OriginalSetupFee-m.SetupFee))
+				}
+				if ms > monthlySavings {
+					monthlySavings = ms
+				}
+				if ss > setupSavings {
+					setupSavings = ss
+				}
+				score := ms
+				if score <= 0 {
+					score = ss
+				}
+				if bestPromoMode == "" || score > bestPromoScore {
+					bestPromoMode = m.Mode
+					bestPromoScore = score
+					if m.PromoBadge != "" {
+						fallbackBadge = m.PromoBadge
+					}
+					if m.PromoDescription != "" {
+						fallbackDesc = m.PromoDescription
 					}
 				}
 			} else {
@@ -294,11 +360,12 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 			listingState = "announced"
 		}
 
-		// Check if any hardware upgrade addon on this plan carries its own catalog promotion.
+		// Check if any hardware upgrade addon on this plan carries its own active catalog promotion.
 		addonsDiscounted := false
 		for _, am := range entry.AddonModePrices {
 			for _, m := range am {
-				if m.HasPromo {
+				if isPromoDetailActiveAt(m.RenewPromo, now) || isPromoDetailActiveAt(m.SetupPromo, now) ||
+					(m.RenewPromo == nil && m.SetupPromo == nil && m.HasPromo && isPromoWindowAndQtyActive(m.PromoStartDate, m.PromoEndDate, false, nil, now)) {
 					addonsDiscounted = true
 					break
 				}
@@ -309,21 +376,26 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 		}
 
 		planSum := summarizePricingModes(entry.PricingModes)
-		monthlySavings := math.Max(0, roundCents(planSum.OriginalMonthlyPrice-planSum.MonthlyPrice))
-		setupSavings := math.Max(0, roundCents(planSum.OriginalSetupFee-planSum.SetupFee))
 		planCurr := nonEmpty(entry.Currency, defaultCurr)
 
 		// Aggregate into campaign buckets.
 		for _, m := range entry.PricingModes {
-			details := make([]*PromoDetail, 0, 2)
-			if m.RenewPromo != nil {
+			details := make([]*PromoDetail, 0, 2+len(m.VoucherPromos))
+			if isPromoDetailActiveAt(m.RenewPromo, now) {
 				details = append(details, m.RenewPromo)
 			}
-			if m.SetupPromo != nil {
+			if isPromoDetailActiveAt(m.SetupPromo, now) {
 				details = append(details, m.SetupPromo)
 			}
+			for i := range m.VoucherPromos {
+				vp := &m.VoucherPromos[i]
+				if isPromoDetailActiveAt(vp, now) {
+					details = append(details, vp)
+				}
+			}
 			// Fallback if loaded from a legacy cache entry lacking RenewPromo/SetupPromo pointers.
-			if len(details) == 0 && m.HasPromo && m.PromoCode != "" {
+			if len(details) == 0 && m.RenewPromo == nil && m.SetupPromo == nil && m.HasPromo && m.PromoCode != "" &&
+				isPromoWindowAndQtyActive(m.PromoStartDate, m.PromoEndDate, false, nil, now) {
 				capKind := "renew"
 				savings := math.Max(0, roundCents(m.OriginalPeriodPrice-m.PeriodPrice))
 				if savings <= 0 && m.OriginalSetupFee > m.SetupFee {
@@ -361,11 +433,9 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 				if !ok {
 					badge := formatPromoDetailBadge(pd)
 					var remHours *float64
-					if pd.EndDate != "" {
-						if tEnd, parseErr := time.Parse(time.RFC3339, pd.EndDate); parseErr == nil {
-							h := math.Round(tEnd.Sub(now).Hours()*10) / 10
-							remHours = &h
-						}
+					if tEnd, parseErr := parsePromoTimestamp(pd.EndDate); parseErr {
+						h := math.Round(tEnd.Sub(now).Hours()*10) / 10
+						remHours = &h
 					}
 					acc = &campAcc{
 						camp: CatalogPromoCampaign{
@@ -406,8 +476,13 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 				if len(inStockDCs) > 0 {
 					acc.inStockPlans[pc] = struct{}{}
 				}
-				if pd.DiscountAmount > acc.camp.MaxSavingsAmount {
-					acc.camp.MaxSavingsAmount = pd.DiscountAmount
+				// Normalize recurring campaign savings to monthly equivalent so 24m upfront and 1m monthly compare fairly.
+				savingsAmt := pd.DiscountAmount
+				if pd.Capacity == "renew" && m.IntervalMonths > 1 {
+					savingsAmt = roundCents(pd.DiscountAmount / float64(m.IntervalMonths))
+				}
+				if savingsAmt > acc.camp.MaxSavingsAmount {
+					acc.camp.MaxSavingsAmount = savingsAmt
 				}
 				if acc.camp.Description == "" && pd.Description != "" {
 					acc.camp.Description = pd.Description
@@ -438,12 +513,13 @@ func (s *Service) GetPromotions(ctx context.Context, opts PromotionsQueryOptions
 			OriginalSetupFee:     planSum.OriginalSetupFee,
 			MonthlySavings:       monthlySavings,
 			SetupSavings:         setupSavings,
+			BestPromoMode:        bestPromoMode,
 			HasRecurringPromo:    hasRecurring,
 			HasSetupPromo:        hasSetup,
 			AutoApplied:          hasAnyAuto,
 			PromoCodes:           planPromoCodes,
-			PromoBadge:           planSum.PromoBadge,
-			PromoDescription:     planSum.PromoDescription,
+			PromoBadge:           nonEmpty(planSum.PromoBadge, fallbackBadge),
+			PromoDescription:     nonEmpty(planSum.PromoDescription, fallbackDesc),
 			SupportedPromoModes:  supportedPromoModes,
 			MissedPromoModes:     missedPromoModes,
 			AddonsDiscounted:     addonsDiscounted,
@@ -572,6 +648,18 @@ func (s *Service) HandleGetPromotions(w http.ResponseWriter, r *http.Request) {
 	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
 	zoneParam := nonEmpty(q.Get("subsidiary"), q.Get("zone"))
 	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), zoneParam)
+	forceRefresh := parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("force"))
+	if forceRefresh {
+		if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":      "Refresh throttled",
+				"message":    fmt.Sprintf("Catalog refresh is rate-limited; retry in %ds", retryAfter),
+				"retryAfter": retryAfter,
+			})
+			return
+		}
+	}
 
 	res, err := s.GetPromotions(r.Context(), PromotionsQueryOptions{
 		AccountID:    accountID,
@@ -581,7 +669,7 @@ func (s *Service) HandleGetPromotions(w http.ResponseWriter, r *http.Request) {
 		Range:        q.Get("range"),
 		PromoType:    q.Get("promoType"),
 		OnlyInStock:  parseBoolQuery(q.Get("onlyInStock")),
-		ForceRefresh: parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("force")),
+		ForceRefresh: forceRefresh,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{

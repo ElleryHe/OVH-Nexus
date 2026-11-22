@@ -148,6 +148,7 @@ export const frV132Translations: Record<string, string> = {
   'promoDebug.missedModeWarn': 'Le mode « {currentMode} » n’active pas cette promo ; passez en {eligibleModes} pour bénéficier de {code}',
   'promoDebug.switchToMode': 'Passer en {mode}',
   'promoDebug.autoCouponWarn': '« {code} » est une promotion catalogue automatique (context=standard). Laissez le champ Coupon vide pour éviter une erreur INVALID_COUPON.',
+  'promoDebug.autoCouponStripped': 'Le code de campagne automatique « {code} » a été retiré avant l’envoi (OVH applique déjà la remise automatiquement).',
   'promoDebug.clearAutoCoupon': 'Vider le champ',
   'promoDebug.verifyBtn': 'Tester au panier',
   'promoDebug.verifying': 'Vérification panier...',

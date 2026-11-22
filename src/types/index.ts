@@ -44,6 +44,7 @@ export interface PlanPricingMode {
   promoEndDate?: string;
   renewPromo?: PromoDetail | null;
   setupPromo?: PromoDetail | null;
+  voucherPromos?: PromoDetail[];
 }
 
 export interface CatalogPromoCampaign {
@@ -86,6 +87,7 @@ export interface CatalogPromoPlan {
   originalSetupFee: number;
   monthlySavings: number;
   setupSavings: number;
+  bestPromoMode?: string;
   hasRecurringPromo: boolean;
   hasSetupPromo: boolean;
   autoApplied: boolean;
@@ -148,6 +150,17 @@ export interface ServerPriceProbeResult {
       tax?: number | null;
       currencyCode?: string;
     };
+    items?: Array<{
+      itemId?: unknown;
+      planCode?: string;
+      description?: string;
+      prices?: {
+        withTax?: number | null;
+        withoutTax?: number | null;
+        tax?: number | null;
+        currencyCode?: string;
+      };
+    }>;
     details?: CartPriceLine[];
   } | null;
 }
@@ -352,6 +365,7 @@ export interface QueueItem {
   configLabel?: string;
   currency?: string;
   maxMonthlyPrice?: number;
+  maxSetupFee?: number;
   pricingMode?: string;
   duration?: string;
   coupon?: string;
@@ -360,11 +374,13 @@ export interface QueueItem {
   updatedAt: string;
   retryInterval: number;
   retryCount: number;
+  maxRetryCount?: number;
   accountId?: string;
   quantity?: number;
   purchased?: number;
   failureCount?: number;
   nextAttemptAt?: number;
+  lastError?: string;
   auto_pay?: boolean;
   waive_retractation_period?: boolean;
   source?: 'manual' | 'stock-monitor' | 'mcp' | string;
@@ -379,6 +395,7 @@ export interface QuickOrderRequest {
   configLabel?: string;
   currency?: string;
   maxMonthlyPrice?: number;
+  maxSetupFee?: number;
   pricingMode?: string;
   duration?: string;
   coupon?: string;

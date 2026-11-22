@@ -34,7 +34,19 @@ All notable changes to **OVH Nexus** are documented on this page following the [
   - Added canonical **Gzip-stream SHA-256 short-circuiting** with partial-outage protection on 120-second `SKUWatcher` refreshes so unchanged upstream catalogs execute zero JSON decoding, zero dictionary rebuilds, and zero disk writes.
   - Deduplicated `CatalogDictionary` via lightweight `PlanAliases`, stripped non-hardware software/OS license addon families (`application-license`, `distribution-license`), and served a wire-slimmed projection on `GET /api/catalog/dictionary` shrinking responses from **56 MB to ~0.5 MB** (restoring browser `localStorage` caching).
   - Migrated disk caches to streaming atomic `.json.gz` (`catalog_dict_v4_*.json.gz` & `servers_v4_*.json.gz`), reducing `/data/cache/` from **~95 MB to < 1 MB** with automatic startup pruning of legacy `v1`/`v2`/`v3`/`vps_*.json` files.
-  - Configured default `GOMEMLIMIT=256MiB` and `GOGC=50` in `Dockerfile` and `main.go` (overridable via environment variables), paired with `debug.FreeOSMemory()` after cold catalog rebuilds.
+  - Configured default `GOMEMLIMIT=256MiB` and `GOGC=50` in `Dockerfile` and `main.go` (overridable via environment variables), paired with throttled asynchronous `debug.FreeOSMemory()` after cold catalog rebuilds.
+
+### Security & Reliability Hardening
+
+- **Catalog Concurrency, Disk Atomicity & Promotion Rule Hardening**:
+  - Eliminated in-place `UpdatedAt` pointer mutation on SHA-256 cache hits via immutable shallow copies, persisted upstream SHA-256 digests in `.json.gz` disk caches for cold-start short-circuiting and partial-outage protection across `GetBaremetalDictionary` and `buildServerPlans`, isolated bare-metal (`catalog_bmdict_v4_*`) from full (`catalog_dict_v4_*`) dictionaries, and switched `writeGzipJSONFile` to unique `os.CreateTemp` files.
+  - Added explicit `ErrResponseTooLarge` payload guards, gzip CRC32 trailer verification, subsidiary zone whitelisting, deterministic alias resolution, active time/quantity filtering for promotions, `voucherPromos` separation, commitment-only `monthlySavings`/`bestPromoMode` calculation, and monthly-normalized campaign `maxSavingsAmount`.
+- **Procurement & MCP Price Re-Verification, In-Flight Locking & Auto-Promo Stripping**:
+  - Enforced strict live-cart monthly and setup-fee re-verification between MCP `order_quote` and `order_create_unpaid` (`PRICE_CHANGED_SINCE_QUOTE` on increases > `€0.01`), added `max_setup_fee` cap support, rejected explicit `<= 0` price limits and invalid `pricing_mode` inputs, and distinguished transient `429`/`5xx` coupon errors from permanent `INVALID_COUPON` rejections.
+  - Added per-configuration in-flight locking (`accountID + planCode + options/mode/coupon`) with `"any"` datacenter wildcard deduplication and unified frontend/backend auto-stripping of auto-applied catalog campaign IDs.
+- **Session Revocation, SSE Deadlines, Container & HTTP Hardening**:
+  - Implemented persistent `session_epoch` + `API_SECRET_KEY` fingerprint (`keyFp`) session revocation on logout, 2FA toggles, recovery code regeneration, and key rotation; bounded SSE log streams with `10s` per-frame write deadlines, a `32`-subscriber cap (`503`), clean shutdown closure, and URL-encoded secret redaction.
+  - Fixed wildcard CORS credential reflection, added cookie CSRF `Origin`/`Sec-Fetch-Site` validation (exempting Bearer MCP & API-key callers), emitted HSTS when `COOKIE_SECURE=true`, removed `GET /api/servers/{planCode}/price`, added 30s manual refresh/clear throttling, sanitized `/api/cache/info` paths, switched container entrypoint to symlink-safe `chown -RP`, encoded SQLite PRAGMAs into the URI DSN, updated the Dockerfile builder to `golang:1.27.4-alpine`, and added `AbortController` probe guards, 12h browser dictionary expiry, live `endDate` countdowns, and `https://`-only order links in the WebUI.
 
 ---
 

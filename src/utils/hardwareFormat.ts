@@ -784,10 +784,20 @@ export function formatOptionCode(
   return code;
 }
 
+const DICT_TTL_SECONDS = 12 * 3600;
+
+function isDictFresh(d: CatalogDictionary | null | undefined): d is CatalogDictionary {
+  return Boolean(
+    d &&
+      d.plans &&
+      Date.now() / 1000 - (d.updatedAt || 0) < DICT_TTL_SECONDS
+  );
+}
+
 export async function loadCatalogDictionary(
   forceRefresh: boolean = false
 ): Promise<CatalogDictionary | null> {
-  if (!forceRefresh && memoryDict) {
+  if (!forceRefresh && isDictFresh(memoryDict)) {
     return memoryDict;
   }
   if (!forceRefresh) {
@@ -795,12 +805,9 @@ export async function loadCatalogDictionary(
       const cached = localStorage.getItem(STORAGE_KEY);
       if (cached) {
         const parsed = JSON.parse(cached) as CatalogDictionary;
-        if (
-          parsed &&
-          parsed.plans &&
-          Date.now() / 1000 - (parsed.updatedAt || 0) < 12 * 3600
-        ) {
+        if (isDictFresh(parsed)) {
           memoryDict = parsed;
+          return memoryDict;
         }
       }
     } catch {
@@ -834,12 +841,15 @@ export async function loadCatalogDictionary(
 
 export function useCatalogDictionary() {
   const [dict, setDict] = useState<CatalogDictionary | null>(() => {
-    if (memoryDict) return memoryDict;
+    if (isDictFresh(memoryDict)) return memoryDict;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        memoryDict = JSON.parse(raw);
-        return memoryDict;
+        const parsed = JSON.parse(raw) as CatalogDictionary;
+        if (isDictFresh(parsed)) {
+          memoryDict = parsed;
+          return memoryDict;
+        }
       }
     } catch {
       // ignore

@@ -1612,3 +1612,75 @@ func TestE2EV132AnnouncedModelsListedAtAndSKUChanges(t *testing.T) {
 		t.Fatalf("expected recentChanges to include 27skle01 with saleStarted=true, got %+v", skuRes["recentChanges"])
 	}
 }
+
+func TestSecurityHotfixCORSWildcardCSRFAndHSTS(t *testing.T) {
+	// 1. CORS wildcard "*" MUST NOT reflect Origin and MUST NOT emit Access-Control-Allow-Credentials: true.
+	hWildcard := CORSMiddleware([]string{"*"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	reqWild := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	reqWild.Header.Set("Origin", "https://evil.example")
+	recWild := httptest.NewRecorder()
+	hWildcard.ServeHTTP(recWild, reqWild)
+	if got := recWild.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("expected wildcard ACAO '*', got %q", got)
+	}
+	if creds := recWild.Header().Get("Access-Control-Allow-Credentials"); creds != "" {
+		t.Fatalf("expected NO Access-Control-Allow-Credentials on wildcard CORS, got %q", creds)
+	}
+
+	// 2. HSTS emitted iff cookieSecure=true.
+	recHSTSOff := httptest.NewRecorder()
+	SecurityHeadersWithConfig(false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })).
+		ServeHTTP(recHSTSOff, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if recHSTSOff.Header().Get("Strict-Transport-Security") != "" {
+		t.Fatalf("expected no HSTS when cookieSecure=false")
+	}
+	recHSTSOn := httptest.NewRecorder()
+	SecurityHeadersWithConfig(true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })).
+		ServeHTTP(recHSTSOn, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if !strings.Contains(recHSTSOn.Header().Get("Strict-Transport-Security"), "max-age=31536000") {
+		t.Fatalf("expected HSTS header when cookieSecure=true, got %q", recHSTSOn.Header().Get("Strict-Transport-Security"))
+	}
+
+	// 3. CSRF middleware blocks cross-origin cookie POST while allowing same-origin and Bearer MCP.
+	hCSRF := CSRFProtectionMiddleware([]string{"https://trusted.example"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	reqEvilOrigin := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqEvilOrigin.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+	reqEvilOrigin.Header.Set("Origin", "https://evil.example")
+	recEvilOrigin := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recEvilOrigin, reqEvilOrigin)
+	if recEvilOrigin.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 CSRF_ORIGIN_REJECTED for cross-origin cookie POST, got %d", recEvilOrigin.Code)
+	}
+
+	reqCrossSite := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqCrossSite.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+	reqCrossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	recCrossSite := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recCrossSite, reqCrossSite)
+	if recCrossSite.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 CSRF_CROSS_SITE_REJECTED for cross-site Sec-Fetch-Site, got %d", recCrossSite.Code)
+	}
+
+	reqSameOrigin := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqSameOrigin.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+	reqSameOrigin.Header.Set("Origin", "https://panel.example")
+	recSameOrigin := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recSameOrigin, reqSameOrigin)
+	if recSameOrigin.Code != http.StatusOK {
+		t.Fatalf("expected 200 for same-origin cookie POST, got %d", recSameOrigin.Code)
+	}
+
+	reqMCPBearer := httptest.NewRequest(http.MethodPost, "https://panel.example/api/mcp", nil)
+	reqMCPBearer.Header.Set("Origin", "https://any-mcp-client.example")
+	reqMCPBearer.Header.Set("Authorization", "Bearer nxs_mcp_testtoken")
+	recMCPBearer := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recMCPBearer, reqMCPBearer)
+	if recMCPBearer.Code != http.StatusOK {
+		t.Fatalf("expected Bearer MCP POST to bypass browser CSRF check, got %d", recMCPBearer.Code)
+	}
+}

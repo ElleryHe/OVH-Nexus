@@ -34,7 +34,22 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
   - 在 120 秒高频 `SKUWatcher` 刷新中引入 **Gzip 流式 SHA-256 摘要短路**与局部超时防覆盖保护：上游目录未变更时实现 **0 次 JSON 解析、0 次字典重建、0 次磁盘写入**，同时完整保留 120 秒上新监测灵敏度。
   - 引入 `PlanAliases` 消除字典 5 倍结构体值拷贝，入库前剔除占比 85%+ 的软件/系统许可证家族（`application-license` / `distribution-license`），并在 `GET /api/catalog/dictionary` 输出轻量浏览器投影，将接口体积从 **56 MB 压降至 ~0.5 MB**（彻底恢复浏览器 `localStorage` 本地缓存，升级至 `ovh_nexus_catalog_dict_v4`）。
   - 磁盘缓存升级为流式原子写入的 `.json.gz`（`catalog_dict_v4_*.json.gz` 与 `servers_v4_*.json.gz`），`/data/cache/` 总占用从 **~95 MB 压降至 < 1 MB**，启动时自动清理历史 `v1`/`v2`/`v3`/`vps_*.json` 遗留文件。
-  - 在 `Dockerfile` 与 `main.go` 双层默认注入 `GOMEMLIMIT=256MiB` 与 `GOGC=50`（支持 `.env` 环境变量覆盖），并在冷重建后主动调用 `debug.FreeOSMemory()` 归还物理内存页。
+  - 在 `Dockerfile` 与 `main.go` 双层默认注入 `GOMEMLIMIT=256MiB` 与 `GOGC=50`（支持 `.env` 环境变量覆盖），并在冷重建后以节流异步方式调用 `debug.FreeOSMemory()` 归还物理内存页。
+
+### 安全加固与稳定性修复 (Security & Reliability Hardening)
+
+- **目录并发安全、原子落盘与促销规则校准**：
+  - 修复 SHA-256 短路路径原地修改共享 `*CatalogDictionary.UpdatedAt` 的数据竞争，改为不可变浅拷贝替换；将上游 SHA-256 摘要持久化至 `.json.gz`，实现重启后冷启动即时短路与 `buildServerPlans` 单边故障防覆盖。
+  - 将裸金属字典独立至 `bm:` 缓存键与 `catalog_bmdict_v4_*.json.gz`（避免遮蔽全量字典中的 VPS 条目与别名），`writeGzipJSONFile` 改用唯一 `os.CreateTemp` 临时文件防止并发截断。
+  - 公开目录流式读取显式拦截超限截断（`ErrResponseTooLarge`）与 Gzip CRC32 校验，补充子站白名单校验与确定性别名回退；过滤已过期/未开始/配额耗尽的促销活动，拆分 `voucherPromos` 不计入自动到手价，修复承诺期专属活动 `monthlySavings` 为 0 问题并按月均折算活动立省金额。
+- **采购与 MCP 报价重验、并发飞行锁与自动活动码兜底**：
+  - MCP `order_quote` → `order_create_unpaid` 补齐严格核价重验：结算前同时校验实时购物车不含税月均价与初装费，涨价超过 `€0.01` 即中止并返回 `PRICE_CHANGED_SINCE_QUOTE`。
+  - `queue_add` 与队列任务新增 `max_setup_fee`（SQLite 自动列迁移），严格拒绝显式 `<= 0` 限价与非法 `pricing_mode`；区分绑券接口的 `429`/`5xx` 瞬态错误（保持退避重试）与 `4xx` 永久拒券（`INVALID_COUPON`）。
+  - 新增按 `accountID + planCode + 配置指纹(options+mode+coupon)` 细粒度飞行锁并支持 `any` 机房通配防重；前后端（QuickOrder / 队列 / 快速监控 / MCP）统一自动剥离误填的目录自动活动码并记录 `WARNING` / Toast 提示。
+- **会话即时吊销、SSE 防泄漏、容器与 HTTP 边界加固**：
+  - 新增持久化 `session_epoch` 与 `API_SECRET_KEY` HMAC 指纹（`keyFp`）：登出、2FA 启停、恢复码重置及更换主密钥重启均立即吊销其他设备会话。
+  - 日志 SSE 流（`/api/logs/stream`）增加每帧 `10s` 写超时、并发订阅上限（`32`，超限返回 `503`）、停机统一关闭以及 URL 编码敏感词脱敏。
+  - 修复通配 `CORS_ORIGINS=*` 反射源与凭据头问题，为 Cookie 非幂等请求补齐 `Origin`/`Sec-Fetch-Site` CSRF 校验（放行 MCP Bearer 与 API Key），`COOKIE_SECURE=true` 时下发 HSTS；移除带副作用的 `GET /api/servers/{planCode}/price`，为手动刷新与清缓存增加 30 秒节流，`/api/cache/info` 隐去宿主机绝对路径；容器入口改用不追踪软链的 `chown -RP`，SQLite PRAGMA 编码进 DSN，Dockerfile 升至 `golang:1.27.4-alpine`；前端补齐实测询价 `AbortController` 竞态隔离、浏览器内存字典 12 小时过期、横幅基于 `endDate` 动态倒计时以及历史订单外链 `https://` 白名单。
 
 ---
 

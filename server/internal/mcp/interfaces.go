@@ -96,12 +96,15 @@ type UnpaidOrderRequest struct {
 	PlanCode                string
 	Datacenter              string
 	Options                 []string
-	PricingMode             string // "default", "upfront12", "upfront24"
-	Duration                string // "P1M", "P12M", "P24M"
-	Coupon                  string // optional private OVH cart voucher code
-	Quantity                int    // Must always be 1
-	AutoPay                 bool   // Must always be false
-	WaiveRetractationPeriod bool   // Must always be false
+	PricingMode             string  // "default", "upfront12", "upfront24"
+	Duration                string  // "P1M", "P12M", "P24M"
+	Coupon                  string  // optional private OVH cart voucher code
+	MaxMonthlyPrice         float64 // ex-VAT monthly cap carried from order_quote
+	MaxSetupFee             float64 // ex-VAT setup fee cap carried from order_quote
+	EnforceQuoteCap         bool    // abort checkout with PRICE_CHANGED_SINCE_QUOTE if live cart exceeds quote
+	Quantity                int     // Must always be 1
+	AutoPay                 bool    // Must always be false
+	WaiveRetractationPeriod bool    // Must always be false
 }
 
 // UnpaidOrderResult returns the created unpaid order summary.

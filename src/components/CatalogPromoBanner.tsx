@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -23,16 +23,25 @@ interface CatalogPromoBannerProps {
 const STORAGE_COLLAPSED_KEY = 'ovh_nexus_promo_banner_collapsed_v1';
 
 const formatCountdown = (
+  endDate: string | undefined,
   remainingHours: number | null | undefined,
+  nowMs: number,
   t: (key: string, params?: Record<string, string | number>) => string
 ): string | null => {
-  if (typeof remainingHours !== 'number' || !Number.isFinite(remainingHours) || remainingHours <= 0) {
+  let hours = remainingHours;
+  if (endDate) {
+    const parsedEnd = Date.parse(endDate);
+    if (Number.isFinite(parsedEnd)) {
+      hours = (parsedEnd - nowMs) / 3600000;
+    }
+  }
+  if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) {
     return null;
   }
-  if (remainingHours >= 48) {
-    return t('promoBanner.endsInDays', { days: Math.floor(remainingHours / 24) });
+  if (hours >= 48) {
+    return t('promoBanner.endsInDays', { days: Math.floor(hours / 24) });
   }
-  return t('promoBanner.endsInHours', { hours: Math.max(1, Math.round(remainingHours)) });
+  return t('promoBanner.endsInHours', { hours: Math.max(1, Math.round(hours)) });
 };
 
 const formatModeShort = (
@@ -52,6 +61,12 @@ export const CatalogPromoBanner: React.FC<CatalogPromoBannerProps> = ({
   const { t } = useLocale();
   const [showInspector, setShowInspector] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<'campaigns' | 'guide'>('campaigns');
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const campaignFingerprint = useMemo(() => {
     if (!promotions || !promotions.campaigns || promotions.campaigns.length === 0) {
@@ -92,7 +107,7 @@ export const CatalogPromoBanner: React.FC<CatalogPromoBannerProps> = ({
   };
 
   const handleToggleCampaign = (camp: CatalogPromoCampaign) => {
-    if (selectedPromoCode === camp.promoCode) {
+    if (selectedPromoCode?.toLowerCase() === camp.promoCode.toLowerCase()) {
       onSelectPromoCode(null);
     } else {
       onSelectPromoCode(camp.promoCode);
@@ -214,8 +229,9 @@ export const CatalogPromoBanner: React.FC<CatalogPromoBannerProps> = ({
           {/* Interactive Campaign Chips */}
           <div className="flex flex-wrap items-center gap-2">
             {promotions.campaigns.map((camp) => {
-              const isSelected = selectedPromoCode === camp.promoCode;
-              const countdown = formatCountdown(camp.remainingHours, t);
+              const isSelected =
+                selectedPromoCode?.toLowerCase() === camp.promoCode.toLowerCase();
+              const countdown = formatCountdown(camp.endDate, camp.remainingHours, nowMs, t);
               return (
                 <button
                   key={camp.promoCode}
@@ -333,8 +349,9 @@ export const CatalogPromoBanner: React.FC<CatalogPromoBannerProps> = ({
             <div className="p-5 overflow-y-auto space-y-3 flex-1">
               {inspectorTab === 'campaigns' ? (
                 promotions.campaigns.map((camp) => {
-                  const countdown = formatCountdown(camp.remainingHours, t);
-                  const isSelected = selectedPromoCode === camp.promoCode;
+                  const countdown = formatCountdown(camp.endDate, camp.remainingHours, nowMs, t);
+                  const isSelected =
+                    selectedPromoCode?.toLowerCase() === camp.promoCode.toLowerCase();
                   return (
                     <div
                       key={camp.promoCode}

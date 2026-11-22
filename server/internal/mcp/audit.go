@@ -19,20 +19,23 @@ const (
 )
 
 type orderQuote struct {
-	QuoteID      string
-	PlanCode     string
-	Datacenter   string
-	Options      []string
-	PricingMode  string
-	Duration     string
-	Coupon       string
-	AccountID    string
-	ProfileAlias string
-	Price        map[string]any
-	AutoPay      bool
-	Quantity     int
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
+	QuoteID             string
+	PlanCode            string
+	Datacenter          string
+	Options             []string
+	PricingMode         string
+	Duration            string
+	Coupon              string
+	AccountID           string
+	ProfileAlias        string
+	Price               map[string]any
+	QuotedMonthlyExVAT  float64
+	QuotedSetupFeeExVAT float64
+	HasQuotedPrice      bool
+	AutoPay             bool
+	Quantity            int
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
 }
 
 type quoteStore struct {
@@ -53,6 +56,17 @@ func (qs *quoteStore) create(planCode, datacenter string, options []string, acco
 }
 
 func (qs *quoteStore) createWithMode(planCode, datacenter string, options []string, pricingMode, duration, coupon, accountID, profileAlias string, price map[string]any) orderQuote {
+	return qs.createWithQuotePrices(planCode, datacenter, options, pricingMode, duration, coupon, accountID, profileAlias, price, 0, 0, false)
+}
+
+func (qs *quoteStore) createWithQuotePrices(
+	planCode, datacenter string,
+	options []string,
+	pricingMode, duration, coupon, accountID, profileAlias string,
+	price map[string]any,
+	quotedMonthlyExVAT, quotedSetupFeeExVAT float64,
+	hasQuotedPrice bool,
+) orderQuote {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
 
@@ -67,20 +81,23 @@ func (qs *quoteStore) createWithMode(planCode, datacenter string, options []stri
 	maps.Copy(priceCopy, price)
 
 	q := orderQuote{
-		QuoteID:      qid,
-		PlanCode:     planCode,
-		Datacenter:   datacenter,
-		Options:      append([]string(nil), options...),
-		PricingMode:  pricingMode,
-		Duration:     duration,
-		Coupon:       coupon,
-		AccountID:    accountID,
-		ProfileAlias: profileAlias,
-		Price:        priceCopy,
-		AutoPay:      false,
-		Quantity:     1,
-		CreatedAt:    now,
-		ExpiresAt:    now.Add(QuoteTTLSeconds * time.Second),
+		QuoteID:             qid,
+		PlanCode:            planCode,
+		Datacenter:          datacenter,
+		Options:             append([]string(nil), options...),
+		PricingMode:         pricingMode,
+		Duration:            duration,
+		Coupon:              coupon,
+		AccountID:           accountID,
+		ProfileAlias:        profileAlias,
+		Price:               priceCopy,
+		QuotedMonthlyExVAT:  quotedMonthlyExVAT,
+		QuotedSetupFeeExVAT: quotedSetupFeeExVAT,
+		HasQuotedPrice:      hasQuotedPrice,
+		AutoPay:             false,
+		Quantity:            1,
+		CreatedAt:           now,
+		ExpiresAt:           now.Add(QuoteTTLSeconds * time.Second),
 	}
 	qs.quotes[qid] = q
 	return q

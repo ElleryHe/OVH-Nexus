@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ovh/go-ovh/ovh"
@@ -56,10 +57,11 @@ type PlanPricingMode struct {
 	PromoMinimumDuration   int          `json:"promoMinimumDuration,omitempty"`
 	PromoContext           string       `json:"promoContext,omitempty"` // "standard" (auto-applied) | "voucher"
 	AutoApplied            bool         `json:"autoApplied,omitempty"`
-	PromoStartDate         string       `json:"promoStartDate,omitempty"`
-	PromoEndDate           string       `json:"promoEndDate,omitempty"`
-	RenewPromo             *PromoDetail `json:"renewPromo,omitempty"`
-	SetupPromo             *PromoDetail `json:"setupPromo,omitempty"`
+	PromoStartDate         string        `json:"promoStartDate,omitempty"`
+	PromoEndDate           string        `json:"promoEndDate,omitempty"`
+	RenewPromo             *PromoDetail  `json:"renewPromo,omitempty"`
+	SetupPromo             *PromoDetail  `json:"setupPromo,omitempty"`
+	VoucherPromos          []PromoDetail `json:"voucherPromos,omitempty"`
 }
 
 // ServerOption represents a default or selectable hardware addon option for a server plan.
@@ -259,6 +261,14 @@ type CatalogPlanEntry struct {
 	AvailableOptions     []ServerOption                        `json:"availableOptions,omitempty"`
 }
 
+// CatalogUpstreamDigests persists the upstream SHA-256 hashes inside the compressed disk cache
+// so process restarts can immediately short-circuit unchanged catalogs and guard against partial outages.
+type CatalogUpstreamDigests struct {
+	EcoHash       string `json:"ecoHash,omitempty"`
+	BaremetalHash string `json:"baremetalHash,omitempty"`
+	VPSHash       string `json:"vpsHash,omitempty"`
+}
+
 // CatalogDictionary matches GET /api/catalog/dictionary consumed by src/utils/hardwareFormat.ts.
 type CatalogDictionary struct {
 	UpdatedAt       int64                                 `json:"updatedAt"`
@@ -269,6 +279,7 @@ type CatalogDictionary struct {
 	AddonPrices     map[string]float64                    `json:"addonPrices,omitempty"`
 	AddonModePrices map[string]map[string]PlanPricingMode `json:"addonModePrices,omitempty"`
 	Options         map[string]any                        `json:"options"`
+	UpstreamDigests *CatalogUpstreamDigests               `json:"upstreamDigests,omitempty"`
 }
 
 // RawAvailabilityDC represents one datacenter entry in OVH /dedicated/server/datacenter/availabilities.
@@ -528,6 +539,11 @@ type Service struct {
 	publicBaseOverride string
 	accountClientFn    func(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error)
 	listedAtResolver   func(planCode string) string
+
+	lastFreeOSMemUnix     atomic.Int64
+	lastManualRefreshUnix atomic.Int64
+	lastCacheClearUnix    atomic.Int64
+	manualThrottleSec     atomic.Int64
 }
 
 type catalogDigestEntry struct {
@@ -550,7 +566,7 @@ func NewService(st *store.Store, log *logger.Hub, ovhPool *ovhclient.Pool, dataD
 		log.Info(logger.SourceCatalog, "Pruned obsolete catalog cache files on startup", "removed", removed)
 	}
 
-	return &Service{
+	svc := &Service{
 		store:          st,
 		log:            log,
 		ovhPool:        ovhPool,
@@ -560,6 +576,68 @@ func NewService(st *store.Store, log *logger.Hub, ovhPool *ovhclient.Pool, dataD
 		dictCache:      make(map[string]*CatalogDictionary),
 		serversCache:   make(map[string]*cachedServersEntry),
 		catalogDigests: make(map[string]*catalogDigestEntry),
+	}
+	svc.manualThrottleSec.Store(30)
+	return svc
+}
+
+// SetManualThrottle configures the minimum cooldown between HTTP-triggered manual refresh or cache-clear requests.
+func (s *Service) SetManualThrottle(d time.Duration) {
+	secs := int64(d / time.Second)
+	if secs < 0 {
+		secs = 0
+	}
+	s.manualThrottleSec.Store(secs)
+}
+
+func (s *Service) allowManualAction(slot *atomic.Int64) (bool, int64) {
+	window := s.manualThrottleSec.Load()
+	if window <= 0 {
+		return true, 0
+	}
+	now := time.Now().Unix()
+	for {
+		prev := slot.Load()
+		if prev > 0 && now-prev < window {
+			return false, window - (now - prev)
+		}
+		if slot.CompareAndSwap(prev, now) {
+			return true, 0
+		}
+	}
+}
+
+func (s *Service) scheduleFreeOSMemory() {
+	now := time.Now().Unix()
+	prev := s.lastFreeOSMemUnix.Load()
+	if prev > 0 && now-prev < 60 {
+		return
+	}
+	if !s.lastFreeOSMemUnix.CompareAndSwap(prev, now) {
+		return
+	}
+	go debug.FreeOSMemory()
+}
+
+func digestEntryFromDict(d *CatalogDictionary) *catalogDigestEntry {
+	if d == nil || d.UpstreamDigests == nil {
+		return nil
+	}
+	u := d.UpstreamDigests
+	if u.EcoHash == "" && u.BaremetalHash == "" && u.VPSHash == "" {
+		return nil
+	}
+	return &catalogDigestEntry{
+		EcoHash:       u.EcoHash,
+		BaremetalHash: u.BaremetalHash,
+		VPSHash:       u.VPSHash,
+		UpdatedAt:     d.UpdatedAt,
+	}
+}
+
+func (s *Service) restoreDigestLocked(cacheKey string, d *CatalogDictionary) {
+	if dg := digestEntryFromDict(d); dg != nil {
+		s.catalogDigests[cacheKey] = dg
 	}
 }
 
@@ -605,12 +683,16 @@ func (s *Service) resolveEndpointAndZone(ctx context.Context, accountID, endpoin
 	}
 	ep = ovhclient.NormalizeEndpoint(ep)
 	zn = ovhclient.NormalizeZone(zn, ep)
+	if !ovhclient.IsSupportedZone(zn) {
+		zn = ovhclient.DefaultZoneForEndpoint(ep)
+	}
+	zn = normalizeSubsidiary(ep, zn)
 	return ep, zn
 }
 
 func normalizeSubsidiary(endpoint, zone string) string {
 	sub := strings.ToUpper(strings.TrimSpace(zone))
-	if sub == "" {
+	if sub == "" || !ovhclient.IsSupportedZone(sub) {
 		sub = ovhclient.DefaultZoneForEndpoint(endpoint)
 	}
 	if endpoint == ovhclient.EndpointUS {
@@ -734,7 +816,7 @@ func (s *Service) GetRawAvailabilities(ctx context.Context, endpoint, planCode s
 // GetDictionary returns the merged Eco + Baremetal + VPS catalog dictionary, cached in memory & compressed disk (12h TTL).
 func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forceRefresh bool) (*CatalogDictionary, error) {
 	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
-	cacheKey := ep + ":" + zn
+	cacheKey := "full:" + ep + ":" + zn
 	diskPath := s.dictCachePath(ep, zn)
 	now := time.Now().Unix()
 
@@ -748,10 +830,12 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 
 		if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok {
 			if (now - diskDict.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
+				dPtr := &diskDict
 				s.mu.Lock()
-				s.dictCache[cacheKey] = &diskDict
+				s.dictCache[cacheKey] = dPtr
+				s.restoreDigestLocked(cacheKey, dPtr)
 				s.mu.Unlock()
-				return &diskDict, nil
+				return dPtr, nil
 			}
 		}
 	}
@@ -784,10 +868,32 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			existing := s.dictCache[cacheKey]
 			prevDigest := s.catalogDigests[cacheKey]
 			s.mu.RUnlock()
+
+			// Cold-start hydration: recover previous dictionary and upstream SHA-256 digests from disk
+			// so even the very first forceRefresh after restart can short-circuit or block partial outages.
+			if existing == nil || prevDigest == nil {
+				if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok && (len(diskDict.RealPlans) > 0 || len(diskDict.Plans) > 0) {
+					if existing == nil {
+						existing = &diskDict
+					}
+					if prevDigest == nil {
+						prevDigest = digestEntryFromDict(&diskDict)
+					}
+				}
+			}
+
 			if existing != nil && prevDigest != nil {
 				partialOutage := (ecoRaw == nil && prevDigest.EcoHash != "") || (bmRaw == nil && prevDigest.BaremetalHash != "")
 				if partialOutage {
 					clearRawBytes(ecoRaw, bmRaw, vpsRaw)
+					s.mu.Lock()
+					if s.dictCache[cacheKey] == nil {
+						s.dictCache[cacheKey] = existing
+					}
+					if s.catalogDigests[cacheKey] == nil {
+						s.catalogDigests[cacheKey] = prevDigest
+					}
+					s.mu.Unlock()
 					if s.log != nil {
 						s.log.Warn(logger.SourceCatalog, "Partial OVH catalog fetch failed; keeping previous complete dictionary",
 							"endpoint", ep, "zone", zn, "ecoOk", ecoRaw != nil, "baremetalOk", bmRaw != nil)
@@ -799,14 +905,18 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 					prevDigest.VPSHash == vpsHash {
 					clearRawBytes(ecoRaw, bmRaw, vpsRaw)
 					ts := time.Now().Unix()
+					updatedDict := *existing
+					updatedDict.UpdatedAt = ts
+					updatedDigest := *prevDigest
+					updatedDigest.UpdatedAt = ts
 					s.mu.Lock()
-					existing.UpdatedAt = ts
-					prevDigest.UpdatedAt = ts
+					s.dictCache[cacheKey] = &updatedDict
+					s.catalogDigests[cacheKey] = &updatedDigest
 					s.mu.Unlock()
 					if s.log != nil {
 						s.log.Debug(logger.SourceCatalog, "OVH catalog unchanged (SHA-256 match); skipped decode and disk write", "endpoint", ep, "zone", zn)
 					}
-					return existing, nil
+					return &updatedDict, nil
 				}
 			}
 
@@ -816,6 +926,11 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 			vps := decodeRawCatalogPayload(vpsRaw)
 			merged := BuildDictionaryFromTypedCatalogs(eco, bm, vps)
 			eco, bm, vps = nil, nil, nil
+			merged.UpstreamDigests = &CatalogUpstreamDigests{
+				EcoHash:       ecoHash,
+				BaremetalHash: bmHash,
+				VPSHash:       vpsHash,
+			}
 
 			_ = writeGzipJSONFile(diskPath, merged)
 			s.mu.Lock()
@@ -827,7 +942,7 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 				UpdatedAt:     merged.UpdatedAt,
 			}
 			s.mu.Unlock()
-			debug.FreeOSMemory()
+			s.scheduleFreeOSMemory()
 			if s.log != nil {
 				s.log.Info(logger.SourceCatalog, "Refreshed OVH catalog dictionary", "endpoint", ep, "zone", zn, "plans", len(merged.Plans), "realPlans", len(merged.RealPlans), "aliases", len(merged.PlanAliases))
 			}
@@ -836,10 +951,12 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 
 		// Fallback to stale disk cache if upstream failed.
 		if stale, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok {
+			dPtr := &stale
 			s.mu.Lock()
-			s.dictCache[cacheKey] = &stale
+			s.dictCache[cacheKey] = dPtr
+			s.restoreDigestLocked(cacheKey, dPtr)
 			s.mu.Unlock()
-			return &stale, nil
+			return dPtr, nil
 		}
 		empty := &CatalogDictionary{
 			UpdatedAt:       now,
@@ -860,12 +977,13 @@ func (s *Service) GetDictionary(ctx context.Context, endpoint, zone string, forc
 }
 
 // GetBaremetalDictionary fetches ONLY the eco and baremetalServers public catalogs (skipping vps),
-// used by bare-metal SKU monitoring and promotions radar. Uses deterministic SHA-256 short-circuiting
-// so routine 120s checks perform zero JSON decoding and zero disk writes when upstream catalogs are unchanged.
+// stored under an isolated cache key and disk artifact so bare-metal refreshes never overwrite VPS entries
+// in the full dictionary. Uses deterministic SHA-256 short-circuiting so routine checks perform zero
+// JSON decoding and zero disk writes when upstream catalogs are unchanged.
 func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone string, forceRefresh bool) (*CatalogDictionary, error) {
 	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
-	cacheKey := ep + ":" + zn
-	diskPath := s.dictCachePath(ep, zn)
+	cacheKey := "bm:" + ep + ":" + zn
+	diskPath := s.bmDictCachePath(ep, zn)
 	now := time.Now().Unix()
 
 	if !forceRefresh {
@@ -877,10 +995,12 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 		}
 		if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok && len(diskDict.RealPlans) > 0 {
 			if (now - diskDict.UpdatedAt) < int64(CatalogDictTTL.Seconds()) {
+				dPtr := &diskDict
 				s.mu.Lock()
-				s.dictCache[cacheKey] = &diskDict
+				s.dictCache[cacheKey] = dPtr
+				s.restoreDigestLocked(cacheKey, dPtr)
 				s.mu.Unlock()
-				return &diskDict, nil
+				return dPtr, nil
 			}
 		}
 	}
@@ -909,12 +1029,31 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 			prevDigest := s.catalogDigests[cacheKey]
 			s.mu.RUnlock()
 
+			if existing == nil || prevDigest == nil {
+				if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok && len(diskDict.RealPlans) > 0 {
+					if existing == nil {
+						existing = &diskDict
+					}
+					if prevDigest == nil {
+						prevDigest = digestEntryFromDict(&diskDict)
+					}
+				}
+			}
+
 			if existing != nil && len(existing.RealPlans) > 0 && prevDigest != nil {
 				// Guard against transient partial upstream failure (e.g. baremetalServers timed out while eco succeeded):
 				// never overwrite a healthy complete dictionary with a partial one-sided fetch.
 				partialOutage := (ecoRaw == nil && prevDigest.EcoHash != "") || (bmRaw == nil && prevDigest.BaremetalHash != "")
 				if partialOutage {
 					clearRawBytes(ecoRaw, bmRaw)
+					s.mu.Lock()
+					if s.dictCache[cacheKey] == nil {
+						s.dictCache[cacheKey] = existing
+					}
+					if s.catalogDigests[cacheKey] == nil {
+						s.catalogDigests[cacheKey] = prevDigest
+					}
+					s.mu.Unlock()
 					if s.log != nil {
 						s.log.Warn(logger.SourceCatalog, "Partial OVH baremetal catalog fetch failed; keeping previous complete dictionary",
 							"endpoint", ep, "zone", zn, "ecoOk", ecoRaw != nil, "baremetalOk", bmRaw != nil)
@@ -924,14 +1063,18 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 				if prevDigest.EcoHash == ecoHash && prevDigest.BaremetalHash == bmHash {
 					clearRawBytes(ecoRaw, bmRaw)
 					ts := time.Now().Unix()
+					updatedDict := *existing
+					updatedDict.UpdatedAt = ts
+					updatedDigest := *prevDigest
+					updatedDigest.UpdatedAt = ts
 					s.mu.Lock()
-					existing.UpdatedAt = ts
-					prevDigest.UpdatedAt = ts
+					s.dictCache[cacheKey] = &updatedDict
+					s.catalogDigests[cacheKey] = &updatedDigest
 					s.mu.Unlock()
 					if s.log != nil {
-						s.log.Debug(logger.SourceCatalog, "OVH baremetal catalog unchanged (SHA-256 match); skipped decode and disk write", "endpoint", ep, "zone", zn, "realPlans", len(existing.RealPlans))
+						s.log.Debug(logger.SourceCatalog, "OVH baremetal catalog unchanged (SHA-256 match); skipped decode and disk write", "endpoint", ep, "zone", zn, "realPlans", len(updatedDict.RealPlans))
 					}
-					return existing, nil
+					return &updatedDict, nil
 				}
 			}
 
@@ -940,23 +1083,10 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 			bm := decodeRawCatalogPayload(bmRaw)
 			merged := BuildDictionaryFromTypedCatalogs(eco, bm, nil)
 			eco, bm = nil, nil
-
-			// Preserve any previously loaded VPS plan entries in Plans so baremetal refreshes never wipe VPS labels.
-			var preservedVPSHash string
-			s.mu.RLock()
-			if existing != nil {
-				for k, v := range existing.Plans {
-					if strings.EqualFold(v.CatalogSource, "vps") {
-						if _, exists := merged.Plans[k]; !exists {
-							merged.Plans[k] = v
-						}
-					}
-				}
+			merged.UpstreamDigests = &CatalogUpstreamDigests{
+				EcoHash:       ecoHash,
+				BaremetalHash: bmHash,
 			}
-			if prevDigest != nil {
-				preservedVPSHash = prevDigest.VPSHash
-			}
-			s.mu.RUnlock()
 
 			_ = writeGzipJSONFile(diskPath, merged)
 			s.mu.Lock()
@@ -964,11 +1094,10 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 			s.catalogDigests[cacheKey] = &catalogDigestEntry{
 				EcoHash:       ecoHash,
 				BaremetalHash: bmHash,
-				VPSHash:       preservedVPSHash,
 				UpdatedAt:     merged.UpdatedAt,
 			}
 			s.mu.Unlock()
-			debug.FreeOSMemory()
+			s.scheduleFreeOSMemory()
 			if s.log != nil {
 				s.log.Info(logger.SourceCatalog, "Refreshed OVH baremetal catalog dictionary", "endpoint", ep, "zone", zn, "realPlans", len(merged.RealPlans))
 			}
@@ -976,10 +1105,12 @@ func (s *Service) GetBaremetalDictionary(ctx context.Context, endpoint, zone str
 		}
 
 		if stale, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok {
+			dPtr := &stale
 			s.mu.Lock()
-			s.dictCache[cacheKey] = &stale
+			s.dictCache[cacheKey] = dPtr
+			s.restoreDigestLocked(cacheKey, dPtr)
 			s.mu.Unlock()
-			return &stale, nil
+			return dPtr, nil
 		}
 		empty := &CatalogDictionary{
 			UpdatedAt:       now,
@@ -1105,6 +1236,13 @@ func clonePromoDetail(p *PromoDetail) *PromoDetail {
 func clonePricingMode(m PlanPricingMode) PlanPricingMode {
 	m.RenewPromo = clonePromoDetail(m.RenewPromo)
 	m.SetupPromo = clonePromoDetail(m.SetupPromo)
+	if len(m.VoucherPromos) > 0 {
+		vp := make([]PromoDetail, len(m.VoucherPromos))
+		for i := range m.VoucherPromos {
+			vp[i] = *clonePromoDetail(&m.VoucherPromos[i])
+		}
+		m.VoucherPromos = vp
+	}
 	return m
 }
 
@@ -1224,9 +1362,14 @@ func lookupPlanCaseInsensitive(m map[string]CatalogPlanEntry, key string) (Catal
 	if entry, ok := m[low]; ok {
 		return entry, true
 	}
-	for k, entry := range m {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
 		if strings.EqualFold(k, low) {
-			return entry, true
+			return m[k], true
 		}
 	}
 	return CatalogPlanEntry{}, false
@@ -1255,6 +1398,7 @@ func stripCrossPlanPromoModes(src map[string]PlanPricingMode) map[string]PlanPri
 		m.PromoEndDate = ""
 		m.RenewPromo = nil
 		m.SetupPromo = nil
+		m.VoucherPromos = nil
 		dst[k] = m
 	}
 	return dst
@@ -1710,7 +1854,8 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 		return nil, errors.New("failed to fetch OVH public catalogs")
 	}
 
-	cacheKey := endpoint + ":" + zone
+	cacheKey := "full:" + endpoint + ":" + zone
+	diskPath := s.dictCachePath(endpoint, zone)
 	ecoHash := rawDigest(ecoRaw)
 	bmHash := rawDigest(bmRaw)
 	vpsHash := rawDigest(vpsRaw)
@@ -1722,16 +1867,49 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 	prevDigest := s.catalogDigests[cacheKey]
 	s.mu.RUnlock()
 
-	if existingDict != nil && len(existingDict.RealPlans) > 0 && prevDigest != nil &&
+	if existingDict == nil || prevDigest == nil {
+		if diskDict, ok := readGzipJSONFile[CatalogDictionary](diskPath); ok && len(diskDict.RealPlans) > 0 {
+			if existingDict == nil {
+				existingDict = &diskDict
+			}
+			if prevDigest == nil {
+				prevDigest = digestEntryFromDict(&diskDict)
+			}
+		}
+	}
+
+	partialOutage := existingDict != nil && len(existingDict.RealPlans) > 0 && prevDigest != nil &&
+		((ecoRaw == nil && prevDigest.EcoHash != "") || (bmRaw == nil && prevDigest.BaremetalHash != ""))
+
+	if partialOutage {
+		clearRawBytes(ecoRaw, bmRaw, vpsRaw)
+		s.mu.Lock()
+		if s.dictCache[cacheKey] == nil {
+			s.dictCache[cacheKey] = existingDict
+		}
+		if s.catalogDigests[cacheKey] == nil {
+			s.catalogDigests[cacheKey] = prevDigest
+		}
+		s.mu.Unlock()
+		if s.log != nil {
+			s.log.Warn(logger.SourceCatalog, "Partial OVH catalog fetch failed during server list build; reusing previous complete dictionary",
+				"endpoint", endpoint, "zone", zone, "ecoOk", ecoRaw != nil, "baremetalOk", bmRaw != nil)
+		}
+		dict = existingDict
+	} else if existingDict != nil && len(existingDict.RealPlans) > 0 && prevDigest != nil &&
 		prevDigest.EcoHash == ecoHash && prevDigest.BaremetalHash == bmHash &&
 		(vpsHash == "" || prevDigest.VPSHash == vpsHash) {
 		clearRawBytes(ecoRaw, bmRaw, vpsRaw)
 		ts := time.Now().Unix()
+		updatedDict := *existingDict
+		updatedDict.UpdatedAt = ts
+		updatedDigest := *prevDigest
+		updatedDigest.UpdatedAt = ts
 		s.mu.Lock()
-		existingDict.UpdatedAt = ts
-		prevDigest.UpdatedAt = ts
+		s.dictCache[cacheKey] = &updatedDict
+		s.catalogDigests[cacheKey] = &updatedDigest
 		s.mu.Unlock()
-		dict = existingDict
+		dict = &updatedDict
 	} else {
 		// Sequential streaming decode so transient raw payloads are released immediately.
 		eco := decodeRawCatalogPayload(ecoRaw)
@@ -1739,9 +1917,14 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 		vps := decodeRawCatalogPayload(vpsRaw)
 		dict = BuildDictionaryFromTypedCatalogs(eco, bm, vps)
 		eco, bm, vps = nil, nil, nil
+		dict.UpstreamDigests = &CatalogUpstreamDigests{
+			EcoHash:       ecoHash,
+			BaremetalHash: bmHash,
+			VPSHash:       vpsHash,
+		}
 		rebuiltDict = true
 
-		_ = writeGzipJSONFile(s.dictCachePath(endpoint, zone), dict)
+		_ = writeGzipJSONFile(diskPath, dict)
 		s.mu.Lock()
 		s.dictCache[cacheKey] = dict
 		s.catalogDigests[cacheKey] = &catalogDigestEntry{
@@ -1895,7 +2078,7 @@ func (s *Service) buildServerPlans(ctx context.Context, endpoint, zone string) (
 	out = append(out, presalePlans...)
 
 	if rebuiltDict {
-		debug.FreeOSMemory()
+		s.scheduleFreeOSMemory()
 	}
 	return out, nil
 }
@@ -3708,9 +3891,9 @@ func (s *Service) GetCacheInfo(_ context.Context) *CacheInfoResponse {
 		resp.Backend.CacheValid = age < resp.Backend.CacheDuration
 	}
 
-	resp.Storage.DataDir = s.dataDir
-	resp.Storage.CacheDir = s.cacheDir
-	resp.Storage.LogsDir = s.logsDir
+	resp.Storage.DataDir = "data"
+	resp.Storage.CacheDir = "data/cache"
+	resp.Storage.LogsDir = "data/logs"
 
 	dbExists := fileExists(filepath.Join(s.dataDir, "nexus.db"))
 	hasCacheFiles := dirHasCacheFiles(s.cacheDir)
@@ -3736,7 +3919,7 @@ func (s *Service) ClearCache(_ context.Context, cacheType string) ([]string, err
 		clear(s.serversCache)
 		clear(s.catalogDigests)
 		s.mu.Unlock()
-		debug.FreeOSMemory()
+		s.scheduleFreeOSMemory()
 		cleared = append(cleared, "memory")
 		if s.log != nil {
 			s.log.Info(logger.SourceCatalog, "Cleared in-memory catalog caches")
@@ -3783,6 +3966,12 @@ func (s *Service) dictCachePath(endpoint, zone string) string {
 	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
 	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
 	return filepath.Join(s.cacheDir, fmt.Sprintf("catalog_dict_v4_%s_%s.json.gz", ep, zn))
+}
+
+func (s *Service) bmDictCachePath(endpoint, zone string) string {
+	ep := safeFileRegex.ReplaceAllString(strings.ToLower(endpoint), "")
+	zn := safeFileRegex.ReplaceAllString(strings.ToUpper(zone), "")
+	return filepath.Join(s.cacheDir, fmt.Sprintf("catalog_bmdict_v4_%s_%s.json.gz", ep, zn))
 }
 
 func (s *Service) serversCachePath(endpoint, zone string) string {
@@ -3890,18 +4079,41 @@ func readJSONFile[T any](path string) (T, bool) {
 }
 
 func writeJSONFile(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 func fileExists(path string) bool {
