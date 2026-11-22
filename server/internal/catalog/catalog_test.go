@@ -1730,10 +1730,27 @@ func TestSecurityHotfixGzipPartialOutageConcurrentWritePromosAndThrottle(t *test
 	if recRef2.Code != http.StatusTooManyRequests || recRef2.Header().Get("Retry-After") == "" {
 		t.Fatalf("expected second rapid POST /api/servers/refresh to return 429 with Retry-After, got %d hdr=%v", recRef2.Code, recRef2.Header())
 	}
+	// Per-endpoint/zone bucketing: /catalog/promotions?refresh=1 and another zone (FR) must NOT collide with servers:ovh-eu:IE!
+	recPromoRef := httptest.NewRecorder()
+	router.ServeHTTP(recPromoRef, httptest.NewRequest(http.MethodGet, "/api/catalog/promotions?refresh=1", nil))
+	if recPromoRef.Code != http.StatusOK {
+		t.Fatalf("expected GET /api/catalog/promotions?refresh=1 to use its own throttle bucket (200), got %d body=%s", recPromoRef.Code, recPromoRef.Body.String())
+	}
+	recPromoRef2 := httptest.NewRecorder()
+	router.ServeHTTP(recPromoRef2, httptest.NewRequest(http.MethodGet, "/api/catalog/promotions?refresh=1", nil))
+	if recPromoRef2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second rapid GET /api/catalog/promotions?refresh=1 to return 429, got %d", recPromoRef2.Code)
+	}
+	recRefFR := httptest.NewRecorder()
+	router.ServeHTTP(recRefFR, httptest.NewRequest(http.MethodPost, "/api/servers/refresh?zone=FR", nil))
+	if recRefFR.Code != http.StatusOK {
+		t.Fatalf("expected POST /api/servers/refresh?zone=FR to use an independent zone bucket (200), got %d", recRefFR.Code)
+	}
 }
 
 func TestGetServerPriceWithModeDeductsSetupFeeFromMonthlyEquivalent(t *testing.T) {
 	svc, _, _, _ := newTestCatalog(t)
+	var freeFirstMonth atomic.Bool
 	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -1748,6 +1765,20 @@ func TestGetServerPriceWithModeDeductsSetupFeeFromMonthlyEquivalent(t *testing.T
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/configuration"):
 			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-setup-1/summary":
+			if freeFirstMonth.Load() {
+				// 0.00 EUR recurring + 50.00 EUR setup = 50.00 EUR total ex-VAT (no DURATION line).
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"prices": map[string]any{
+						"withoutTax":   map[string]any{"value": 50.00, "currencyCode": "EUR"},
+						"withTax":      map[string]any{"value": 60.00, "currencyCode": "EUR"},
+						"currencyCode": "EUR",
+					},
+					"details": []map[string]any{
+						{"detailType": "INSTALLATION", "description": "Setup", "totalPrice": map[string]any{"value": 50.00, "currencyCode": "EUR"}},
+					},
+				})
+				return
+			}
 			// 30.00 EUR monthly recurring + 50.00 EUR setup = 80.00 EUR total ex-VAT (96.00 EUR with tax).
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"prices": map[string]any{
@@ -1789,6 +1820,16 @@ func TestGetServerPriceWithModeDeductsSetupFeeFromMonthlyEquivalent(t *testing.T
 	}
 	if res.Price.SetupFeeWithoutTax == nil || *res.Price.SetupFeeWithoutTax != 50.00 {
 		t.Fatalf("expected SetupFeeWithoutTax=50.00, got %+v", res.Price.SetupFeeWithoutTax)
+	}
+
+	// Setup-only total (totalEx == setupExVAT) MUST NOT report setup fee as MonthlyEquivalentWithoutTax.
+	freeFirstMonth.Store(true)
+	resSetupOnly, err := svc.GetServerPriceWithMode(context.Background(), "acc-1", "24ska01", "gra", nil, "default", "P1M", "")
+	if err != nil || resSetupOnly == nil || !resSetupOnly.Success || resSetupOnly.Price == nil {
+		t.Fatalf("GetServerPriceWithMode setup-only failed: err=%v res=%+v", err, resSetupOnly)
+	}
+	if resSetupOnly.Price.MonthlyEquivalentWithoutTax != nil {
+		t.Fatalf("expected nil MonthlyEquivalentWithoutTax when totalEx == setupFeeWithoutTax, got %v", *resSetupOnly.Price.MonthlyEquivalentWithoutTax)
 	}
 }
 

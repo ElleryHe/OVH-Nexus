@@ -581,8 +581,8 @@ const ServersPage = () => {
       if (newAuthState) {
         await loadSubscribedServers();
       }
-      fetchPromotions(true);
-      await fetchServers(true, newAuthState);
+      fetchPromotions(false);
+      await fetchServers(false, newAuthState);
     });
 
     return () => {
@@ -2355,6 +2355,15 @@ const ServersPage = () => {
                   ),
                   setupFee: 0,
                   freeSetup: true,
+                  hasPromo: false,
+                  autoApplied: false,
+                  promoCode: undefined,
+                  promoBadge: undefined,
+                  promoDescription: undefined,
+                  promoContext: undefined,
+                  renewPromo: undefined,
+                  setupPromo: undefined,
+                  voucherPromos: undefined,
                 },
                 {
                   ...rawModes[0],
@@ -2370,6 +2379,15 @@ const ServersPage = () => {
                   ),
                   setupFee: 0,
                   freeSetup: true,
+                  hasPromo: false,
+                  autoApplied: false,
+                  promoCode: undefined,
+                  promoBadge: undefined,
+                  promoDescription: undefined,
+                  promoContext: undefined,
+                  renewPromo: undefined,
+                  setupPromo: undefined,
+                  voucherPromos: undefined,
                 },
               ]
             : [];

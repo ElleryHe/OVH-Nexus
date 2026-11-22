@@ -197,15 +197,40 @@ func (s *Service) RequireAuthAndTOTPGate(next http.Handler) http.Handler {
 			return
 		}
 
-		// Peek JSON body if needed for route tier classification or totpCode fallback, then restore r.Body.
+		// Peek request body on state-changing requests regardless of Content-Type so
+		// forged/missing Content-Type headers (e.g. text/plain) cannot bypass body-sensitive 2FA classification.
 		var bodyMap map[string]any
-		if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json") && r.Body != nil {
+		var bodyTrimmed []byte
+		var bodyUnmarshalErr error
+		if r.Body != nil && r.Body != http.NoBody &&
+			(r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
 			bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxInspectBodyBytes))
 			_ = r.Body.Close()
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			if err == nil && len(bytes.TrimSpace(bodyBytes)) > 0 {
-				_ = json.Unmarshal(bodyBytes, &bodyMap)
+			if err != nil {
+				if IsBodySensitiveTierRoute(r.Method, normPath) {
+					writeAuthJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+						"error":   "Request body too large",
+						"code":    "PAYLOAD_TOO_LARGE",
+						"message": "Request body exceeds the maximum allowed size.",
+					})
+					return
+				}
+			} else {
+				bodyTrimmed = bytes.TrimSpace(bodyBytes)
+				if len(bodyTrimmed) > 0 {
+					bodyUnmarshalErr = json.Unmarshal(bodyTrimmed, &bodyMap)
+				}
 			}
+		}
+
+		if len(bodyTrimmed) > 0 && bodyUnmarshalErr != nil && IsBodySensitiveTierRoute(r.Method, normPath) {
+			writeAuthJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "Invalid JSON body",
+				"code":    "INVALID_JSON_BODY",
+				"message": "Request body must be a valid JSON object for security verification.",
+			})
+			return
 		}
 
 		tier := ClassifyRouteTier(r.Method, normPath, bodyMap)

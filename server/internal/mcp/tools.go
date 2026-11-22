@@ -2128,7 +2128,7 @@ func extractQuotedPrices(priceMap map[string]any, intervalMonths int) (monthlyEx
 	return 0, setupFeeExVAT, false
 }
 
-func (s *Service) stripAutoAppliedCouponForMCP(ctx context.Context, planCode, pricingMode, rawCoupon string) (cleanCoupon string, strippedCode string) {
+func (s *Service) stripAutoAppliedCouponForMCP(ctx context.Context, endpoint, zone, planCode, pricingMode, rawCoupon string) (cleanCoupon string, strippedCode string) {
 	trimmed := strings.TrimSpace(rawCoupon)
 	targetPlan := strings.TrimSpace(planCode)
 	if trimmed == "" || targetPlan == "" {
@@ -2143,6 +2143,8 @@ func (s *Service) stripAutoAppliedCouponForMCP(ctx context.Context, planCode, pr
 		return trimmed, ""
 	}
 	resp, err := promoReader.GetPromotions(ctx, catalog.PromotionsQueryOptions{
+		Endpoint: strings.TrimSpace(endpoint),
+		Zone:     strings.TrimSpace(zone),
 		PlanCode: targetPlan,
 	})
 	if err != nil || resp == nil {
@@ -2240,7 +2242,6 @@ func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args
 	if modeErr != nil {
 		return nil, "", modeErr
 	}
-	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, planCode, pricingMode, asString(args["coupon"]))
 
 	targets, err := s.resolveTargetAccounts(ctx, cfg, asString(args["profile"]))
 	if err != nil {
@@ -2250,6 +2251,7 @@ func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args
 		return nil, "", errors.New("no whitelisted OVH account is available to request a price quote")
 	}
 	target := targets[0]
+	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, target.Account.Endpoint, target.Account.Zone, planCode, pricingMode, asString(args["coupon"]))
 
 	var quoteRes *OrderQuoteResult
 	if modeQuoter, ok := s.deps.Procurement.(ProcurementModeQuoter); ok && modeQuoter != nil {
@@ -2362,6 +2364,9 @@ func (s *Service) toolOrderCreateUnpaid(ctx context.Context, cfg *store.MCPConfi
 			return nil, "", fmt.Errorf("PRICE_CHANGED_SINCE_QUOTE: live price for %s @ %s increased above quoted price (monthly<=%.2f, setup<=%.2f): %w. Call `order_quote` again to confirm the new price with the user", quote.PlanCode, strings.ToUpper(quote.Datacenter), quote.QuotedMonthlyExVAT, quote.QuotedSetupFeeExVAT, err)
 		}
 		if errors.Is(err, procurement.ErrPriceCheckFailed) || strings.Contains(err.Error(), "PRICE_CHECK_FAILED") {
+			if s.quotes.restore(quote) {
+				return nil, "", fmt.Errorf("PRICE_CHECK_FAILED: unable to verify live cart summary before checkout for %s @ %s: %w. Quote `%s` remains valid until expiry — you may retry `order_create_unpaid`", quote.PlanCode, strings.ToUpper(quote.Datacenter), err, quote.QuoteID)
+			}
 			return nil, "", fmt.Errorf("PRICE_CHECK_FAILED: unable to verify live cart summary before checkout for %s @ %s: %w. Please retry with a fresh `order_quote`", quote.PlanCode, strings.ToUpper(quote.Datacenter), err)
 		}
 		return nil, "", fmt.Errorf("could not place unpaid order for %s @ %s: %w. Consider using `queue_add` to watch for restock", quote.PlanCode, strings.ToUpper(quote.Datacenter), err)
@@ -2435,7 +2440,6 @@ func (s *Service) toolQueueAdd(ctx context.Context, cfg *store.MCPConfig, args m
 	if sErr != nil {
 		return nil, "", sErr
 	}
-	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, planCode, pricingMode, asString(args["coupon"]))
 
 	if planCode == "" || len(dcs) == 0 {
 		return nil, "", errors.New("both `plan_code` and a non-empty `datacenters` list are required")
@@ -2449,6 +2453,7 @@ func (s *Service) toolQueueAdd(ctx context.Context, cfg *store.MCPConfig, args m
 		return nil, "", errors.New("no whitelisted OVH account is available for queueing")
 	}
 	target := targets[0]
+	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, target.Account.Endpoint, target.Account.Zone, planCode, pricingMode, asString(args["coupon"]))
 
 	// SECURITY REDLINE: Hardcode AutoPay=false, WaiveRetractationPeriod=false, Quantity=1.
 	created, err := s.store.CreateQueueItem(ctx, store.QueueItem{

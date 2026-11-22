@@ -121,6 +121,27 @@ func (qs *quoteStore) consume(quoteID string) (orderQuote, bool) {
 	return q, true
 }
 
+// restore returns an unexpired quote back to the store after a pre-checkout transient failure
+// (e.g., cart summary 429/503) so the caller can retry safely with the same quote_id.
+func (qs *quoteStore) restore(q orderQuote) bool {
+	if q.QuoteID == "" {
+		return false
+	}
+	qs.mu.Lock()
+	defer qs.mu.Unlock()
+
+	now := qs.nowFn()
+	qs.pruneLocked(now)
+	if now.After(q.ExpiresAt) {
+		return false
+	}
+	if _, exists := qs.quotes[q.QuoteID]; exists {
+		return false
+	}
+	qs.quotes[q.QuoteID] = q
+	return true
+}
+
 func (qs *quoteStore) pruneLocked(now time.Time) {
 	for id, q := range qs.quotes {
 		if now.After(q.ExpiresAt) {

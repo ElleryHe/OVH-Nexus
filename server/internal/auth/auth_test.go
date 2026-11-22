@@ -476,3 +476,65 @@ func TestSessionEpochAndKeyFingerprintRevocation(t *testing.T) {
 		t.Fatalf("expected cookie from old API_SECRET_KEY to be rejected (401) after rotation, got %d", recKeyRotated.Code)
 	}
 }
+
+func TestContentTypeAgnosticBodySensitive2FAGate(t *testing.T) {
+	svc, _, cfg, _ := newTestAuthEnv(t, "")
+	router := chi.NewRouter()
+	router.Use(svc.RequireAuthAndTOTPGate)
+	router.Route("/api", func(api chi.Router) {
+		svc.MountRoutes(api)
+		api.Post("/settings", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		api.Post("/orders/quick-order", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		api.Post("/queue", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+
+	recLogin := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{
+		"username": "Nexus",
+		"password": cfg.APISecretKey,
+	}, nil, nil, "")
+	if recLogin.Code != http.StatusOK {
+		t.Fatalf("login failed: %d", recLogin.Code)
+	}
+	cookies := recLogin.Result().Cookies()
+
+	sendRaw := func(path, contentType, rawBody string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(rawBody))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. text/plain or omitted Content-Type carrying JSON credential update MUST still hit strict 2FA gate (403 TOTP_SETUP_REQUIRED).
+	for _, ct := range []string{"text/plain", ""} {
+		rec := sendRaw("/api/settings", ct, `{"clearCredentials":true}`)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 2FA gate for POST /api/settings with Content-Type=%q, got %d body=%s", ct, rec.Code, rec.Body.String())
+		}
+		recAutoPay := sendRaw("/api/orders/quick-order", ct, `{"planCode":"24ska01","auto_pay":true}`)
+		if recAutoPay.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 2FA gate for auto_pay quick-order with Content-Type=%q, got %d body=%s", ct, recAutoPay.Code, recAutoPay.Body.String())
+		}
+		recQueue := sendRaw("/api/queue", ct, `{"planCode":"24ska01","waiveRetractationPeriod":true}`)
+		if recQueue.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 2FA gate for waiveRetractationPeriod queue with Content-Type=%q, got %d body=%s", ct, recQueue.Code, recQueue.Body.String())
+		}
+	}
+
+	// 2. Malformed non-empty body on a body-sensitive route fails closed with 400 INVALID_JSON_BODY.
+	recBad := sendRaw("/api/settings", "text/plain", `not-valid-json`)
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 INVALID_JSON_BODY for malformed body on /api/settings, got %d body=%s", recBad.Code, recBad.Body.String())
+	}
+
+	// 3. Non-sensitive payload on /api/orders/quick-order (auto_pay=false) with normal JSON still passes.
+	recSafe := sendRaw("/api/orders/quick-order", "application/json", `{"planCode":"24ska01","auto_pay":false}`)
+	if recSafe.Code != http.StatusOK {
+		t.Fatalf("expected 200 for non-sensitive quick-order, got %d body=%s", recSafe.Code, recSafe.Body.String())
+	}
+}

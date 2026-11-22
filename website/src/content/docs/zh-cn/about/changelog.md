@@ -49,7 +49,7 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
 - **会话即时吊销、SSE 防泄漏、容器与 HTTP 边界加固**：
   - 新增持久化 `session_epoch` 与 `API_SECRET_KEY` HMAC 指纹（`keyFp`）：登出、2FA 启停、恢复码重置及更换主密钥重启均立即吊销其他设备会话。
   - 日志 SSE 流（`/api/logs/stream`）增加每帧 `10s` 写超时、并发订阅上限（`32`，超限返回 `503`）、停机统一关闭以及 URL 编码敏感词脱敏。
-  - 修复通配 `CORS_ORIGINS=*` 反射源与凭据头问题，为 Cookie 非幂等请求补齐 `Origin`/`Sec-Fetch-Site` CSRF 校验（放行 MCP Bearer 与 API Key），`COOKIE_SECURE=true` 时下发 HSTS；移除带副作用的 `GET /api/servers/{planCode}/price`，为手动刷新与清缓存增加 30 秒节流，`/api/cache/info` 隐去宿主机绝对路径；容器入口改用不追踪软链的 `chown -RP`，SQLite PRAGMA 编码进 DSN，Dockerfile 升至 `golang:1.27.4-alpine`；前端补齐实测询价 `AbortController` 竞态隔离、浏览器内存字典 12 小时过期、横幅基于 `endDate` 动态倒计时以及历史订单外链 `https://` 白名单。
+  - 修复通配 `CORS_ORIGINS=*` 反射源与凭据头问题，为携带 `ovh_session` Cookie 的非幂等请求强制执行 `Origin`/`Sec-Fetch-Site`/`Referer` CSRF 校验（仅放行 `/api/mcp` 与无 Cookie 程序化请求），为 2FA 敏感请求体分级补齐无视 `Content-Type` 的统一 JSON 解析防绕过，`COOKIE_SECURE=true` 时下发 HSTS；移除带副作用的 `GET /api/servers/{planCode}/price`，为手动刷新按接口与区域分桶实施 30 秒节流，`/api/cache/info` 隐去宿主机绝对路径；容器入口改用不追踪软链的 `chown -RP`，SQLite PRAGMA 编码进 DSN，Dockerfile 升至 `golang:1.27.4-alpine`；前端补齐实测询价 `AbortController` 竞态隔离、浏览器内存字典 12 小时过期、横幅基于 `endDate` 动态倒计时以及历史订单外链 `https://` 白名单。
 
 ---
 

@@ -106,17 +106,19 @@ func (m *mockOVHClient) DeleteWithContext(_ context.Context, path string, resTyp
 }
 
 type mockCatalog struct {
-	mu          sync.Mutex
-	entries     []CatalogEntry
-	skuStatus   map[string]any
-	skuChanges  []map[string]any
-	trackedSkus []map[string]any
-	promotions  *catalog.CatalogPromotionsResponse
+	mu            sync.Mutex
+	entries       []CatalogEntry
+	skuStatus     map[string]any
+	skuChanges    []map[string]any
+	trackedSkus   []map[string]any
+	promotions    *catalog.CatalogPromotionsResponse
+	lastPromoOpts catalog.PromotionsQueryOptions
 }
 
 func (m *mockCatalog) GetPromotions(_ context.Context, opts catalog.PromotionsQueryOptions) (*catalog.CatalogPromotionsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastPromoOpts = opts
 	if m.promotions != nil {
 		return m.promotions, nil
 	}
@@ -2154,6 +2156,37 @@ func TestSecurityHotfixQuoteCapNegativeLimitsInvalidModeAndAutoCouponStrip(t *te
 	items, _ := env.store.ListQueue(context.Background(), "")
 	if len(items) == 0 || items[len(items)-1].MaxSetupFee != 15.0 || items[len(items)-1].Coupon != "" {
 		t.Fatalf("expected persisted MaxSetupFee=15.0 and empty stripped coupon, got %+v", items[len(items)-1])
+	}
+
+	// 5. T-3: stripAutoAppliedCouponForMCP passes the resolved target account's Endpoint & Zone to GetPromotions.
+	env.catalog.mu.Lock()
+	gotPromoOpts := env.catalog.lastPromoOpts
+	env.catalog.mu.Unlock()
+	if gotPromoOpts.Endpoint != "ovh-eu" || gotPromoOpts.Zone != "IE" || gotPromoOpts.PlanCode != "24sys02-v3" {
+		t.Fatalf("expected GetPromotions called with target account endpoint/zone/plan, got %+v", gotPromoOpts)
+	}
+
+	// 6. T-2: Transient PRICE_CHECK_FAILED before checkout restores unexpired quote_id so caller can retry safely.
+	qRetryRes, isErr, raw := mcpCallTool(t, env, token, "order_quote", map[string]any{
+		"plan_code":  "24sys02-v3",
+		"datacenter": "gra",
+	})
+	if isErr {
+		t.Fatalf("order_quote for retry test failed: %s", raw)
+	}
+	retryQuoteID := qRetryRes["quoteId"].(string)
+	env.proc.failNext = errors.New("PRICE_CHECK_FAILED: temporary cart summary 503")
+	_, isErr, raw = mcpCallTool(t, env, token, "order_create_unpaid", map[string]any{
+		"quote_id": retryQuoteID,
+	})
+	if !isErr || !strings.Contains(raw, "PRICE_CHECK_FAILED") {
+		t.Fatalf("expected PRICE_CHECK_FAILED error on first attempt, got isErr=%v raw=%s", isErr, raw)
+	}
+	okRetryRes, isErr, raw := mcpCallTool(t, env, token, "order_create_unpaid", map[string]any{
+		"quote_id": retryQuoteID,
+	})
+	if isErr || okRetryRes["status"] != "unpaid_order_created" {
+		t.Fatalf("expected restored quote_id %s to succeed on retry, got isErr=%v res=%+v raw=%s", retryQuoteID, isErr, okRetryRes, raw)
 	}
 }
 

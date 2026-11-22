@@ -540,10 +540,10 @@ type Service struct {
 	accountClientFn    func(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error)
 	listedAtResolver   func(planCode string) string
 
-	lastFreeOSMemUnix     atomic.Int64
-	lastManualRefreshUnix atomic.Int64
-	lastCacheClearUnix    atomic.Int64
-	manualThrottleSec     atomic.Int64
+	lastFreeOSMemUnix   atomic.Int64
+	manualThrottleMu    sync.Mutex
+	manualActionBuckets map[string]int64
+	manualThrottleSec   atomic.Int64
 }
 
 type catalogDigestEntry struct {
@@ -567,15 +567,16 @@ func NewService(st *store.Store, log *logger.Hub, ovhPool *ovhclient.Pool, dataD
 	}
 
 	svc := &Service{
-		store:          st,
-		log:            log,
-		ovhPool:        ovhPool,
-		dataDir:        dataDir,
-		cacheDir:       cacheDir,
-		logsDir:        logsDir,
-		dictCache:      make(map[string]*CatalogDictionary),
-		serversCache:   make(map[string]*cachedServersEntry),
-		catalogDigests: make(map[string]*catalogDigestEntry),
+		store:               st,
+		log:                 log,
+		ovhPool:             ovhPool,
+		dataDir:             dataDir,
+		cacheDir:            cacheDir,
+		logsDir:             logsDir,
+		dictCache:           make(map[string]*CatalogDictionary),
+		serversCache:        make(map[string]*cachedServersEntry),
+		catalogDigests:      make(map[string]*catalogDigestEntry),
+		manualActionBuckets: make(map[string]int64),
 	}
 	svc.manualThrottleSec.Store(30)
 	return svc
@@ -590,21 +591,22 @@ func (s *Service) SetManualThrottle(d time.Duration) {
 	s.manualThrottleSec.Store(secs)
 }
 
-func (s *Service) allowManualAction(slot *atomic.Int64) (bool, int64) {
+func (s *Service) allowManualActionKey(bucketKey string) (bool, int64) {
 	window := s.manualThrottleSec.Load()
 	if window <= 0 {
 		return true, 0
 	}
 	now := time.Now().Unix()
-	for {
-		prev := slot.Load()
-		if prev > 0 && now-prev < window {
-			return false, window - (now - prev)
-		}
-		if slot.CompareAndSwap(prev, now) {
-			return true, 0
-		}
+	s.manualThrottleMu.Lock()
+	defer s.manualThrottleMu.Unlock()
+	if s.manualActionBuckets == nil {
+		s.manualActionBuckets = make(map[string]int64)
 	}
+	if prev := s.manualActionBuckets[bucketKey]; prev > 0 && now-prev < window {
+		return false, window - (now - prev)
+	}
+	s.manualActionBuckets[bucketKey] = now
+	return true, 0
 }
 
 func (s *Service) scheduleFreeOSMemory() {
@@ -3534,8 +3536,10 @@ func (s *Service) GetServerPriceWithMode(
 				}
 			} else if pricePayload.Prices.WithoutTax != nil && *pricePayload.Prices.WithoutTax > 0 {
 				totalEx := *pricePayload.Prices.WithoutTax
-				if setupExVAT > 0 && totalEx > setupExVAT {
-					periodExVAT = roundCents(totalEx - setupExVAT)
+				if setupExVAT > 0 {
+					if totalEx > setupExVAT {
+						periodExVAT = roundCents(totalEx - setupExVAT)
+					}
 				} else {
 					periodExVAT = totalEx
 				}

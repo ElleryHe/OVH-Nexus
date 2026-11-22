@@ -36,9 +36,12 @@ func (s *Service) MountRoutes(r chi.Router) {
 // HandleListServers handles GET /api/servers and GET /api/catalog/plans.
 func (s *Service) HandleListServers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
+	zone := nonEmpty(q.Get("subsidiary"), q.Get("zone"))
+	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), zone)
 	force := parseBoolQuery(q.Get("force")) || parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("forceRefresh"))
 	if force {
-		if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+		if ok, retryAfter := s.allowManualActionKey("servers:" + ep + ":" + zn); !ok {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error":      "Refresh throttled",
@@ -48,13 +51,11 @@ func (s *Service) HandleListServers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
-	zone := nonEmpty(q.Get("subsidiary"), q.Get("zone"))
 
 	resp, err := s.ListServers(r.Context(), ListServersOptions{
 		AccountID:    accountID,
-		Endpoint:     q.Get("endpoint"),
-		Zone:         zone,
+		Endpoint:     ep,
+		Zone:         zn,
 		ForceRefresh: force,
 	})
 	if err != nil {
@@ -98,7 +99,10 @@ func (s *Service) HandleGetPlanConfigs(w http.ResponseWriter, r *http.Request) {
 
 // HandleRefreshServers handles POST /api/servers/refresh.
 func (s *Service) HandleRefreshServers(w http.ResponseWriter, r *http.Request) {
-	if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+	q := r.URL.Query()
+	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
+	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), q.Get("zone"))
+	if ok, retryAfter := s.allowManualActionKey("servers:" + ep + ":" + zn); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error":      "Refresh throttled",
@@ -107,9 +111,6 @@ func (s *Service) HandleRefreshServers(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	q := r.URL.Query()
-	accountID := strings.TrimSpace(r.Header.Get("X-OVH-Account"))
-	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), q.Get("zone"))
 
 	resp, err := s.RefreshCatalog(r.Context(), ep, zn)
 	if err != nil {
@@ -230,7 +231,7 @@ func (s *Service) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
 	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), q.Get("zone"))
 	force := parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("force"))
 	if force {
-		if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+		if ok, retryAfter := s.allowManualActionKey("dictionary:" + ep + ":" + zn); !ok {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error":      "Refresh throttled",
@@ -282,7 +283,7 @@ func (s *Service) HandleGetCacheInfo(w http.ResponseWriter, r *http.Request) {
 
 // HandleClearCache handles POST /api/cache/clear.
 func (s *Service) HandleClearCache(w http.ResponseWriter, r *http.Request) {
-	if ok, retryAfter := s.allowManualAction(&s.lastCacheClearUnix); !ok {
+	if ok, retryAfter := s.allowManualActionKey("cache-clear"); !ok {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"status":     "error",

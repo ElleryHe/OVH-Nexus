@@ -176,6 +176,21 @@ func GenerateRecoveryCodes(count int) ([]string, []string, error) {
 	return plain, hashes, nil
 }
 
+// IsBodySensitiveTierRoute reports whether a route's 2FA tier depends on inspecting JSON fields in the request body.
+func IsBodySensitiveTierRoute(method, path string) bool {
+	m := strings.ToUpper(strings.TrimSpace(method))
+	p := strings.TrimRight(strings.TrimSpace(path), "/")
+	if m == "POST" && p == "/api/settings" {
+		return true
+	}
+	if (m == "POST" && p == "/api/queue") ||
+		(m == "PUT" && reQueueItem.MatchString(p) && p != "/api/queue/clear") ||
+		(m == "POST" && p == "/api/orders/quick-order") {
+		return true
+	}
+	return false
+}
+
 // ClassifyRouteTier classifies an incoming HTTP request into "strict", "sudo", or ""
 // according to the high-risk security gatekeeper policy.
 func ClassifyRouteTier(method, path string, body map[string]any) string {

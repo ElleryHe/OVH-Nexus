@@ -724,7 +724,7 @@ func (s *Service) HandleGetPromotions(w http.ResponseWriter, r *http.Request) {
 	ep, zn := s.resolveEndpointAndZone(r.Context(), accountID, q.Get("endpoint"), zoneParam)
 	forceRefresh := parseBoolQuery(q.Get("refresh")) || parseBoolQuery(q.Get("force"))
 	if forceRefresh {
-		if ok, retryAfter := s.allowManualAction(&s.lastManualRefreshUnix); !ok {
+		if ok, retryAfter := s.allowManualActionKey("promotions:" + ep + ":" + zn); !ok {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error":      "Refresh throttled",
