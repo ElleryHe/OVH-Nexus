@@ -16,7 +16,10 @@ import type {
   ServerPlan,
   ServerPriceProbeResult,
 } from '@/types';
-import { getCurrencySymbol } from '@/utils/hardwareFormat';
+import {
+  findAutoAppliedPromoCodeForPlanMode,
+  getCurrencySymbol,
+} from '@/utils/hardwareFormat';
 
 interface OrderPromoDebugPanelProps {
   server: ServerPlan;
@@ -87,13 +90,19 @@ export const OrderPromoDebugPanel: React.FC<OrderPromoDebugPanelProps> = ({
   const symbol = getCurrencySymbol(server.currency || promotions?.currency || 'EUR');
   const trimmedCoupon = coupon.trim();
 
-  // Smart Auto-Promo Guard: detect if user pasted an auto-applied catalog campaign ID into Coupon box.
-  const matchedAutoCode =
-    trimmedCoupon !== '' && promotions?.autoAppliedCodes
-      ? promotions.autoAppliedCodes.find(
-          (c) => c.toLowerCase() === trimmedCoupon.toLowerCase()
-        ) || null
-      : null;
+  // Smart Auto-Promo Guard: detect if user pasted an auto-applied catalog campaign ID
+  // that specifically applies to this server planCode and active pricing mode.
+  const matchedAutoCode = findAutoAppliedPromoCodeForPlanMode(
+    server.planCode,
+    activeModeKey,
+    trimmedCoupon,
+    [
+      ...(activeConfigMode ? [activeConfigMode] : []),
+      ...configModes,
+      ...basePlanModes,
+    ],
+    promotions
+  );
 
   const baseMode =
     basePlanModes.find((m) => m.mode.toLowerCase() === activeModeKey.toLowerCase()) ||

@@ -59,6 +59,7 @@ import {
   resolvePricingModeDuration,
   synthesizePricingModes,
   resolvePricingModeEntry,
+  findAutoAppliedPromoCodeForPlanMode,
 } from '@/utils/hardwareFormat';
 import type {
   CatalogPromotionsResponse,
@@ -1162,11 +1163,20 @@ const ServersPage = () => {
   };
 
   const sanitizeCouponForSubmit = useCallback(
-    (planCode: string, rawCoupon?: string): string => {
+    (
+      planCode: string,
+      pricingMode: string,
+      pricingModes: PlanPricingMode[] | undefined,
+      rawCoupon?: string
+    ): string => {
       const trimmed = (rawCoupon || '').trim();
       if (!trimmed) return '';
-      const matched = promotions?.autoAppliedCodes?.find(
-        (c) => c.toLowerCase() === trimmed.toLowerCase()
+      const matched = findAutoAppliedPromoCodeForPlanMode(
+        planCode,
+        pricingMode,
+        trimmed,
+        pricingModes,
+        promotions
       );
       if (matched) {
         setSelectedCouponMap((prev) =>
@@ -1202,18 +1212,15 @@ const ServersPage = () => {
     }
 
     const mode = selectedPricingModeMap[server.planCode] || 'default';
-    const modeEntry = resolvePricingModeEntry(
-      activeConfig?.pricingModes || server.pricingModes,
-      mode
-    );
+    const modePool = activeConfig?.pricingModes || server.pricingModes;
+    const modeEntry = resolvePricingModeEntry(modePool, mode);
     const duration =
       modeEntry?.duration ||
-      resolvePricingModeDuration(
-        mode,
-        activeConfig?.pricingModes || server.pricingModes
-      );
+      resolvePricingModeDuration(mode, modePool);
     const coupon = sanitizeCouponForSubmit(
       server.planCode,
+      mode,
+      modePool,
       selectedCouponMap[server.planCode]
     );
 
@@ -1283,18 +1290,15 @@ const ServersPage = () => {
     const apiDc = convertDisplayDcToApiDc(targetDc);
 
     const mode = selectedPricingModeMap[server.planCode] || 'default';
-    const modeEntry = resolvePricingModeEntry(
-      activeCfg?.pricingModes || server.pricingModes,
-      mode
-    );
+    const modePool = activeCfg?.pricingModes || server.pricingModes;
+    const modeEntry = resolvePricingModeEntry(modePool, mode);
     const duration =
       modeEntry?.duration ||
-      resolvePricingModeDuration(
-        mode,
-        activeCfg?.pricingModes || server.pricingModes
-      );
+      resolvePricingModeDuration(mode, modePool);
     const coupon = sanitizeCouponForSubmit(
       server.planCode,
+      mode,
+      modePool,
       selectedCouponMap[server.planCode]
     );
 
@@ -1348,7 +1352,12 @@ const ServersPage = () => {
               .map((o) => o.value);
       const mergedOptions = Array.from(new Set([...configOpts, ...extraOptions]));
       const apiDatacenters = datacenters.map((dc) => convertDisplayDcToApiDc(dc));
-      const cleanCoupon = sanitizeCouponForSubmit(server.planCode, coupon);
+      const cleanCoupon = sanitizeCouponForSubmit(
+        server.planCode,
+        pricingMode || 'default',
+        selectedConfig?.pricingModes || server.pricingModes,
+        coupon
+      );
 
       await api.post('/queue', {
         planCode: server.planCode,
@@ -3476,7 +3485,7 @@ const ServersPage = () => {
         initialSelectedDcs={quickMonitorTarget?.initialSelectedDcs}
         initialConfig={quickMonitorTarget?.initialConfig}
         initialConfigs={quickMonitorTarget?.initialConfigs}
-        autoAppliedCodes={promotions?.autoAppliedCodes}
+        promotions={promotions}
         onSuccess={(planCode) => {
           const nextSet = new Set([...subscribedServersRef.current, planCode]);
           subscribedServersRef.current = nextSet;

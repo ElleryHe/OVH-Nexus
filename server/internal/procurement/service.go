@@ -284,22 +284,25 @@ func (s *Service) lockInflightConfig(accountID, planCode string, opts []string, 
 }
 
 // stripAutoAppliedCoupon detects whether rawCoupon matches an active OVH auto-applied catalog campaign
-// (context=="standard") and strips it with a WARNING log so checkout receives the automatic discount
-// instead of failing with INVALID_COUPON.
-func (s *Service) stripAutoAppliedCoupon(ctx context.Context, accountID, subsidiary, rawCoupon string) (cleanCoupon string, strippedCode string) {
+// (context=="standard") for the exact target planCode and pricingMode, and strips it with a WARNING log
+// so checkout receives the automatic discount instead of failing with INVALID_COUPON.
+// Coupons belonging to other models or other pricing modes are preserved verbatim for OVH validation.
+func (s *Service) stripAutoAppliedCoupon(ctx context.Context, accountID, subsidiary, planCode, pricingMode, rawCoupon string) (cleanCoupon string, strippedCode string) {
 	trimmed := strings.TrimSpace(rawCoupon)
-	if trimmed == "" || s.catalog == nil {
+	if trimmed == "" || s.catalog == nil || strings.TrimSpace(planCode) == "" {
 		return trimmed, ""
 	}
 	ep, zn := s.resolveAccountEndpointZone(ctx, accountID)
 	if strings.TrimSpace(subsidiary) != "" {
 		zn = strings.TrimSpace(subsidiary)
 	}
-	camp, isAuto := s.catalog.LookupAutoAppliedPromo(ctx, ep, zn, trimmed)
+	camp, isAuto := s.catalog.LookupAutoAppliedPromoForPlan(ctx, ep, zn, planCode, pricingMode, trimmed)
 	if !isAuto || camp == nil {
 		return trimmed, ""
 	}
 	slog.Warn("stripped auto-applied OVH catalog campaign code from manual coupon field",
+		"planCode", planCode,
+		"pricingMode", pricingMode,
 		"coupon", trimmed,
 		"campaign", camp.PromoCode,
 		"context", camp.Context,
@@ -307,6 +310,8 @@ func (s *Service) stripAutoAppliedCoupon(ctx context.Context, accountID, subsidi
 	)
 	if s.log != nil {
 		s.log.Warn(logger.SourceQueue, "Stripped auto-applied OVH catalog campaign code from manual coupon field (applied automatically by OVH)",
+			"planCode", planCode,
+			"pricingMode", pricingMode,
 			"coupon", trimmed,
 			"campaign", camp.PromoCode,
 			"context", camp.Context,
@@ -458,9 +463,12 @@ func (s *Service) executeQueueTask(ctx context.Context, taskID string) {
 			)
 		}
 
-		unlockFlight := s.lockInflightConfig(item.AccountID, item.PlanCode, item.Options, item.PricingMode, item.Coupon)
-		_, purchaseErr := s.purchaseServer(ctx, *item)
-		unlockFlight()
+		purchaseErr := func() error {
+			unlockFlight := s.lockInflightConfig(item.AccountID, item.PlanCode, item.Options, item.PricingMode, item.Coupon)
+			defer unlockFlight()
+			_, err := s.purchaseServer(ctx, *item)
+			return err
+		}()
 
 		// Reload latest item state in case the user paused/deleted/edited while checkout ran.
 		latest, getErr := s.store.GetQueueItem(ctx, taskID)
@@ -545,7 +553,7 @@ func (s *Service) CreateQueueTask(ctx context.Context, req CreateQueueRequest) (
 		source = "manual"
 	}
 	normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon, _ := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", req.Coupon)
+	trimmedCoupon, _ := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", planCode, normMode, req.Coupon)
 
 	item := store.QueueItem{
 		AccountID:               strings.TrimSpace(req.AccountID),
@@ -624,7 +632,7 @@ func (s *Service) UpdateQueueTask(ctx context.Context, id string, req UpdateQueu
 		existing.PricingMode, existing.Duration, _ = catalog.NormalizePricingModeAndDuration(pm, dur)
 	}
 	if req.Coupon != nil {
-		cleanCoupon, _ := s.stripAutoAppliedCoupon(ctx, existing.AccountID, "", *req.Coupon)
+		cleanCoupon, _ := s.stripAutoAppliedCoupon(ctx, existing.AccountID, "", existing.PlanCode, existing.PricingMode, *req.Coupon)
 		existing.Coupon = cleanCoupon
 	}
 	if req.Currency != nil {
@@ -678,7 +686,7 @@ func (s *Service) QuoteOrder(ctx context.Context, req QuoteRequest) (*QuoteResul
 	}
 	opts := cleanStringList(req.Options)
 	normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon, strippedCode := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", req.Coupon)
+	trimmedCoupon, strippedCode := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", planCode, normMode, req.Coupon)
 
 	if s.catalog == nil {
 		return nil, errors.New("catalog service is unavailable")
@@ -735,7 +743,7 @@ func (s *Service) CreateUnpaidOrder(ctx context.Context, req UnpaidOrderRequest)
 	}
 	opts := cleanStringList(req.Options)
 	normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon, _ := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", req.Coupon)
+	trimmedCoupon, _ := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", planCode, normMode, req.Coupon)
 
 	unlockFlight := s.lockInflightConfig(req.AccountID, planCode, opts, normMode, trimmedCoupon)
 	defer unlockFlight()
@@ -885,7 +893,7 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 	}
 
 	normMode, normDur, intervalMonths := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon, strippedCode := s.stripAutoAppliedCoupon(ctx, req.AccountID, req.Subsidiary, req.Coupon)
+	trimmedCoupon, strippedCode := s.stripAutoAppliedCoupon(ctx, req.AccountID, req.Subsidiary, planCode, normMode, req.Coupon)
 
 	if !req.SkipDuplicateCheck {
 		unlockFlight := s.lockInflightConfig(req.AccountID, planCode, opts, normMode, trimmedCoupon)
@@ -1605,7 +1613,19 @@ func (s *Service) purchaseServerWithOptions(ctx context.Context, item store.Queu
 	var summary map[string]any
 	var cartInfo map[string]any
 	var summaryErr error
-	if sumErr := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/summary", url.PathEscape(cartID)), &summary); sumErr == nil {
+	summaryURL := fmt.Sprintf("/order/cart/%s/summary", url.PathEscape(cartID))
+	sumErr := client.GetWithContext(ctx, summaryURL, &summary)
+	if sumErr != nil && enforceQuoteCap && ovhclient.IsTransientError(sumErr) {
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+			summary = nil
+			sumErr = client.GetWithContext(ctx, summaryURL, &summary)
+		}
+	}
+	if sumErr == nil {
 		_ = client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s", url.PathEscape(cartID)), &cartInfo)
 		parsed := catalog.ExtractCartPricePayload(summary, cartInfo)
 		periodExVAT, setupFeeExVAT, currency = extractCartRecurringAndSetupPrice(summary, cartInfo, parsed)
@@ -1648,9 +1668,9 @@ func (s *Service) purchaseServerWithOptions(ctx context.Context, item store.Queu
 	if enforceQuoteCap {
 		if summaryErr != nil || (liveMonthlyExVAT <= 0 && periodExVAT <= 0) {
 			s.deleteCartQuietly(client, cartID)
-			errMsg := fmt.Sprintf("PRICE_CHANGED_SINCE_QUOTE: unable to verify live cart price before checkout for %s (%v)", item.PlanCode, summaryErr)
+			errMsg := fmt.Sprintf("PRICE_CHECK_FAILED: unable to verify live cart summary before checkout for %s (%v)", item.PlanCode, summaryErr)
 			_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
-			return nil, fmt.Errorf("%w: %s", ErrPriceChangedSinceQuote, errMsg)
+			return nil, fmt.Errorf("%w: %s", ErrPriceCheckFailed, errMsg)
 		}
 		monthlyExceeded := item.MaxMonthlyPrice > 0 && liveMonthlyExVAT > item.MaxMonthlyPrice+0.01
 		setupExceeded := setupFeeExVAT > item.MaxSetupFee+0.01
@@ -1673,6 +1693,23 @@ func (s *Service) purchaseServerWithOptions(ctx context.Context, item store.Queu
 			_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
 			return nil, fmt.Errorf("%w: %s", ErrPriceChangedSinceQuote, errMsg)
 		}
+	}
+
+	hasPriceCap := item.MaxMonthlyPrice > 0 || item.MaxSetupFee > 0
+	if !enforceQuoteCap && hasPriceCap && (summaryErr != nil || (liveMonthlyExVAT <= 0 && periodExVAT <= 0)) {
+		s.deleteCartQuietly(client, cartID)
+		errMsg := fmt.Sprintf("PRICE_CHECK_FAILED: unable to verify live cart price against configured cap for %s (%v)", item.PlanCode, summaryErr)
+		if s.log != nil {
+			s.log.Warn(logger.SourceQueue, "Order attempt aborted (will retry): failed to verify live cart summary against price cap",
+				"taskId", item.ID,
+				"planCode", item.PlanCode,
+				"maxMonthlyPrice", item.MaxMonthlyPrice,
+				"maxSetupFee", item.MaxSetupFee,
+				"error", errMsg,
+			)
+		}
+		_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
+		return nil, fmt.Errorf("%w: %s", ErrPriceCheckFailed, errMsg)
 	}
 
 	monthlyCapExceeded := item.MaxMonthlyPrice > 0 && liveMonthlyExVAT > item.MaxMonthlyPrice+0.01
@@ -1882,8 +1919,6 @@ func extractCartRecurringAndSetupPrice(
 			var val float64
 			if it.Prices.WithoutTax != nil && *it.Prices.WithoutTax != 0 {
 				val = *it.Prices.WithoutTax
-			} else if it.Prices.WithTax != nil && *it.Prices.WithTax != 0 {
-				val = *it.Prices.WithTax
 			}
 			if val == 0 {
 				continue
@@ -1928,13 +1963,6 @@ func extractCartRecurringAndSetupPrice(
 			monthlyExVAT = totalEx - setupFeeExVAT
 		} else {
 			monthlyExVAT = totalEx
-		}
-	case parsed != nil && parsed.Prices.WithTax != nil && *parsed.Prices.WithTax > 0:
-		totalInc := *parsed.Prices.WithTax
-		if setupFeeExVAT > 0 && totalInc > setupFeeExVAT {
-			monthlyExVAT = totalInc - setupFeeExVAT
-		} else {
-			monthlyExVAT = totalInc
 		}
 	}
 
@@ -2011,9 +2039,6 @@ func extractCartItemExVATPrice(it map[string]any) (float64, string) {
 			return v, cc
 		}
 		if v, cc := extractNumericPriceAndCurrency(pm["totalPrice"]); v != 0 {
-			return v, cc
-		}
-		if v, cc := extractNumericPriceAndCurrency(pm["withTax"]); v != 0 {
 			return v, cc
 		}
 	}

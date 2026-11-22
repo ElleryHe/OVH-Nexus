@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/utils/apiClient";
 import type { SupportedLocale } from "@/context/LocaleContext";
-import type { PlanPricingMode } from "@/types";
+import type { CatalogPromotionsResponse, PlanPricingMode } from "@/types";
 
 export interface CpuInfo {
   brand?: string;
@@ -482,6 +482,82 @@ export function resolvePricingModeEntry(
     modes[0] ||
     null
   );
+}
+
+/**
+ * Checks whether rawCoupon matches an active OVH auto-applied catalog campaign
+ * (context=="standard") strictly for the given planCode and pricingMode.
+ * Never matches campaigns belonging only to other server models or pricing modes.
+ */
+export function findAutoAppliedPromoCodeForPlanMode(
+  planCode: string,
+  pricingMode: string | undefined,
+  rawCoupon: string | undefined,
+  pricingModes?: PlanPricingMode[] | null,
+  promotions?: CatalogPromotionsResponse | null
+): string | null {
+  const trimmed = (rawCoupon || "").trim();
+  const planLow = (planCode || "").trim().toLowerCase();
+  if (!trimmed || !planLow) return null;
+
+  const targetLow = trimmed.toLowerCase();
+  const modeLow = (pricingMode || "default").trim().toLowerCase() || "default";
+
+  const matchInModes = (modes?: PlanPricingMode[] | null): string | null => {
+    if (!Array.isArray(modes)) return null;
+    for (const m of modes) {
+      if ((m.mode || "default").trim().toLowerCase() !== modeLow) continue;
+      if (m.renewPromo?.autoApplied && m.renewPromo.code?.trim().toLowerCase() === targetLow) {
+        return m.renewPromo.code.trim();
+      }
+      if (m.setupPromo?.autoApplied && m.setupPromo.code?.trim().toLowerCase() === targetLow) {
+        return m.setupPromo.code.trim();
+      }
+      if (
+        !m.renewPromo &&
+        !m.setupPromo &&
+        m.hasPromo &&
+        m.autoApplied &&
+        m.promoCode?.trim().toLowerCase() === targetLow
+      ) {
+        return m.promoCode.trim();
+      }
+    }
+    return null;
+  };
+
+  const direct = matchInModes(pricingModes);
+  if (direct) return direct;
+
+  if (promotions?.plans) {
+    const planEntry = promotions.plans.find(
+      (p) => (p.planCode || "").trim().toLowerCase() === planLow
+    );
+    if (planEntry) {
+      const fromPlan = matchInModes(planEntry.pricingModes);
+      if (fromPlan) return fromPlan;
+    }
+  }
+
+  if (promotions?.campaigns) {
+    for (const camp of promotions.campaigns) {
+      if (!camp.autoApplied) continue;
+      if ((camp.promoCode || "").trim().toLowerCase() !== targetLow) continue;
+      const planCovered = (camp.planCodes || []).some(
+        (pc) => pc.trim().toLowerCase() === planLow
+      );
+      if (!planCovered) continue;
+      const modeCovered =
+        !camp.supportedModes ||
+        camp.supportedModes.length === 0 ||
+        camp.supportedModes.some((sm) => sm.trim().toLowerCase() === modeLow);
+      if (modeCovered) {
+        return camp.promoCode.trim();
+      }
+    }
+  }
+
+  return null;
 }
 
 const CURRENCY_SYMBOL_MAP: Record<string, string> = {

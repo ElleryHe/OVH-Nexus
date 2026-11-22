@@ -1290,3 +1290,197 @@ func TestSecurityHotfixTransientCouponInflightLockWildcardAndQuotePriceCap(t *te
 		t.Fatalf("expected datacenter='any' to match active 'gra' task as 429 duplicate, got %d", wildStatus)
 	}
 }
+
+func TestSecurityHotfixFollowUpDeferUnlockSummaryFailClosedAndScopedAutoCoupon(t *testing.T) {
+	env := newTestProcurementEnv(t, nil)
+	ctx := context.Background()
+
+	var summaryFailRemaining atomic.Int32
+	var checkoutHits atomic.Int32
+	validEnd := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+	ecoCatalogJSON := fmt.Sprintf(`{
+		"locale":{"currencyCode":"EUR"},
+		"plans":[
+			{
+				"planCode":"24ska01",
+				"invoiceName":"KS-A",
+				"pricings":[
+					{
+						"mode":"default","capacities":["renew"],"price":3000000000,"interval":1,
+						"promotions":[{"name":"BF26_ECO_20OFF","context":"standard","type":"percentage","value":20,"endDate":%q}]
+					},
+					{
+						"mode":"upfront24","capacities":["renew"],"price":72000000000,"interval":24
+					}
+				]
+			},
+			{
+				"planCode":"26adv01",
+				"invoiceName":"ADV-1",
+				"pricings":[
+					{"mode":"default","capacities":["renew"],"price":8000000000,"interval":1}
+				]
+			}
+		]
+	}`, validEnd)
+
+	ovhServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/auth/time"):
+			_, _ = w.Write([]byte("1763200000"))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/order/catalog/public/eco"):
+			_, _ = w.Write([]byte(ecoCatalogJSON))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/order/catalog/public/"):
+			_, _ = w.Write([]byte(`{"locale":{"currencyCode":"EUR"},"plans":[],"products":[],"addons":[]}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/dedicated/server/datacenter/availabilities"):
+			_, _ = w.Write([]byte(`[{"fqn":"24ska01","planCode":"24ska01","memory":"ram-32g","storage":"softraid-2x480ssd","datacenters":[{"datacenter":"gra","availability":"1H-high"}]}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/1.0/order/cart":
+			_, _ = w.Write([]byte(`{"cartId":"cart-fu-1"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/assign"):
+			_, _ = w.Write([]byte(`null`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/eco"):
+			_, _ = w.Write([]byte(`{"itemId":101}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/configuration"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/summary"):
+			if rem := summaryFailRemaining.Add(-1); rem >= 0 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"message":"temporary cart summary outage"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withoutTax": map[string]any{"value": 30.00, "currencyCode": "EUR"},
+					"withTax":    map[string]any{"value": 36.00, "currencyCode": "EUR"},
+				},
+				"details": []map[string]any{
+					{"detailType": "DURATION", "totalPrice": map[string]any{"value": 30.00, "currencyCode": "EUR"}},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/1.0/order/cart/cart-fu-1":
+			_, _ = w.Write([]byte(`{"cartId":"cart-fu-1","items":[]}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/checkout"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/checkout"):
+			checkoutHits.Add(1)
+			_, _ = w.Write([]byte(`{"orderId":889900,"url":"https://www.ovh.com/order/889900"}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/1.0/order/cart/"):
+			_, _ = w.Write([]byte(`null`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ovhServer.Close()
+
+	client, err := ovh.NewClient(ovhServer.URL+"/1.0", "ak", "as", "ck")
+	if err != nil {
+		t.Fatalf("ovh.NewClient: %v", err)
+	}
+	client.Client = ovhServer.Client()
+	env.svc.SetAccountClientFunc(func(context.Context, string) (*ovh.Client, *store.OVHAccount, error) {
+		return client, &store.OVHAccount{ID: "acc-1", Endpoint: "ovh-eu", Zone: "IE"}, nil
+	})
+	env.cat.SetPublicAPIBaseURL(ovhServer.URL + "/1.0")
+
+	// 1. Scoped auto-applied coupon stripping: strips ONLY matching (planCode + pricingMode), preserves cross-model & cross-mode.
+	qMatch, err := env.svc.CreateQueueTask(ctx, CreateQueueRequest{
+		AccountID: "acc-1", PlanCode: "24ska01", Datacenters: []string{"gra"}, PricingMode: "default", Coupon: "bf26_eco_20off",
+	})
+	if err != nil || qMatch.Coupon != "" {
+		t.Fatalf("expected matching (24ska01 + default) auto coupon stripped, got err=%v coupon=%q", err, qMatch.Coupon)
+	}
+	_ = env.st.DeleteQueueItem(ctx, qMatch.ID)
+
+	qWrongMode, err := env.svc.CreateQueueTask(ctx, CreateQueueRequest{
+		AccountID: "acc-1", PlanCode: "24ska01", Datacenters: []string{"gra"}, PricingMode: "upfront24", Coupon: "BF26_ECO_20OFF",
+	})
+	if err != nil || qWrongMode.Coupon != "BF26_ECO_20OFF" {
+		t.Fatalf("expected cross-mode coupon (upfront24) NOT stripped, got err=%v coupon=%q", err, qWrongMode.Coupon)
+	}
+	_ = env.st.DeleteQueueItem(ctx, qWrongMode.ID)
+
+	qWrongPlan, err := env.svc.CreateQueueTask(ctx, CreateQueueRequest{
+		AccountID: "acc-1", PlanCode: "26adv01", Datacenters: []string{"gra"}, PricingMode: "default", Coupon: "BF26_ECO_20OFF",
+	})
+	if err != nil || qWrongPlan.Coupon != "BF26_ECO_20OFF" {
+		t.Fatalf("expected cross-model coupon (26adv01) NOT stripped, got err=%v coupon=%q", err, qWrongPlan.Coupon)
+	}
+	_ = env.st.DeleteQueueItem(ctx, qWrongPlan.ID)
+
+	// 2. Capped queue task fails-closed when /summary fails (no blind checkout) AND remains running for retry!
+	summaryFailRemaining.Store(1)
+	cappedTask, err := env.svc.CreateQueueTask(ctx, CreateQueueRequest{
+		AccountID:       "acc-1",
+		PlanCode:        "24ska01",
+		Datacenters:     []string{"gra"},
+		MaxMonthlyPrice: 40.00,
+		MaxRetryCount:   10,
+	})
+	if err != nil {
+		t.Fatalf("CreateQueueTask capped: %v", err)
+	}
+	env.svc.ProcessDueTasksOnce(ctx)
+	if checkoutHits.Load() != 0 {
+		t.Fatalf("expected capped queue task to fail-closed without checkout when /summary fails, got checkoutHits=%d", checkoutHits.Load())
+	}
+	afterSummaryErr, _ := env.st.GetQueueItem(ctx, cappedTask.ID)
+	if afterSummaryErr == nil || afterSummaryErr.Status != "running" || afterSummaryErr.NextAttemptAt == 0 {
+		t.Fatalf("expected capped queue task to stay running with retry backoff on /summary failure, got %+v", afterSummaryErr)
+	}
+	_ = env.st.DeleteQueueItem(ctx, cappedTask.ID)
+
+	// 3. MCP EnforceQuoteCap: single transient 503 on /summary retries and succeeds; persistent 503 returns ErrPriceCheckFailed (not ErrPriceChangedSinceQuote).
+	summaryFailRemaining.Store(1)
+	res, err := env.svc.CreateUnpaidOrder(ctx, UnpaidOrderRequest{
+		AccountID: "acc-1", PlanCode: "24ska01", Datacenter: "gra", MaxMonthlyPrice: 30.00, MaxSetupFee: 0, EnforceQuoteCap: true,
+	})
+	if err != nil || res == nil || res.OrderID != "889900" {
+		t.Fatalf("expected transient single /summary 503 to recover on retry, got err=%v res=%+v", err, res)
+	}
+	checkoutBefore := checkoutHits.Load()
+	summaryFailRemaining.Store(5)
+	_, err = env.svc.CreateUnpaidOrder(ctx, UnpaidOrderRequest{
+		AccountID: "acc-1", PlanCode: "24ska01", Datacenter: "gra", MaxMonthlyPrice: 30.00, MaxSetupFee: 0, EnforceQuoteCap: true,
+	})
+	if !errors.Is(err, ErrPriceCheckFailed) || errors.Is(err, ErrPriceChangedSinceQuote) {
+		t.Fatalf("expected persistent /summary 503 to return ErrPriceCheckFailed (not ErrPriceChangedSinceQuote), got %v", err)
+	}
+	if checkoutHits.Load() != checkoutBefore {
+		t.Fatalf("expected no checkout on persistent /summary failure")
+	}
+
+	// 4. executeQueueTask releases inflightLocks via defer even if purchaseServer panics.
+	panicTask, err := env.svc.CreateQueueTask(ctx, CreateQueueRequest{
+		AccountID: "acc-1", PlanCode: "24ska01", Datacenters: []string{"gra"}, Options: []string{"ram-panic"},
+	})
+	if err != nil {
+		t.Fatalf("CreateQueueTask panic: %v", err)
+	}
+	env.svc.SetAccountClientFunc(func(context.Context, string) (*ovh.Client, *store.OVHAccount, error) {
+		panic("simulated client lookup panic")
+	})
+	panicked := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				panicked = true
+			}
+		}()
+		env.svc.executeQueueTask(ctx, panicTask.ID)
+	}()
+	if !panicked {
+		t.Fatalf("expected simulated panic during executeQueueTask")
+	}
+	locked := make(chan struct{})
+	go func() {
+		unlock := env.svc.lockInflightConfig("acc-1", "24ska01", []string{"ram-panic"}, "default", "")
+		unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("inflightLocks deadlocked after panic in executeQueueTask (missing defer unlock)")
+	}
+}

@@ -267,8 +267,14 @@ func (m *mockProcurement) QuoteOrderWithMode(_ context.Context, accountID, planC
 	m.mu.Unlock()
 	return &OrderQuoteResult{
 		Price: map[string]any{
-			"pricingMode":  pricingMode,
-			"duration":     duration,
+			"pricingMode":                 pricingMode,
+			"duration":                    duration,
+			"monthlyEquivalentWithoutTax": 12.49,
+			"prices": map[string]any{
+				"withoutTax":   12.49,
+				"withTax":      14.99,
+				"currencyCode": "EUR",
+			},
 			"totalWithTax": map[string]any{"text": "14.99 EUR", "value": 14.99},
 		},
 	}, nil
@@ -2033,6 +2039,23 @@ func TestSecurityHotfixQuoteCapNegativeLimitsInvalidModeAndAutoCouponStrip(t *te
 		Zone:             "IE",
 		Currency:         "EUR",
 		AutoAppliedCodes: []string{"BF26_ECO_20OFF"},
+		Campaigns: []catalog.CatalogPromoCampaign{
+			{
+				PromoCode:      "BF26_ECO_20OFF",
+				Context:        "standard",
+				AutoApplied:    true,
+				SupportedModes: []string{"default", "upfront12"},
+				PlanCodes:      []string{"24sys02-v3"},
+			},
+		},
+		Plans: []catalog.CatalogPromoPlan{
+			{
+				PlanCode:            "24sys02-v3",
+				AutoApplied:         true,
+				PromoCodes:          []string{"BF26_ECO_20OFF"},
+				SupportedPromoModes: []string{"default", "upfront12"},
+			},
+		},
 	}
 	env.catalog.mu.Unlock()
 
@@ -2068,8 +2091,42 @@ func TestSecurityHotfixQuoteCapNegativeLimitsInvalidModeAndAutoCouponStrip(t *te
 	}
 	reqs := env.proc.reqsCopy()
 	lastReq := reqs[len(reqs)-1]
-	if !lastReq.EnforceQuoteCap || lastReq.MaxMonthlyPrice != 14.99 || lastReq.MaxSetupFee != 0 {
-		t.Fatalf("expected order_create_unpaid to forward EnforceQuoteCap=true & MaxMonthlyPrice=14.99, got %+v", lastReq)
+	if !lastReq.EnforceQuoteCap || lastReq.MaxMonthlyPrice != 12.49 || lastReq.MaxSetupFee != 0 {
+		t.Fatalf("expected order_create_unpaid to forward EnforceQuoteCap=true & MaxMonthlyPrice=12.49 (ex-VAT), got %+v", lastReq)
+	}
+
+	// 3b. Cross-model & cross-mode auto-applied campaign code MUST NOT be stripped!
+	qCrossPlan, isErr, raw := mcpCallTool(t, env, token, "order_quote", map[string]any{
+		"plan_code":  "26game01-v4",
+		"datacenter": "gra",
+		"coupon":     "BF26_ECO_20OFF",
+	})
+	if isErr || qCrossPlan["coupon"] != "BF26_ECO_20OFF" || qCrossPlan["couponStripped"] != nil {
+		t.Fatalf("expected cross-model coupon NOT stripped, got isErr=%v res=%+v raw=%s", isErr, qCrossPlan, raw)
+	}
+	qCrossMode, isErr, raw := mcpCallTool(t, env, token, "order_quote", map[string]any{
+		"plan_code":    "24sys02-v3",
+		"datacenter":   "gra",
+		"pricing_mode": "upfront24",
+		"coupon":       "BF26_ECO_20OFF",
+	})
+	if isErr || qCrossMode["coupon"] != "BF26_ECO_20OFF" || qCrossMode["couponStripped"] != nil {
+		t.Fatalf("expected cross-mode (upfront24) coupon NOT stripped, got isErr=%v res=%+v raw=%s", isErr, qCrossMode, raw)
+	}
+
+	// 3c. extractQuotedPrices rejects tax-inclusive-only quotes and deducts setupFeeWithoutTax from cart totals.
+	if _, _, ok := extractQuotedPrices(map[string]any{
+		"totalWithTax": map[string]any{"value": 14.99},
+		"prices":       map[string]any{"withTax": 14.99},
+	}, 1); ok {
+		t.Fatalf("expected extractQuotedPrices to reject tax-inclusive-only quote")
+	}
+	mEx, sEx, ok := extractQuotedPrices(map[string]any{
+		"setupFeeWithoutTax": 50.0,
+		"prices":             map[string]any{"withoutTax": 80.0, "withTax": 96.0},
+	}, 1)
+	if !ok || mEx != 30.0 || sEx != 50.0 {
+		t.Fatalf("expected extractQuotedPrices to deduct setupFee (monthly=30, setup=50), got ok=%v m=%.2f s=%.2f", ok, mEx, sEx)
 	}
 
 	// 4. queue_add rejects <= 0 max_monthly_price / max_setup_fee (P0-06) and persists positive max_setup_fee + strips auto coupon.

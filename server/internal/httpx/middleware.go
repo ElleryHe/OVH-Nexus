@@ -124,13 +124,6 @@ func CSRFProtectionMiddleware(allowedOrigins []string) func(http.Handler) http.H
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Non-cookie programmatic auth mechanisms (MCP Bearer, loopback X-API-Key, internal token) are exempt from CSRF.
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ") ||
-				strings.TrimSpace(r.Header.Get("X-API-Key")) != "" ||
-				strings.TrimSpace(r.Header.Get("X-Internal-Token")) != "" {
-				next.ServeHTTP(w, r)
-				return
-			}
 
 			_, hasSessionCookie := r.Cookie("ovh_session")
 			isAuthMutation := normPath == "/api/auth/login" || normPath == "/api/auth/logout"

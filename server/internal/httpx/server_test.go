@@ -1683,4 +1683,33 @@ func TestSecurityHotfixCORSWildcardCSRFAndHSTS(t *testing.T) {
 	if recMCPBearer.Code != http.StatusOK {
 		t.Fatalf("expected Bearer MCP POST to bypass browser CSRF check, got %d", recMCPBearer.Code)
 	}
+
+	// 4. Forged Authorization/X-API-Key/X-Internal-Token headers MUST NOT bypass CSRF when ovh_session cookie is present.
+	for _, hdr := range []struct {
+		k string
+		v string
+	}{
+		{"Authorization", "Bearer forged-token"},
+		{"X-API-Key", "forged-key"},
+		{"X-Internal-Token", "forged-internal"},
+	} {
+		reqForged := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+		reqForged.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+		reqForged.Header.Set("Origin", "https://evil.example")
+		reqForged.Header.Set(hdr.k, hdr.v)
+		recForged := httptest.NewRecorder()
+		hCSRF.ServeHTTP(recForged, reqForged)
+		if recForged.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 CSRF rejection for cookie POST with forged %s header, got %d", hdr.k, recForged.Code)
+		}
+	}
+
+	// Non-cookie programmatic X-API-Key call still passes CSRF middleware cleanly.
+	reqProgAPIKey := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqProgAPIKey.Header.Set("X-API-Key", "loopback-key")
+	recProgAPIKey := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recProgAPIKey, reqProgAPIKey)
+	if recProgAPIKey.Code != http.StatusOK {
+		t.Fatalf("expected non-cookie X-API-Key POST to pass CSRF middleware, got %d", recProgAPIKey.Code)
+	}
 }

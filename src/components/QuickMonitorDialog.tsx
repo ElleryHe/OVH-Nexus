@@ -35,8 +35,10 @@ import {
   resolvePricingModeDuration,
   synthesizePricingModes,
   resolvePricingModeEntry,
+  findAutoAppliedPromoCodeForPlanMode,
 } from '@/utils/hardwareFormat';
 import type {
+  CatalogPromotionsResponse,
   ListingState,
   PlanConfigOption,
   PlanPricingMode,
@@ -81,7 +83,7 @@ export interface QuickMonitorDialogProps {
   initialConfig?: QuickMonitorInitialConfig | null;
   initialConfigs?: PlanConfigOption[];
   existingSubscription?: StockSubscription | null;
-  autoAppliedCodes?: string[];
+  promotions?: CatalogPromotionsResponse | null;
   onSuccess?: (planCode: string) => void;
 }
 
@@ -125,7 +127,7 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
   initialConfig = null,
   initialConfigs = [],
   existingSubscription = null,
-  autoAppliedCodes = [],
+  promotions = null,
   onSuccess,
 }) => {
   const { locale, t } = useLocale();
@@ -854,26 +856,19 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
           resolvePricingModeDuration(mode, chosen?.pricingModes);
         let trimmedCoupon = (tgt.coupon || '').trim();
         if (trimmedCoupon) {
-          const autoCandidates = new Set<string>(
-            autoAppliedCodes.map((c) => c.toLowerCase())
-          );
           const modePool = [
             ...(chosen?.pricingModes || []),
             ...(planMeta.pricingModes || []),
           ];
-          modePool.forEach((m) => {
-            if (m.renewPromo?.autoApplied && m.renewPromo.code) {
-              autoCandidates.add(m.renewPromo.code.toLowerCase());
-            }
-            if (m.setupPromo?.autoApplied && m.setupPromo.code) {
-              autoCandidates.add(m.setupPromo.code.toLowerCase());
-            }
-            if (m.autoApplied && m.promoCode) {
-              autoCandidates.add(m.promoCode.toLowerCase());
-            }
-          });
-          if (autoCandidates.has(trimmedCoupon.toLowerCase())) {
-            toast.info(t('promoDebug.autoCouponStripped', { code: trimmedCoupon }));
+          const matchedAuto = findAutoAppliedPromoCodeForPlanMode(
+            planCode,
+            mode,
+            trimmedCoupon,
+            modePool,
+            promotions
+          );
+          if (matchedAuto) {
+            toast.info(t('promoDebug.autoCouponStripped', { code: matchedAuto }));
             trimmedCoupon = '';
           }
         }

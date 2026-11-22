@@ -642,6 +642,80 @@ func (s *Service) LookupAutoAppliedPromo(ctx context.Context, endpoint, zone, co
 	return nil, false
 }
 
+// LookupAutoAppliedPromoForPlan checks whether code matches an active OVH auto-applied catalog campaign
+// (context=="standard") specifically on the given planCode and pricingMode (when pricingMode is non-empty).
+// Unlike LookupAutoAppliedPromo, it never matches campaigns belonging only to other server models or pricing modes,
+// avoiding false stripping of cross-model manual coupons or silent full-price checkouts.
+func (s *Service) LookupAutoAppliedPromoForPlan(ctx context.Context, endpoint, zone, planCode, pricingMode, code string) (*CatalogPromoCampaign, bool) {
+	trimmed := strings.TrimSpace(code)
+	targetPlan := strings.TrimSpace(planCode)
+	if trimmed == "" || targetPlan == "" {
+		return nil, false
+	}
+	targetMode := ""
+	if strings.TrimSpace(pricingMode) != "" {
+		targetMode, _, _ = NormalizePricingModeAndDuration(pricingMode, "")
+	}
+
+	ep, zn := s.resolveEndpointAndZone(ctx, "", endpoint, zone)
+	dict, err := s.GetBaremetalDictionary(ctx, ep, zn, false)
+	if err != nil || dict == nil {
+		return nil, false
+	}
+	entry, ok := dict.LookupPlan(targetPlan)
+	if !ok || len(entry.PricingModes) == 0 {
+		return nil, false
+	}
+
+	now := time.Now()
+	var matchedCode, matchedContext string
+	matchedMode := false
+	supportedSet := make(map[string]struct{})
+
+	for _, m := range entry.PricingModes {
+		modeMatchesCode := false
+		for _, pd := range []*PromoDetail{m.RenewPromo, m.SetupPromo} {
+			if isPromoDetailActiveAt(pd, now) && pd.AutoApplied && strings.EqualFold(strings.TrimSpace(pd.Code), trimmed) {
+				modeMatchesCode = true
+				if matchedCode == "" {
+					matchedCode = strings.TrimSpace(pd.Code)
+					matchedContext = pd.Context
+				}
+			}
+		}
+		if !modeMatchesCode && m.RenewPromo == nil && m.SetupPromo == nil && m.HasPromo &&
+			strings.EqualFold(strings.TrimSpace(m.PromoCode), trimmed) &&
+			isPromoWindowAndQtyActive(m.PromoStartDate, m.PromoEndDate, false, nil, now) &&
+			(m.AutoApplied || m.PromoContext == "" || strings.EqualFold(m.PromoContext, "standard")) {
+			modeMatchesCode = true
+			if matchedCode == "" {
+				matchedCode = strings.TrimSpace(m.PromoCode)
+				matchedContext = nonEmpty(m.PromoContext, "standard")
+			}
+		}
+		if !modeMatchesCode {
+			continue
+		}
+		if m.Mode != "" {
+			supportedSet[m.Mode] = struct{}{}
+		}
+		if targetMode == "" || strings.EqualFold(m.Mode, targetMode) {
+			matchedMode = true
+		}
+	}
+
+	if !matchedMode || matchedCode == "" {
+		return nil, false
+	}
+	return &CatalogPromoCampaign{
+		PromoCode:      matchedCode,
+		Context:        nonEmpty(matchedContext, "standard"),
+		AutoApplied:    true,
+		SupportedModes: sortModesList(sortedMapKeys(supportedSet)),
+		PlanCodes:      []string{targetPlan},
+	}, true
+}
+
 // HandleGetPromotions handles GET /api/catalog/promotions.
 func (s *Service) HandleGetPromotions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

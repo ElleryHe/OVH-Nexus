@@ -1553,6 +1553,18 @@ func TestV140CacheSlimmingSHA256ShortCircuitPromotionsRadarAndAutoPromoGuard(t *
 	if !isAuto || camp == nil || camp.PromoCode != "BF26_ECO_20OFF" {
 		t.Fatalf("expected LookupAutoAppliedPromo to detect BF26_ECO_20OFF, got isAuto=%v camp=%+v", isAuto, camp)
 	}
+
+	// Verify LookupAutoAppliedPromoForPlan matches strictly by (planCode, pricingMode) and never cross-strips.
+	planCamp, planAuto := svc.LookupAutoAppliedPromoForPlan(context.Background(), "ovh-eu", "IE", "24sys02-v3", "default", "bf26_eco_20off")
+	if !planAuto || planCamp == nil || planCamp.PromoCode != "BF26_ECO_20OFF" {
+		t.Fatalf("expected LookupAutoAppliedPromoForPlan to match 24sys02-v3+default, got isAuto=%v camp=%+v", planAuto, planCamp)
+	}
+	if _, wrongModeAuto := svc.LookupAutoAppliedPromoForPlan(context.Background(), "ovh-eu", "IE", "24sys02-v3", "upfront24", "BF26_ECO_20OFF"); wrongModeAuto {
+		t.Fatalf("expected LookupAutoAppliedPromoForPlan NOT to match unsupported pricingMode upfront24 on 24sys02-v3")
+	}
+	if _, wrongPlanAuto := svc.LookupAutoAppliedPromoForPlan(context.Background(), "ovh-eu", "IE", "26game01-v4", "default", "BF26_ECO_20OFF"); wrongPlanAuto {
+		t.Fatalf("expected LookupAutoAppliedPromoForPlan NOT to match cross-model planCode 26game01-v4")
+	}
 }
 
 func TestSecurityHotfixGzipPartialOutageConcurrentWritePromosAndThrottle(t *testing.T) {
@@ -1717,6 +1729,66 @@ func TestSecurityHotfixGzipPartialOutageConcurrentWritePromosAndThrottle(t *test
 	router.ServeHTTP(recRef2, httptest.NewRequest(http.MethodPost, "/api/servers/refresh", nil))
 	if recRef2.Code != http.StatusTooManyRequests || recRef2.Header().Get("Retry-After") == "" {
 		t.Fatalf("expected second rapid POST /api/servers/refresh to return 429 with Retry-After, got %d hdr=%v", recRef2.Code, recRef2.Header())
+	}
+}
+
+func TestGetServerPriceWithModeDeductsSetupFeeFromMonthlyEquivalent(t *testing.T) {
+	svc, _, _, _ := newTestCatalog(t)
+	mockOVH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/auth/time":
+			_, _ = w.Write([]byte("1763200000"))
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart":
+			_, _ = w.Write([]byte(`{"cartId":"cart-setup-1"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/order/cart/cart-setup-1/assign":
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && (r.URL.Path == "/order/cart/cart-setup-1/baremetalServers" || r.URL.Path == "/order/cart/cart-setup-1/eco"):
+			_, _ = w.Write([]byte(`{"itemId":1}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/configuration"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-setup-1/summary":
+			// 30.00 EUR monthly recurring + 50.00 EUR setup = 80.00 EUR total ex-VAT (96.00 EUR with tax).
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"prices": map[string]any{
+					"withoutTax":   map[string]any{"value": 80.00, "currencyCode": "EUR"},
+					"withTax":      map[string]any{"value": 96.00, "currencyCode": "EUR"},
+					"tax":          map[string]any{"value": 16.00, "currencyCode": "EUR"},
+					"currencyCode": "EUR",
+				},
+				"details": []map[string]any{
+					{"detailType": "DURATION", "description": "Server", "totalPrice": map[string]any{"value": 30.00, "currencyCode": "EUR"}},
+					{"detailType": "INSTALLATION", "description": "Setup", "totalPrice": map[string]any{"value": 50.00, "currencyCode": "EUR"}},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/order/cart/cart-setup-1":
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/order/cart/"):
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockOVH.Close()
+
+	svc.SetPublicAPIBaseURL(mockOVH.URL)
+	svc.SetAccountClientFunc(func(_ context.Context, _ string) (*ovh.Client, *store.OVHAccount, error) {
+		c, err := ovh.NewClient(mockOVH.URL, "ak-test", "as-test", "ck-test")
+		if err != nil {
+			return nil, nil, err
+		}
+		return c, &store.OVHAccount{ID: "acc-1", Endpoint: "ovh-eu", Zone: "IE"}, nil
+	})
+
+	res, err := svc.GetServerPriceWithMode(context.Background(), "acc-1", "24ska01", "gra", nil, "default", "P1M", "")
+	if err != nil || res == nil || !res.Success || res.Price == nil {
+		t.Fatalf("GetServerPriceWithMode failed: err=%v res=%+v", err, res)
+	}
+	if res.Price.MonthlyEquivalentWithoutTax == nil || *res.Price.MonthlyEquivalentWithoutTax != 30.00 {
+		t.Fatalf("expected MonthlyEquivalentWithoutTax=30.00 (excluding 50.00 setup fee), got %+v", res.Price.MonthlyEquivalentWithoutTax)
+	}
+	if res.Price.SetupFeeWithoutTax == nil || *res.Price.SetupFeeWithoutTax != 50.00 {
+		t.Fatalf("expected SetupFeeWithoutTax=50.00, got %+v", res.Price.SetupFeeWithoutTax)
 	}
 }
 

@@ -3516,9 +3516,34 @@ func (s *Service) GetServerPriceWithMode(
 		pricePayload.PricingMode = mode
 		pricePayload.Duration = dur
 		pricePayload.IntervalMonths = intervalMonths
-		if pricePayload.Prices.WithoutTax != nil && intervalMonths > 0 {
-			meq := roundCents(*pricePayload.Prices.WithoutTax / float64(intervalMonths))
-			pricePayload.MonthlyEquivalentWithoutTax = &meq
+		if intervalMonths > 0 {
+			var periodExVAT float64
+			setupExVAT := 0.0
+			if pricePayload.SetupFeeWithoutTax != nil && *pricePayload.SetupFeeWithoutTax > 0 {
+				setupExVAT = *pricePayload.SetupFeeWithoutTax
+			}
+			if pricePayload.RecurringWithoutTax != nil && *pricePayload.RecurringWithoutTax > 0 {
+				periodExVAT = *pricePayload.RecurringWithoutTax
+				if pricePayload.Prices.WithoutTax != nil && *pricePayload.Prices.WithoutTax > 0 {
+					totalEx := *pricePayload.Prices.WithoutTax
+					if totalEx+0.02 < periodExVAT+setupExVAT {
+						if net := roundCents(totalEx - setupExVAT); net > 0 {
+							periodExVAT = net
+						}
+					}
+				}
+			} else if pricePayload.Prices.WithoutTax != nil && *pricePayload.Prices.WithoutTax > 0 {
+				totalEx := *pricePayload.Prices.WithoutTax
+				if setupExVAT > 0 && totalEx > setupExVAT {
+					periodExVAT = roundCents(totalEx - setupExVAT)
+				} else {
+					periodExVAT = totalEx
+				}
+			}
+			if periodExVAT > 0 {
+				meq := roundCents(periodExVAT / float64(intervalMonths))
+				pricePayload.MonthlyEquivalentWithoutTax = &meq
+			}
 		}
 	}
 	return &ServerPriceResult{

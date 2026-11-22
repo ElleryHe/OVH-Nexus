@@ -2093,47 +2093,133 @@ func extractQuotedPrices(priceMap map[string]any, intervalMonths int) (monthlyEx
 		return math.Round(m*100) / 100, setupFeeExVAT, true
 	}
 	if rec, hasRec := numericFieldFromMap(priceMap, "recurringWithoutTax"); hasRec && rec > 0 {
-		return math.Round((rec/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+		periodEx := rec
+		if pricesObj, _ := priceMap["prices"].(map[string]any); pricesObj != nil {
+			if totalEx, hasTot := numericFieldFromMap(pricesObj, "withoutTax"); hasTot && totalEx > 0 && totalEx+0.02 < rec+setupFeeExVAT {
+				if net := totalEx - setupFeeExVAT; net > 0 {
+					periodEx = net
+				}
+			}
+		}
+		return math.Round((periodEx/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
 	}
 	if pricesObj, _ := priceMap["prices"].(map[string]any); pricesObj != nil {
 		if wt, hasWT := numericFieldFromMap(pricesObj, "withoutTax"); hasWT && wt > 0 {
-			return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
-		}
-		if wt, hasWT := numericFieldFromMap(pricesObj, "withTax"); hasWT && wt > 0 {
-			return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+			net := wt
+			if setupFeeExVAT > 0 {
+				if wt <= setupFeeExVAT {
+					return 0, setupFeeExVAT, false
+				}
+				net = wt - setupFeeExVAT
+			}
+			return math.Round((net/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
 		}
 	}
 	if wt, hasWT := numericFieldFromMap(priceMap, "totalWithoutTax"); hasWT && wt > 0 {
-		return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
-	}
-	if wt, hasWT := numericFieldFromMap(priceMap, "totalWithTax"); hasWT && wt > 0 {
-		return math.Round((wt/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
+		net := wt
+		if setupFeeExVAT > 0 {
+			if wt <= setupFeeExVAT {
+				return 0, setupFeeExVAT, false
+			}
+			net = wt - setupFeeExVAT
+		}
+		return math.Round((net/float64(intervalMonths))*100) / 100, setupFeeExVAT, true
 	}
 	return 0, setupFeeExVAT, false
 }
 
-func (s *Service) stripAutoAppliedCouponForMCP(ctx context.Context, rawCoupon string) (cleanCoupon string, strippedCode string) {
+func (s *Service) stripAutoAppliedCouponForMCP(ctx context.Context, planCode, pricingMode, rawCoupon string) (cleanCoupon string, strippedCode string) {
 	trimmed := strings.TrimSpace(rawCoupon)
-	if trimmed == "" {
-		return "", ""
+	targetPlan := strings.TrimSpace(planCode)
+	if trimmed == "" || targetPlan == "" {
+		return trimmed, ""
+	}
+	targetMode := ""
+	if strings.TrimSpace(pricingMode) != "" {
+		targetMode, _, _ = catalog.NormalizePricingModeAndDuration(pricingMode, "")
 	}
 	promoReader, ok := s.deps.Catalog.(CatalogPromotionsReader)
 	if !ok || promoReader == nil {
 		return trimmed, ""
 	}
-	resp, err := promoReader.GetPromotions(ctx, catalog.PromotionsQueryOptions{})
+	resp, err := promoReader.GetPromotions(ctx, catalog.PromotionsQueryOptions{
+		PlanCode: targetPlan,
+	})
 	if err != nil || resp == nil {
 		return trimmed, ""
 	}
-	for _, code := range resp.AutoAppliedCodes {
-		if strings.EqualFold(strings.TrimSpace(code), trimmed) {
-			if s.log != nil {
-				s.log.Warn(logger.SourceMCP, "Stripped auto-applied OVH catalog campaign code from MCP coupon argument (applied automatically by OVH)",
-					"coupon", trimmed, "campaign", code)
+
+	containsFold := func(list []string, needle string) bool {
+		for _, item := range list {
+			if strings.EqualFold(strings.TrimSpace(item), needle) {
+				return true
 			}
-			return "", code
+		}
+		return false
+	}
+
+	// 1. Check exact plan + pricingMode match in resp.Plans.
+	for _, p := range resp.Plans {
+		if !strings.EqualFold(strings.TrimSpace(p.PlanCode), targetPlan) {
+			continue
+		}
+		if len(p.PricingModes) > 0 {
+			for _, m := range p.PricingModes {
+				if targetMode != "" && !strings.EqualFold(strings.TrimSpace(m.Mode), targetMode) {
+					continue
+				}
+				for _, pd := range []*catalog.PromoDetail{m.RenewPromo, m.SetupPromo} {
+					if pd != nil && pd.AutoApplied && strings.EqualFold(strings.TrimSpace(pd.Code), trimmed) {
+						if s.log != nil {
+							s.log.Warn(logger.SourceMCP, "Stripped auto-applied OVH catalog campaign code from MCP coupon argument (applied automatically by OVH)",
+								"planCode", targetPlan, "pricingMode", targetMode, "coupon", trimmed, "campaign", pd.Code)
+						}
+						return "", strings.TrimSpace(pd.Code)
+					}
+				}
+				if m.RenewPromo == nil && m.SetupPromo == nil && m.HasPromo &&
+					strings.EqualFold(strings.TrimSpace(m.PromoCode), trimmed) &&
+					(m.AutoApplied || m.PromoContext == "" || strings.EqualFold(m.PromoContext, "standard")) {
+					if s.log != nil {
+						s.log.Warn(logger.SourceMCP, "Stripped auto-applied OVH catalog campaign code from MCP coupon argument (applied automatically by OVH)",
+							"planCode", targetPlan, "pricingMode", targetMode, "coupon", trimmed, "campaign", m.PromoCode)
+					}
+					return "", strings.TrimSpace(m.PromoCode)
+				}
+			}
+		} else if p.AutoApplied && containsFold(p.PromoCodes, trimmed) {
+			if targetMode == "" || len(p.SupportedPromoModes) == 0 || containsFold(p.SupportedPromoModes, targetMode) {
+				for _, code := range p.PromoCodes {
+					if strings.EqualFold(strings.TrimSpace(code), trimmed) {
+						if s.log != nil {
+							s.log.Warn(logger.SourceMCP, "Stripped auto-applied OVH catalog campaign code from MCP coupon argument (applied automatically by OVH)",
+								"planCode", targetPlan, "pricingMode", targetMode, "coupon", trimmed, "campaign", code)
+						}
+						return "", strings.TrimSpace(code)
+					}
+				}
+			}
 		}
 	}
+
+	// 2. Check campaigns explicitly listing this planCode and pricingMode.
+	for _, c := range resp.Campaigns {
+		if !c.AutoApplied || !strings.EqualFold(strings.TrimSpace(c.PromoCode), trimmed) {
+			continue
+		}
+		if !containsFold(c.PlanCodes, targetPlan) {
+			continue
+		}
+		if targetMode != "" && len(c.SupportedModes) > 0 && !containsFold(c.SupportedModes, targetMode) {
+			continue
+		}
+		if s.log != nil {
+			s.log.Warn(logger.SourceMCP, "Stripped auto-applied OVH catalog campaign code from MCP coupon argument (applied automatically by OVH)",
+				"planCode", targetPlan, "pricingMode", targetMode, "coupon", trimmed, "campaign", c.PromoCode)
+		}
+		return "", strings.TrimSpace(c.PromoCode)
+	}
+
 	return trimmed, ""
 }
 
@@ -2154,7 +2240,7 @@ func (s *Service) toolOrderQuote(ctx context.Context, cfg *store.MCPConfig, args
 	if modeErr != nil {
 		return nil, "", modeErr
 	}
-	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, asString(args["coupon"]))
+	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, planCode, pricingMode, asString(args["coupon"]))
 
 	targets, err := s.resolveTargetAccounts(ctx, cfg, asString(args["profile"]))
 	if err != nil {
@@ -2266,12 +2352,17 @@ func (s *Service) toolOrderCreateUnpaid(ctx context.Context, cfg *store.MCPConfi
 	}
 
 	mu := s.checkoutMutexForAccount(quote.AccountID)
-	mu.Lock()
-	orderRes, err := s.deps.Procurement.CreateUnpaidOrder(ctx, req)
-	mu.Unlock()
+	orderRes, err := func() (*UnpaidOrderResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return s.deps.Procurement.CreateUnpaidOrder(ctx, req)
+	}()
 	if err != nil {
 		if errors.Is(err, procurement.ErrPriceChangedSinceQuote) || strings.Contains(err.Error(), "PRICE_CHANGED_SINCE_QUOTE") {
 			return nil, "", fmt.Errorf("PRICE_CHANGED_SINCE_QUOTE: live price for %s @ %s increased above quoted price (monthly<=%.2f, setup<=%.2f): %w. Call `order_quote` again to confirm the new price with the user", quote.PlanCode, strings.ToUpper(quote.Datacenter), quote.QuotedMonthlyExVAT, quote.QuotedSetupFeeExVAT, err)
+		}
+		if errors.Is(err, procurement.ErrPriceCheckFailed) || strings.Contains(err.Error(), "PRICE_CHECK_FAILED") {
+			return nil, "", fmt.Errorf("PRICE_CHECK_FAILED: unable to verify live cart summary before checkout for %s @ %s: %w. Please retry with a fresh `order_quote`", quote.PlanCode, strings.ToUpper(quote.Datacenter), err)
 		}
 		return nil, "", fmt.Errorf("could not place unpaid order for %s @ %s: %w. Consider using `queue_add` to watch for restock", quote.PlanCode, strings.ToUpper(quote.Datacenter), err)
 	}
@@ -2344,7 +2435,7 @@ func (s *Service) toolQueueAdd(ctx context.Context, cfg *store.MCPConfig, args m
 	if sErr != nil {
 		return nil, "", sErr
 	}
-	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, asString(args["coupon"]))
+	coupon, strippedCode := s.stripAutoAppliedCouponForMCP(ctx, planCode, pricingMode, asString(args["coupon"]))
 
 	if planCode == "" || len(dcs) == 0 {
 		return nil, "", errors.New("both `plan_code` and a non-empty `datacenters` list are required")
