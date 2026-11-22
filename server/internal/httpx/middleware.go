@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -33,42 +34,65 @@ var gzipWriterPool = sync.Pool{
 
 // SecurityHeadersMiddleware injects strict defensive HTTP security headers on every response.
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
-		next.ServeHTTP(w, r)
-	})
+	return SecurityHeadersWithConfig(false)(next)
+}
+
+// SecurityHeadersWithConfig injects strict defensive HTTP security headers and adds HSTS when cookieSecure is true.
+func SecurityHeadersWithConfig(cookieSecure bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+			h.Set("Content-Security-Policy", contentSecurityPolicy)
+			if cookieSecure {
+				h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // CORSMiddleware validates Origin against configured CORSOrigins and handles browser preflights.
+// SECURITY: Wildcard ("*") origins NEVER set Access-Control-Allow-Credentials: true and NEVER reflect arbitrary Origins.
 func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	allowed := make([]string, 0, len(allowedOrigins))
+	hasWildcard := false
 	for _, o := range allowedOrigins {
 		if trimmed := strings.TrimSpace(o); trimmed != "" {
-			allowed = append(allowed, trimmed)
+			if trimmed == "*" {
+				hasWildcard = true
+			} else {
+				allowed = append(allowed, trimmed)
+			}
 		}
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := strings.TrimSpace(r.Header.Get("Origin"))
-			if origin != "" && isOriginAllowed(origin, allowed) {
-				h := w.Header()
-				h.Set("Access-Control-Allow-Origin", origin)
-				h.Set("Access-Control-Allow-Credentials", "true")
-				h.Add("Vary", "Origin")
-				h.Set("Access-Control-Expose-Headers", "X-Cache-Warning, Content-Disposition, Mcp-Session-Id")
+			if origin != "" {
+				explicit := matchesExplicitOrigin(origin, allowed)
+				if explicit || hasWildcard {
+					h := w.Header()
+					if explicit {
+						h.Set("Access-Control-Allow-Origin", origin)
+						h.Set("Access-Control-Allow-Credentials", "true")
+						h.Add("Vary", "Origin")
+					} else {
+						h.Set("Access-Control-Allow-Origin", "*")
+					}
+					h.Set("Access-Control-Expose-Headers", "X-Cache-Warning, Content-Disposition, Mcp-Session-Id")
 
-				if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-					h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-					h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-OVH-Account, X-TOTP-Code, X-MCP-Token, X-Internal-Token, Mcp-Session-Id")
-					h.Set("Access-Control-Max-Age", "600")
-					w.WriteHeader(http.StatusNoContent)
-					return
+					if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+						h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+						h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-OVH-Account, X-TOTP-Code, X-MCP-Token, X-Internal-Token, Mcp-Session-Id")
+						h.Set("Access-Control-Max-Age", "600")
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
 				}
 			}
 			next.ServeHTTP(w, r)
@@ -76,16 +100,102 @@ func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	}
 }
 
-func isOriginAllowed(origin string, allowed []string) bool {
-	if slices.Contains(allowed, "*") {
-		return true
+// CSRFProtectionMiddleware validates Origin / Sec-Fetch-Site headers on cookie-authenticated
+// non-idempotent requests (POST/PUT/PATCH/DELETE) while exempting Bearer MCP and API-key clients.
+func CSRFProtectionMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	explicitAllowed := make([]string, 0, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if trimmed := strings.TrimSpace(o); trimmed != "" && trimmed != "*" {
+			explicitAllowed = append(explicitAllowed, trimmed)
+		}
 	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			default:
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			normPath := strings.TrimRight(r.URL.Path, "/")
+			if !strings.HasPrefix(normPath, "/api/") || normPath == "/api/mcp" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			_, hasSessionCookie := r.Cookie("ovh_session")
+			isAuthMutation := normPath == "/api/auth/login" || normPath == "/api/auth/logout"
+			if hasSessionCookie != nil && !isAuthMutation {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			origin := strings.TrimSpace(r.Header.Get("Origin"))
+			if origin != "" {
+				if !originMatchesHost(origin, r.Host) && !matchesExplicitOrigin(origin, explicitAllowed) {
+					writeJSONError(w, http.StatusForbidden, "CSRF_ORIGIN_REJECTED", "Cross-origin state-changing request rejected.")
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if sfs := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); sfs != "" {
+				if sfs != "same-origin" && sfs != "none" {
+					writeJSONError(w, http.StatusForbidden, "CSRF_CROSS_SITE_REJECTED", "Cross-site state-changing request rejected.")
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if ref := strings.TrimSpace(r.Header.Get("Referer")); ref != "" {
+				if !originMatchesHost(ref, r.Host) && !matchesExplicitOrigin(refOrigin(ref), explicitAllowed) {
+					writeJSONError(w, http.StatusForbidden, "CSRF_REFERER_REJECTED", "Cross-origin referer rejected.")
+					return
+				}
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func matchesExplicitOrigin(origin string, allowed []string) bool {
 	for _, item := range allowed {
-		if strings.EqualFold(origin, item) {
+		if item != "*" && strings.EqualFold(origin, item) {
 			return true
 		}
 	}
 	return false
+}
+
+func originMatchesHost(rawURL, reqHost string) bool {
+	if strings.TrimSpace(rawURL) == "" || strings.TrimSpace(reqHost) == "" {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, strings.TrimSpace(reqHost))
+}
+
+func refOrigin(rawRef string) string {
+	u, err := url.Parse(rawRef)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+func isOriginAllowed(origin string, allowed []string) bool {
+	if slices.Contains(allowed, "*") {
+		return true
+	}
+	return matchesExplicitOrigin(origin, allowed)
 }
 
 // MaxBodySizeMiddleware enforces a global 2 MiB request body cap using http.MaxBytesReader.

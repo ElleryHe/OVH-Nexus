@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/utils/apiClient";
 import type { SupportedLocale } from "@/context/LocaleContext";
-import type { PlanPricingMode } from "@/types";
+import type { CatalogPromotionsResponse, PlanPricingMode } from "@/types";
 
 export interface CpuInfo {
   brand?: string;
@@ -75,6 +75,7 @@ export interface CatalogDictionary {
   currency?: string;
   plans: Record<string, CatalogPlanDictEntry>;
   realPlans?: Record<string, CatalogPlanDictEntry>;
+  planAliases?: Record<string, string>;
   addonPrices?: Record<string, number>;
   addonModePrices?: Record<string, Record<string, PlanPricingMode>>;
   options: Record<string, any>;
@@ -92,10 +93,13 @@ export interface ConfigPriceBreakdown {
   formattedTotal: string;
 }
 
-const LEGACY_STORAGE_KEY = "ovh_nexus_catalog_dict_v2";
-const STORAGE_KEY = "ovh_nexus_catalog_dict_v3";
+const LEGACY_STORAGE_KEYS = [
+  "ovh_nexus_catalog_dict_v2",
+  "ovh_nexus_catalog_dict_v3",
+];
+const STORAGE_KEY = "ovh_nexus_catalog_dict_v4";
 try {
-  localStorage.removeItem(LEGACY_STORAGE_KEY);
+  LEGACY_STORAGE_KEYS.forEach((k) => localStorage.removeItem(k));
 } catch {
   // ignore storage errors
 }
@@ -330,14 +334,20 @@ export function resolvePlanDisplay(
 
   const realPlans = activeDict?.realPlans || {};
   const plans = activeDict?.plans || {};
+  const aliases = activeDict?.planAliases || {};
+  const lookupDict = (key?: string): CatalogPlanDictEntry | undefined => {
+    if (!key) return undefined;
+    const direct = realPlans[key] || plans[key];
+    if (direct) return direct;
+    const canonical = aliases[key] || aliases[key.toLowerCase()];
+    if (canonical) return realPlans[canonical] || plans[canonical];
+    return undefined;
+  };
   const match =
-    realPlans[planCode] ||
-    plans[planCode] ||
-    (serverCode ? realPlans[serverCode] || plans[serverCode] : undefined) ||
-    realPlans[baseCode] ||
-    plans[baseCode] ||
-    realPlans[cleanBase] ||
-    plans[cleanBase];
+    lookupDict(planCode) ||
+    (serverCode ? lookupDict(serverCode) : undefined) ||
+    lookupDict(baseCode) ||
+    lookupDict(cleanBase);
 
   if (match) {
     const cpu = match.cpu || null;
@@ -472,6 +482,82 @@ export function resolvePricingModeEntry(
     modes[0] ||
     null
   );
+}
+
+/**
+ * Checks whether rawCoupon matches an active OVH auto-applied catalog campaign
+ * (context=="standard") strictly for the given planCode and pricingMode.
+ * Never matches campaigns belonging only to other server models or pricing modes.
+ */
+export function findAutoAppliedPromoCodeForPlanMode(
+  planCode: string,
+  pricingMode: string | undefined,
+  rawCoupon: string | undefined,
+  pricingModes?: PlanPricingMode[] | null,
+  promotions?: CatalogPromotionsResponse | null
+): string | null {
+  const trimmed = (rawCoupon || "").trim();
+  const planLow = (planCode || "").trim().toLowerCase();
+  if (!trimmed || !planLow) return null;
+
+  const targetLow = trimmed.toLowerCase();
+  const modeLow = (pricingMode || "default").trim().toLowerCase() || "default";
+
+  const matchInModes = (modes?: PlanPricingMode[] | null): string | null => {
+    if (!Array.isArray(modes)) return null;
+    for (const m of modes) {
+      if ((m.mode || "default").trim().toLowerCase() !== modeLow) continue;
+      if (m.renewPromo?.autoApplied && m.renewPromo.code?.trim().toLowerCase() === targetLow) {
+        return m.renewPromo.code.trim();
+      }
+      if (m.setupPromo?.autoApplied && m.setupPromo.code?.trim().toLowerCase() === targetLow) {
+        return m.setupPromo.code.trim();
+      }
+      if (
+        !m.renewPromo &&
+        !m.setupPromo &&
+        m.hasPromo &&
+        m.autoApplied &&
+        m.promoCode?.trim().toLowerCase() === targetLow
+      ) {
+        return m.promoCode.trim();
+      }
+    }
+    return null;
+  };
+
+  const direct = matchInModes(pricingModes);
+  if (direct) return direct;
+
+  if (promotions?.plans) {
+    const planEntry = promotions.plans.find(
+      (p) => (p.planCode || "").trim().toLowerCase() === planLow
+    );
+    if (planEntry) {
+      const fromPlan = matchInModes(planEntry.pricingModes);
+      if (fromPlan) return fromPlan;
+    }
+  }
+
+  if (promotions?.campaigns) {
+    for (const camp of promotions.campaigns) {
+      if (!camp.autoApplied) continue;
+      if ((camp.promoCode || "").trim().toLowerCase() !== targetLow) continue;
+      const planCovered = (camp.planCodes || []).some(
+        (pc) => pc.trim().toLowerCase() === planLow
+      );
+      if (!planCovered) continue;
+      const modeCovered =
+        !camp.supportedModes ||
+        camp.supportedModes.length === 0 ||
+        camp.supportedModes.some((sm) => sm.trim().toLowerCase() === modeLow);
+      if (modeCovered) {
+        return camp.promoCode.trim();
+      }
+    }
+  }
+
+  return null;
 }
 
 const CURRENCY_SYMBOL_MAP: Record<string, string> = {
@@ -774,10 +860,20 @@ export function formatOptionCode(
   return code;
 }
 
+const DICT_TTL_SECONDS = 12 * 3600;
+
+function isDictFresh(d: CatalogDictionary | null | undefined): d is CatalogDictionary {
+  return Boolean(
+    d &&
+      d.plans &&
+      Date.now() / 1000 - (d.updatedAt || 0) < DICT_TTL_SECONDS
+  );
+}
+
 export async function loadCatalogDictionary(
   forceRefresh: boolean = false
 ): Promise<CatalogDictionary | null> {
-  if (!forceRefresh && memoryDict) {
+  if (!forceRefresh && isDictFresh(memoryDict)) {
     return memoryDict;
   }
   if (!forceRefresh) {
@@ -785,12 +881,9 @@ export async function loadCatalogDictionary(
       const cached = localStorage.getItem(STORAGE_KEY);
       if (cached) {
         const parsed = JSON.parse(cached) as CatalogDictionary;
-        if (
-          parsed &&
-          parsed.plans &&
-          Date.now() / 1000 - (parsed.updatedAt || 0) < 12 * 3600
-        ) {
+        if (isDictFresh(parsed)) {
           memoryDict = parsed;
+          return memoryDict;
         }
       }
     } catch {
@@ -824,12 +917,15 @@ export async function loadCatalogDictionary(
 
 export function useCatalogDictionary() {
   const [dict, setDict] = useState<CatalogDictionary | null>(() => {
-    if (memoryDict) return memoryDict;
+    if (isDictFresh(memoryDict)) return memoryDict;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        memoryDict = JSON.parse(raw);
-        return memoryDict;
+        const parsed = JSON.parse(raw) as CatalogDictionary;
+        if (isDictFresh(parsed)) {
+          memoryDict = parsed;
+          return memoryDict;
+        }
       }
     } catch {
       // ignore

@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +72,14 @@ func Open(dataDir string, v *vault.Vault) (*Store, error) {
 	_ = os.Chmod(dataDir, 0o700)
 
 	dbPath := filepath.Join(dataDir, "nexus.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// Encode connection-level PRAGMAs in the SQLite URI DSN so every new or reconnected
+	// connection in database/sql inherits foreign_keys, busy_timeout, WAL, and synchronous settings.
+	dsn := (&url.URL{
+		Scheme:   "file",
+		Path:     filepath.ToSlash(dbPath),
+		RawQuery: "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+	}).String()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: failed to open sqlite database %q: %w", dbPath, err)
 	}
@@ -79,17 +88,9 @@ func Open(dataDir string, v *vault.Vault) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA busy_timeout=5000;",
-		"PRAGMA foreign_keys=ON;",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("store: failed executing %q: %w", p, err)
-		}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: failed pinging sqlite database %q: %w", dbPath, err)
 	}
 
 	if err := os.Chmod(dbPath, 0o600); err != nil {
@@ -168,6 +169,7 @@ func (s *Store) migrate() error {
 			duration TEXT NOT NULL DEFAULT '',
 			coupon TEXT NOT NULL DEFAULT '',
 			max_monthly_price REAL NOT NULL DEFAULT 0,
+			max_setup_fee REAL NOT NULL DEFAULT 0,
 			currency TEXT NOT NULL DEFAULT '',
 			quantity INTEGER NOT NULL DEFAULT 1,
 			purchased INTEGER NOT NULL DEFAULT 0,
@@ -340,6 +342,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE order_queue ADD COLUMN config_key TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE order_queue ADD COLUMN config_label TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE order_queue ADD COLUMN max_monthly_price REAL NOT NULL DEFAULT 0;`,
+		`ALTER TABLE order_queue ADD COLUMN max_setup_fee REAL NOT NULL DEFAULT 0;`,
 		`ALTER TABLE order_queue ADD COLUMN currency TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE order_queue ADD COLUMN pricing_mode TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE order_queue ADD COLUMN duration TEXT NOT NULL DEFAULT '';`,
@@ -418,6 +421,39 @@ func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 		return fmt.Errorf("store: delete setting %q: %w", key, err)
 	}
 	return nil
+}
+
+// GetSessionEpoch returns the current monotonic session revocation epoch from kv_settings (defaults to 1).
+func (s *Store) GetSessionEpoch(ctx context.Context) (int64, error) {
+	raw, found, err := s.GetSetting(ctx, "session_epoch")
+	if err != nil {
+		return 1, err
+	}
+	if !found || strings.TrimSpace(raw) == "" {
+		return 1, nil
+	}
+	val, parseErr := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if parseErr != nil || val < 1 {
+		return 1, nil
+	}
+	return val, nil
+}
+
+// BumpSessionEpoch atomically increments and persists the session revocation epoch in kv_settings,
+// immediately invalidating all previously issued browser session cookies across devices.
+func (s *Store) BumpSessionEpoch(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur, err := s.GetSessionEpoch(ctx)
+	if err != nil {
+		return 0, err
+	}
+	next := cur + 1
+	if err := s.SetSetting(ctx, "session_epoch", strconv.FormatInt(next, 10)); err != nil {
+		return 0, err
+	}
+	return next, nil
 }
 
 // GetOrCreateSessionSecret returns the encrypted-at-rest HMAC session secret,

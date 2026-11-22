@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -240,5 +242,71 @@ func TestLogsHTTPHandlersAndSSEStream(t *testing.T) {
 	r.ServeHTTP(recDel, reqDel)
 	if recDel.Code != http.StatusOK {
 		t.Fatalf("DELETE /api/logs status=%d", recDel.Code)
+	}
+}
+
+type failingSSEWriter struct {
+	hdr http.Header
+	err error
+}
+
+func (f *failingSSEWriter) Header() http.Header         { return f.hdr }
+func (f *failingSSEWriter) WriteHeader(int)             {}
+func (f *failingSSEWriter) Write([]byte) (int, error)   { return 0, f.err }
+func (f *failingSSEWriter) Flush()                      {}
+
+func TestSSEMaxSubscribersWriteErrorShutdownAndURLEncodedRedaction(t *testing.T) {
+	var out bytes.Buffer
+	hub := NewHub(nil, Options{Level: "INFO", Format: "text", Output: &out, MaxSubscribers: 2})
+	lh := NewLogsHandler(hub, nil)
+	lh.SetWriteTimeout(50 * time.Millisecond)
+
+	// 1. URL-encoded secret redaction (P2-05).
+	rawSecret := "my+super/secret=token&123"
+	hub.AddSensitiveValue(rawSecret)
+	hub.Info(SourceHTTP, "Upstream query failed", "url", "https://example.com?k="+url.QueryEscape(rawSecret))
+	if strings.Contains(out.String(), url.QueryEscape(rawSecret)) || strings.Contains(out.String(), rawSecret) {
+		t.Fatalf("expected both raw and URL-encoded secret to be redacted: %s", out.String())
+	}
+
+	// 2. MaxSubscribers cap returns 503 SSE_MAX_SUBSCRIBERS.
+	_, cancel1, ok1 := hub.TrySubscribe()
+	_, cancel2, ok2 := hub.TrySubscribe()
+	if !ok1 || !ok2 {
+		t.Fatalf("expected first 2 subscribers to succeed")
+	}
+	rec503 := httptest.NewRecorder()
+	lh.HandleStreamLogs(rec503, httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil))
+	if rec503.Code != http.StatusServiceUnavailable || !strings.Contains(rec503.Body.String(), "SSE_MAX_SUBSCRIBERS") {
+		t.Fatalf("expected 503 SSE_MAX_SUBSCRIBERS when cap reached, got %d %s", rec503.Code, rec503.Body.String())
+	}
+	cancel1()
+
+	// 3. Failing write exits immediately and releases subscriber slot.
+	fw := &failingSSEWriter{hdr: make(http.Header), err: errors.New("broken pipe")}
+	lh.HandleStreamLogs(fw, httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil))
+	_, cancel3, ok3 := hub.TrySubscribe()
+	if !ok3 {
+		t.Fatalf("expected subscriber slot to be freed immediately after SSE write error")
+	}
+	defer cancel2()
+	defer cancel3()
+
+	// 4. Hub.Close() closes all active subscriber channels cleanly.
+	chOpen, _, ok4 := func() (<-chan LogEntry, func(), bool) {
+		cancel3()
+		return hub.TrySubscribe()
+	}()
+	if !ok4 {
+		t.Fatalf("expected subscribe before Close to succeed")
+	}
+	hub.Close()
+	select {
+	case _, stillOpen := <-chOpen:
+		if stillOpen {
+			t.Fatalf("expected subscriber channel closed after Hub.Close()")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for Hub.Close() to close subscriber channel")
 	}
 }

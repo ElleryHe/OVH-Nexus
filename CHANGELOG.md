@@ -9,6 +9,46 @@ All notable changes to **OVH Nexus** are documented in this file following [Keep
 
 ---
 
+## [1.4.0] - 2026-11-19
+
+### Added
+- **Live OVH Promotions Radar, Collapsible Top Banner & Dual-Level Promo Debug (`/servers`, `GET /api/catalog/promotions`)**:
+  - Added `GET /api/catalog/promotions` aggregating active OVHcloud catalog promotion campaigns (`promoCode`, `context`, `autoApplied`, `capacities`, `supportedModes`, `durationMonths`, `minimumDurationMonths`, `startDate`/`endDate`, `remainingHours`, `maxSavingsAmount`, in-stock counts, and per-plan mode eligibility).
+  - Fixed dual-channel promotion parsing so plans carrying both recurring and setup-fee discounts (such as `26game01-v4` with `BF26_OVH_GAME_15OFF` + `BF26_OVH_GAME_15OFF_SETUP`) preserve both `renewPromo` and `setupPromo` details simultaneously.
+  - Added a collapsible **Live OVH Promotions Radar Banner** (`CatalogPromoBanner`) at the top of `/servers` with campaign chips, one-click plan filtering, expiration countdowns, per-campaign-batch collapse persistence, and a **Global Promo Rules & Debug Inspector** modal clearly explaining automatic catalog promotions (`context="standard"`) vs manual cart voucher codes.
+  - Added a per-server **Promo Hit & Pricing Debug** panel (`OrderPromoDebugPanel`) inside the Configuration & Ordering Modal with line-by-line base plan vs hardware upgrade addon pricing math, missed-mode switch alerts (e.g., warning when `upfront24` misses a `default`/`upfront12` campaign), **Smart Auto-Promo Coupon Guard** (preventing accidental submission of `autoApplied` campaign IDs to `/coupons`), and one-click **Verify in Cart** live ephemeral cart probing via `POST /api/servers/{planCode}/price`.
+- **MCP Promotion Intelligence & Commitment/Coupon Procurement Loop (`21 Tools`)**:
+  - Added L1 read-only MCP tool **`catalog_promotions`** (works without an OVH API key, bringing L1 to **12 tools** and total MCP tools to **21**), returning structured campaigns, per-plan savings, `autoAppliedCodes`, `supportedPromoModes`/`missedPromoModes`, and actionable `agentGuidance`.
+  - Upgraded L2 **`order_quote`** (carried through **`order_create_unpaid`**) and **`queue_add`** to support optional `pricing_mode` (`default`, `upfront12`, `upfront24`), `coupon`, and `max_monthly_price` parameters while strictly keeping `auto_pay=false` and `quantity=1` hardcoded.
+
+### Changed & Optimized
+- **99% Disk Cache Reduction & ~85%+ Container Memory Footprint Overhaul**:
+  - Eliminated write-only in-memory raw JSON tree leaks (`Service.rawCatalogs` and unused `Service.vpsCache` / `vps_*.json`) that previously pinned hundreds of MB of untyped `map[string]any` allocations on the Go heap.
+  - Replaced untyped `map[string]any` catalog decoding with sequential streaming `json.NewDecoder` into minimal strongly-typed Go structs, raising the decompressed public catalog ceiling from `32 MiB` to `128 MiB` and extending public catalog HTTP timeout to `60s`.
+  - Added canonical **Gzip-stream SHA-256 short-circuiting** plus partial-outage protection on 120-second `SKUWatcher` refreshes: unchanged upstream catalogs now execute **zero JSON decoding, zero dictionary rebuilds, and zero disk writes**.
+  - Deduplicated `CatalogDictionary` via lightweight `PlanAliases` (eliminating 5x full-struct value copies), filtered out non-hardware software/OS license addon families (`application-license`, `distribution-license`), and served a wire-slimmed projection on `GET /api/catalog/dictionary` shrinking the response from **56 MB to ~0.5 MB** (restoring browser `localStorage` caching under `ovh_nexus_catalog_dict_v4`).
+  - Migrated disk caches to streaming atomic `.json.gz` (`catalog_dict_v4_*.json.gz` & `servers_v4_*.json.gz`), shrinking `/data/cache/` from **~95 MB to < 1 MB** with automatic startup pruning of legacy `v1`/`v2`/`v3`/`vps_*.json` files.
+  - Configured default `GOMEMLIMIT=256MiB` and `GOGC=50` across both `Dockerfile` and `main.go` (overridable via environment variables), paired with throttled asynchronous `debug.FreeOSMemory()` after cold catalog rebuilds.
+
+### Security & Reliability Hardening
+- **Catalog Concurrency, Disk Atomicity & Promo Rule Accuracy**:
+  - Eliminated in-place `UpdatedAt` pointer mutation on SHA-256 cache short-circuits via immutable shallow copies; persisted upstream SHA-256 digests into `.json.gz` disk caches so cold restarts immediately restore short-circuiting and partial-outage protection across both `GetBaremetalDictionary` and `buildServerPlans`.
+  - Isolated bare-metal dictionary caching (`bm:` / `catalog_bmdict_v4_*.json.gz`) from full catalog dictionaries (`catalog_dict_v4_*.json.gz`) so bare-metal refreshes never overwrite VPS plans or aliases; switched `writeGzipJSONFile` to unique `os.CreateTemp` temp files to prevent concurrent truncation.
+  - Hardened public catalog streaming with explicit `ErrResponseTooLarge` size limits, gzip CRC32 trailer verification, subsidiary zone whitelisting, and deterministic alias/case-insensitive plan resolution.
+  - Filtered expired, not-yet-started, and exhausted-quantity promotions; separated `voucher` promotions (`voucherPromos`) from automatic `standard` discounts; fixed commitment-only promotions reporting non-zero `monthlySavings` and `bestPromoMode`; normalized recurring campaign `maxSavingsAmount` to monthly equivalents.
+- **Procurement & MCP Price Guardrails, In-Flight Locking & Auto-Promo Stripping**:
+  - Added strict quote-to-checkout price re-verification in MCP (`order_quote` → `order_create_unpaid`): both quoted ex-VAT monthly price and setup fee are re-checked on the live cart before checkout, aborting with `PRICE_CHANGED_SINCE_QUOTE` on any price increase above `+€0.01`.
+  - Added `max_setup_fee` support (with SQLite incremental `max_setup_fee` column migration), rejected non-positive (`<= 0`) explicit price caps and invalid `pricing_mode` values in MCP `queue_add` / `order_quote`, and cached the standalone fallback catalog service as a lazy singleton.
+  - Added per-configuration in-flight locking (`accountID + planCode + options/mode/coupon` fingerprint) across QuickOrder, queue workers, and `CreateUnpaidOrder` with `"any"` datacenter wildcard duplicate detection; distinguished transient `429`/`5xx` coupon errors (retry with backoff) from permanent `4xx` coupon rejections (`INVALID_COUPON`).
+  - Added automatic frontend + backend stripping of auto-applied catalog campaign IDs (`context="standard"`) across QuickOrder, Queue, QuickMonitor, and MCP tools with `WARNING` audit logs and toast hints.
+- **Session Revocation, SSE Lifecycle, Container & HTTP Security Boundaries**:
+  - Added monotonic `session_epoch` persistence (`kv_settings`) and `API_SECRET_KEY` HMAC fingerprint (`keyFp`) verification on `ovh_session` cookies: authenticated logout, 2FA activation/disable, recovery code regeneration, and `API_SECRET_KEY` rotation immediately revoke sessions across devices.
+  - Hardened SSE log streaming (`GET /api/logs/stream`) with per-frame `10s` `ResponseController.SetWriteDeadline`, a concurrent subscriber cap (`32`, returning `503`), clean shutdown channel closure, and URL-encoded secret redaction.
+  - Hardened CORS (`*` never reflects `Origin` or emits `Access-Control-Allow-Credentials`), enforced `Origin`/`Sec-Fetch-Site`/`Referer` CSRF validation unconditionally for cookie-authenticated mutations (exempting only `/api/mcp` and non-cookie programmatic calls), enforced `Content-Type`-agnostic JSON body inspection for body-sensitive 2FA tier gates, emitted `Strict-Transport-Security` when `COOKIE_SECURE=true`, removed side-effectful `GET /api/servers/{planCode}/price`, added per-endpoint/zone 30s manual refresh throttling, sanitized `/api/cache/info` storage labels, switched container entrypoint to symlink-safe `chown -RP`, encoded SQLite PRAGMAs into the URI DSN, and updated the Dockerfile Go builder to `golang:1.27.4-alpine`.
+  - Hardened WebUI live cart probes (`OrderPromoDebugPanel`) with `AbortController` + monotonic sequence guards, added 12h expiration to in-memory browser catalog dictionary caching, switched banner expiration countdowns to live 1-minute recalculation from `endDate`, and restricted order history external links to `https://`.
+
+---
+
 ## [1.3.4] - 2026-11-18
 
 ### Added

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -82,12 +83,20 @@ type LogEntry struct {
 	Attrs     map[string]any `json:"attrs,omitempty"`
 }
 
+const (
+	// DefaultMaxSubscribers caps concurrent SSE log stream subscribers to prevent memory/FD exhaustion.
+	DefaultMaxSubscribers = 32
+	// DefaultSSEWriteTimeout bounds each SSE frame/keepalive write+flush to detect half-open clients promptly.
+	DefaultSSEWriteTimeout = 10 * time.Second
+)
+
 // Options configures a logger Hub.
 type Options struct {
-	Level      string
-	Format     string // "text" or "json"
-	Output     io.Writer
-	BufferSize int
+	Level          string
+	Format         string // "text" or "json"
+	Output         io.Writer
+	BufferSize     int
+	MaxSubscribers int
 }
 
 // Hub is a thread-safe slog.Handler that writes redacted UTC RFC3339 entries to stdout,
@@ -98,11 +107,13 @@ type Hub struct {
 	minLevel   slog.Level
 	jsonFormat bool
 	bufSize    int
+	maxSubs    int
 
 	writeMu sync.Mutex
 	subMu   sync.RWMutex
 	subs    map[uint64]chan LogEntry
 	nextSub uint64
+	closed  bool
 
 	secretMu sync.RWMutex
 	secrets  []string
@@ -120,31 +131,46 @@ func NewHub(st *store.Store, opts Options) *Hub {
 	if bufSize <= 0 {
 		bufSize = 128
 	}
+	maxSubs := opts.MaxSubscribers
+	if maxSubs <= 0 {
+		maxSubs = DefaultMaxSubscribers
+	}
 	return &Hub{
 		store:      st,
 		out:        out,
 		minLevel:   parseSlogLevel(opts.Level),
 		jsonFormat: strings.EqualFold(strings.TrimSpace(opts.Format), "json"),
 		bufSize:    bufSize,
+		maxSubs:    maxSubs,
 		subs:       make(map[uint64]chan LogEntry),
 	}
 }
 
-// AddSensitiveValue registers a runtime secret so it is automatically scrubbed if it
-// ever appears in a log message or attribute.
+// AddSensitiveValue registers a runtime secret (and its URL-encoded representation) so it is
+// automatically scrubbed if it ever appears in a log message or attribute.
 func (h *Hub) AddSensitiveValue(val string) {
 	trimmed := strings.TrimSpace(val)
 	if len(trimmed) < 4 {
 		return
 	}
+	candidates := []string{trimmed}
+	if escaped := url.QueryEscape(trimmed); escaped != trimmed && len(escaped) >= 4 {
+		candidates = append(candidates, escaped)
+	}
 	h.secretMu.Lock()
 	defer h.secretMu.Unlock()
-	for _, existing := range h.secrets {
-		if existing == trimmed {
-			return
+	for _, cand := range candidates {
+		dup := false
+		for _, existing := range h.secrets {
+			if existing == cand {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			h.secrets = append(h.secrets, cand)
 		}
 	}
-	h.secrets = append(h.secrets, trimmed)
 }
 
 // Slog returns a *slog.Logger backed by this Hub.
@@ -376,9 +402,24 @@ func (h *Hub) broadcast(entry LogEntry) {
 
 // Subscribe registers an SSE subscriber channel and returns a channel plus an idempotent cancel func.
 func (h *Hub) Subscribe() (<-chan LogEntry, func()) {
+	ch, cancel, ok := h.TrySubscribe()
+	if !ok {
+		closedCh := make(chan LogEntry)
+		close(closedCh)
+		return closedCh, func() {}
+	}
+	return ch, cancel
+}
+
+// TrySubscribe registers an SSE subscriber channel if the Hub is open and below its concurrency cap.
+func (h *Hub) TrySubscribe() (<-chan LogEntry, func(), bool) {
 	ch := make(chan LogEntry, h.bufSize)
 
 	h.subMu.Lock()
+	if h.closed || (h.maxSubs > 0 && len(h.subs) >= h.maxSubs) {
+		h.subMu.Unlock()
+		return nil, nil, false
+	}
 	h.nextSub++
 	subID := h.nextSub
 	h.subs[subID] = ch
@@ -395,7 +436,21 @@ func (h *Hub) Subscribe() (<-chan LogEntry, func()) {
 			h.subMu.Unlock()
 		})
 	}
-	return ch, cancel
+	return ch, cancel, true
+}
+
+// Close terminates all active SSE subscriber channels cleanly during server shutdown.
+func (h *Hub) Close() {
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	for id, ch := range h.subs {
+		delete(h.subs, id)
+		close(ch)
+	}
 }
 
 // ==================== Secret Redaction ====================
@@ -548,6 +603,7 @@ type LogsHandler struct {
 	hub               *Hub
 	store             *store.Store
 	heartbeatInterval time.Duration
+	writeTimeout      time.Duration
 }
 
 // NewLogsHandler constructs an HTTP handler for /api/logs endpoints.
@@ -556,6 +612,14 @@ func NewLogsHandler(hub *Hub, st *store.Store) *LogsHandler {
 		hub:               hub,
 		store:             st,
 		heartbeatInterval: 20 * time.Second,
+		writeTimeout:      DefaultSSEWriteTimeout,
+	}
+}
+
+// SetWriteTimeout overrides the per-frame SSE write deadline (intended for unit tests).
+func (lh *LogsHandler) SetWriteTimeout(d time.Duration) {
+	if d > 0 {
+		lh.writeTimeout = d
 	}
 }
 
@@ -617,19 +681,37 @@ func (lh *LogsHandler) HandleStreamLogs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	ch, cancel, ok := lh.hub.TrySubscribe()
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, "SSE_MAX_SUBSCRIBERS", "Too many concurrent log stream connections.")
+		return
+	}
+	defer cancel()
+
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	rc := http.NewResponseController(w)
-	_, _ = fmt.Fprint(w, ": connected\n\n")
-	if err := rc.Flush(); err != nil {
-		return
+	writeTimeout := lh.writeTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = DefaultSSEWriteTimeout
+	}
+	writeFrame := func(frame string) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+		if _, err := fmt.Fprint(w, frame); err != nil {
+			return false
+		}
+		if err := rc.Flush(); err != nil {
+			return false
+		}
+		return true
 	}
 
-	ch, cancel := lh.hub.Subscribe()
-	defer cancel()
+	if !writeFrame(": connected\n\n") {
+		return
+	}
 
 	interval := lh.heartbeatInterval
 	if interval <= 0 {
@@ -651,17 +733,11 @@ func (lh *LogsHandler) HandleStreamLogs(w http.ResponseWriter, r *http.Request) 
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", entry.ID, payload); err != nil {
-				return
-			}
-			if err := rc.Flush(); err != nil {
+			if !writeFrame(fmt.Sprintf("id: %s\ndata: %s\n\n", entry.ID, payload)) {
 				return
 			}
 		case <-ticker.C:
-			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
-				return
-			}
-			if err := rc.Flush(); err != nil {
+			if !writeFrame(": keepalive\n\n") {
 				return
 			}
 		}

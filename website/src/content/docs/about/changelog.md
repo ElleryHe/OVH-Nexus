@@ -3,7 +3,7 @@ title: Changelog
 description: Release history and notable changes for OVH Nexus.
 ---
 
-:::note[Latest Release: v1.3.4]
+:::note[Latest Release: v1.4.0]
 Track official tagged releases and multi-architecture container builds on [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) and [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus).
 :::
 
@@ -12,6 +12,43 @@ Subscribe to OVH Nexus version release notes in any RSS reader (Feedly, Inoreade
 :::
 
 All notable changes to **OVH Nexus** are documented on this page following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
+
+## [1.4.0] - 2026-11-19 — Memory & Cache Engine Overhaul, Live Promotions Radar & Debug Inspector, and MCP Promotion Intelligence
+
+### Added
+
+- **Live OVH Promotions Radar, Collapsible Top Banner & Dual-Level Promo Debug (`/servers`, `GET /api/catalog/promotions`)**:
+  - Added `GET /api/catalog/promotions` aggregating active OVHcloud catalog promotion campaigns (`promoCode`, `context`, `autoApplied`, `capacities`, `supportedModes`, `durationMonths`, `minimumDurationMonths`, `startDate`/`endDate`, `remainingHours`, `maxSavingsAmount`, in-stock counts, and per-plan mode eligibility).
+  - Fixed dual-channel promotion parsing so plans carrying both recurring and setup-fee discounts (such as `26game01-v4` with `BF26_OVH_GAME_15OFF` + `BF26_OVH_GAME_15OFF_SETUP`) preserve both `renewPromo` and `setupPromo` details simultaneously.
+  - Added a collapsible **Live OVH Promotions Radar Banner** at the top of `/servers` with interactive campaign chips, one-click plan filtering, expiration countdowns, batch-aware hide persistence, and a **Global Promo Rules & Debug Inspector** modal distinguishing automatic catalog promotions (`context="standard"`) from manual cart voucher codes.
+  - Added a per-server **Promo Hit & Pricing Debug** panel inside the Configuration & Ordering Modal with base plan vs hardware upgrade addon pricing math, missed-mode switch alerts (e.g., warning when `upfront24` misses a `default`/`upfront12` campaign), **Smart Auto-Promo Coupon Guard** (preventing accidental submission of `autoApplied` campaign IDs to `/coupons`), and one-click **Verify in Cart** live ephemeral cart probing via `POST /api/servers/{planCode}/price`.
+- **MCP Promotion Intelligence & Commitment/Coupon Procurement Loop (`21 Tools`)**:
+  - Added L1 read-only MCP tool **`catalog_promotions`** (works without an OVH API key, expanding L1 to **12 tools** and total MCP tools to **21**), returning structured campaigns, per-plan savings, `autoAppliedCodes`, `supportedPromoModes`/`missedPromoModes`, and actionable `agentGuidance`.
+  - Upgraded L2 **`order_quote`** (carried through **`order_create_unpaid`**) and **`queue_add`** with optional `pricing_mode` (`default`, `upfront12`, `upfront24`), `coupon`, and `max_monthly_price` parameters while strictly keeping `auto_pay=false` and `quantity=1` hardcoded.
+
+### Changed & Optimized
+
+- **99% Disk Cache Reduction & ~85%+ Container Memory Footprint Overhaul**:
+  - Eliminated write-only in-memory raw JSON tree leaks (`Service.rawCatalogs` and unused `Service.vpsCache` / `vps_*.json`) that previously pinned hundreds of MB of untyped `map[string]any` allocations on the Go heap.
+  - Replaced untyped `map[string]any` catalog decoding with sequential streaming `json.NewDecoder` into minimal strongly-typed Go structs, raising the decompressed public catalog cap from `32 MiB` to `128 MiB` and extending public catalog HTTP timeout to `60s`.
+  - Added canonical **Gzip-stream SHA-256 short-circuiting** with partial-outage protection on 120-second `SKUWatcher` refreshes so unchanged upstream catalogs execute zero JSON decoding, zero dictionary rebuilds, and zero disk writes.
+  - Deduplicated `CatalogDictionary` via lightweight `PlanAliases`, stripped non-hardware software/OS license addon families (`application-license`, `distribution-license`), and served a wire-slimmed projection on `GET /api/catalog/dictionary` shrinking responses from **56 MB to ~0.5 MB** (restoring browser `localStorage` caching).
+  - Migrated disk caches to streaming atomic `.json.gz` (`catalog_dict_v4_*.json.gz` & `servers_v4_*.json.gz`), reducing `/data/cache/` from **~95 MB to < 1 MB** with automatic startup pruning of legacy `v1`/`v2`/`v3`/`vps_*.json` files.
+  - Configured default `GOMEMLIMIT=256MiB` and `GOGC=50` in `Dockerfile` and `main.go` (overridable via environment variables), paired with throttled asynchronous `debug.FreeOSMemory()` after cold catalog rebuilds.
+
+### Security & Reliability Hardening
+
+- **Catalog Concurrency, Disk Atomicity & Promotion Rule Hardening**:
+  - Eliminated in-place `UpdatedAt` pointer mutation on SHA-256 cache hits via immutable shallow copies, persisted upstream SHA-256 digests in `.json.gz` disk caches for cold-start short-circuiting and partial-outage protection across `GetBaremetalDictionary` and `buildServerPlans`, isolated bare-metal (`catalog_bmdict_v4_*`) from full (`catalog_dict_v4_*`) dictionaries, and switched `writeGzipJSONFile` to unique `os.CreateTemp` files.
+  - Added explicit `ErrResponseTooLarge` payload guards, gzip CRC32 trailer verification, subsidiary zone whitelisting, deterministic alias resolution, active time/quantity filtering for promotions, `voucherPromos` separation, commitment-only `monthlySavings`/`bestPromoMode` calculation, and monthly-normalized campaign `maxSavingsAmount`.
+- **Procurement & MCP Price Re-Verification, In-Flight Locking & Auto-Promo Stripping**:
+  - Enforced strict live-cart monthly and setup-fee re-verification between MCP `order_quote` and `order_create_unpaid` (`PRICE_CHANGED_SINCE_QUOTE` on increases > `€0.01`), added `max_setup_fee` cap support, rejected explicit `<= 0` price limits and invalid `pricing_mode` inputs, and distinguished transient `429`/`5xx` coupon errors from permanent `INVALID_COUPON` rejections.
+  - Added per-configuration in-flight locking (`accountID + planCode + options/mode/coupon`) with `"any"` datacenter wildcard deduplication and unified frontend/backend auto-stripping of auto-applied catalog campaign IDs.
+- **Session Revocation, SSE Deadlines, Container & HTTP Hardening**:
+  - Implemented persistent `session_epoch` + `API_SECRET_KEY` fingerprint (`keyFp`) session revocation on logout, 2FA toggles, recovery code regeneration, and key rotation; bounded SSE log streams with `10s` per-frame write deadlines, a `32`-subscriber cap (`503`), clean shutdown closure, and URL-encoded secret redaction.
+  - Fixed wildcard CORS credential reflection, enforced cookie CSRF `Origin`/`Sec-Fetch-Site`/`Referer` validation unconditionally when `ovh_session` is present (exempting only `/api/mcp` and non-cookie programmatic calls), enforced `Content-Type`-agnostic JSON body inspection for 2FA tier gates, emitted HSTS when `COOKIE_SECURE=true`, removed `GET /api/servers/{planCode}/price`, added per-endpoint/zone 30s manual refresh throttling, sanitized `/api/cache/info` paths, switched container entrypoint to symlink-safe `chown -RP`, encoded SQLite PRAGMAs into the URI DSN, updated the Dockerfile builder to `golang:1.27.4-alpine`, and added `AbortController` probe guards, 12h browser dictionary expiry, live `endDate` countdowns, and `https://`-only order links in the WebUI.
+
+---
 
 ## [1.3.4] - 2026-11-18 — Availability Matrix Layout & Promo Accuracy Fixes, SKU Baseline Self-Healing & `/llms.txt` AI Search Optimization
 

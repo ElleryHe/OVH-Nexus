@@ -1,11 +1,18 @@
 package ovhclient
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+
+	"github.com/ovh/go-ovh/ovh"
 
 	"ovh-nexus/server/internal/store"
 	"ovh-nexus/server/internal/vault"
@@ -89,7 +96,58 @@ func TestPoolClientResolutionAndPublicHTTP(t *testing.T) {
 		t.Fatalf("expected header acct-ca client, got acc=%+v err=%v", acc2, err)
 	}
 
-	if pool.PublicHTTPClient().Timeout != DefaultHTTPTimeout {
-		t.Fatalf("expected 30s timeout, got %v", pool.PublicHTTPClient().Timeout)
+	if pool.PublicHTTPClient().Timeout != DefaultPublicHTTPTimeout {
+		t.Fatalf("expected %v timeout, got %v", DefaultPublicHTTPTimeout, pool.PublicHTTPClient().Timeout)
+	}
+}
+
+func TestMaxBytesReaderGzipCRCAndCallWithRetry429(t *testing.T) {
+	// 1. maxBytesReader returns ErrResponseTooLarge instead of silent truncation.
+	mr := &maxBytesReader{r: bytes.NewReader([]byte("0123456789X")), limit: 10}
+	if _, err := io.ReadAll(mr); !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("expected ErrResponseTooLarge when payload exceeds limit, got %v", err)
+	}
+	if IsTransientError(ErrResponseTooLarge) {
+		t.Fatalf("expected ErrResponseTooLarge NOT to be treated as transient")
+	}
+
+	// 2. FetchPublicRawFromURL detects corrupted gzip CRC32 trailer.
+	var gzBuf bytes.Buffer
+	gz := gzip.NewWriter(&gzBuf)
+	_, _ = gz.Write([]byte(`{"hello":"world"}`))
+	_ = gz.Close()
+	corrupt := append([]byte(nil), gzBuf.Bytes()...)
+	corrupt[len(corrupt)-5] ^= 0xff // flip CRC32 byte
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(corrupt)
+	}))
+	defer ts.Close()
+	if _, err := FetchPublicRawFromURL(context.Background(), ts.Client(), ts.URL, "/test"); err == nil {
+		t.Fatalf("expected corrupted gzip stream to return an error")
+	}
+
+	// 3. CallWithRetry retries HTTP 429 and stops immediately on HTTP 400.
+	var attempts atomic.Int32
+	ctx := context.Background()
+	err := CallWithRetry(ctx, 2, func() error {
+		if attempts.Add(1) == 1 {
+			return &ovh.APIError{Code: http.StatusTooManyRequests, Message: "rate limited"}
+		}
+		return nil
+	})
+	if err != nil || attempts.Load() != 2 {
+		t.Fatalf("expected CallWithRetry to succeed on attempt 2 after 429, got err=%v attempts=%d", err, attempts.Load())
+	}
+
+	attempts.Store(0)
+	err = CallWithRetry(ctx, 3, func() error {
+		attempts.Add(1)
+		return &ovh.APIError{Code: http.StatusBadRequest, Message: "bad request"}
+	})
+	if err == nil || attempts.Load() != 1 {
+		t.Fatalf("expected CallWithRetry NOT to retry 400, got err=%v attempts=%d", err, attempts.Load())
 	}
 }

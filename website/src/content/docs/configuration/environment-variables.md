@@ -15,16 +15,18 @@ OVH Nexus is configured at startup via environment variables defined in `.env` o
 | `PORT` | No | `8080` | TCP listening port of the Go HTTP server inside the container (mapped to host `20000:8080` by default in `docker-compose.yml`). |
 | `DATA_DIR` | No | `/data` | Directory where the SQLite WAL database (`nexus.db`) is stored (directory `0700`, file `0600`). |
 | `TZ` | No | `UTC` | IANA timezone applied via `time.LoadLocation` for background schedules and outbound notification timestamps (e.g., `UTC`, `Europe/Paris`, `Asia/Shanghai`). |
-| `COOKIE_SECURE` | No | `false` | Sets the `Secure` attribute on the `ovh_session` cookie. Set to `true` when serving OVH Nexus over HTTPS behind a reverse proxy. |
+| `COOKIE_SECURE` | No | `false` | Sets the `Secure` attribute on the `ovh_session` cookie and emits `Strict-Transport-Security: max-age=31536000; includeSubDomains` (HSTS). Set to `true` when serving OVH Nexus over HTTPS behind a reverse proxy. |
 | `DEFAULT_LOCALE` | No | `en` | Default interface language on first visit (`en`, `fr`, or `zh-CN`). Users can also switch languages at any time in the UI. |
 | `LOG_LEVEL` | No | `INFO` | Minimum backend log level (`DEBUG`, `INFO`, `WARNING`, or `ERROR`). |
 | `LOG_FORMAT` | No | `text` | Container stdout log format (`text` or `json`). Structured records in `/data/nexus.db` and `/api/logs` remain queryable regardless of stdout format. |
 | `TRUSTED_PROXIES` | No | *(empty)* | Comma-separated reverse proxy IPs or CIDRs (e.g., `127.0.0.1,172.16.0.0/12`) trusted to supply `X-Forwarded-For` and `X-Real-IP` headers. |
 | `PUID` | No | `65532` | Numeric user ID that the container entrypoint (`su-exec`) drops privileges to after initializing `/data` (`0700`). Set to a non-root Linux host UID (`id -u`) if desired; skipped when already running as non-root (`id -u != 0`, e.g., Kubernetes `runAsNonRoot: true`). |
 | `PGID` | No | `65532` | Numeric group ID that the container entrypoint (`su-exec`) drops privileges to after initializing `/data` (`0700`). Set to match your Linux host GID (`id -g`) if desired. |
-| `SECRET_KEY` | No | *(auto-generated)* | Optional override for the HMAC-SHA256 `ovh_session` signing key. If omitted, a random key is generated once and persisted encrypted in `/data/nexus.db` (`kv_settings`). |
-| `CORS_ORIGINS` | No | `http://localhost:19999,http://127.0.0.1:19999` | Comma-separated allowed origins for split local frontend/backend development. Not needed in single-binary production where the WebUI and `/api/*` share one origin. |
-| `DOCKER_IMAGE` | No | `elleryhe/ovh-nexus:latest` | Used by `docker-compose.yml` to override the container image tag (e.g., `elleryhe/ovh-nexus:1.3.0`). |
+| `GOMEMLIMIT` | No | `256MiB` | Soft Go runtime heap memory ceiling (applied in both `Dockerfile` and binary fallback when unset) to keep container RSS low and proactively return transient catalog parsing pages to the OS. |
+| `GOGC` | No | `50` | Go garbage collector target percentage (default `50` for tighter memory footprint; increase to `100` on large multi-subsidiary deployments if desired). |
+| `SECRET_KEY` | No | *(auto-generated)* | Optional override for the HMAC-SHA256 `ovh_session` signing key. If omitted, a random key is generated once and persisted encrypted in `/data/nexus.db` (`kv_settings`). Existing sessions are automatically invalidated across all devices on logout, 2FA changes, or when `API_SECRET_KEY` is rotated. |
+| `CORS_ORIGINS` | No | `http://localhost:19999,http://127.0.0.1:19999` | Comma-separated explicit origins allowed for cross-origin browser requests and cookie CSRF checks (e.g. split local frontend/backend development). Wildcard `*` never sends `Access-Control-Allow-Credentials` and is never trusted for authenticated mutations. Not needed in single-binary production where WebUI and `/api/*` share one origin. |
+| `DOCKER_IMAGE` | No | `elleryhe/ovh-nexus:latest` | Used by `docker-compose.yml` to override the container image tag (e.g., `elleryhe/ovh-nexus:1.4.0`). |
 
 ## Generating Strong Keys
 

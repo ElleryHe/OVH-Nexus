@@ -25,7 +25,7 @@ import (
 )
 
 // Version identifies the OVH Nexus Go backend release version.
-const Version = "1.3.4"
+const Version = "1.4.0"
 
 // Services holds all wired OVH Nexus domain services and shared infrastructure.
 type Services struct {
@@ -174,11 +174,16 @@ func (s *Services) Start(ctx context.Context) {
 
 // SignalShutdown closes active long-lived SSE streams so http.Server.Shutdown completes promptly.
 func (s *Services) SignalShutdown() {
-	if s == nil || s.shutdownCh == nil {
+	if s == nil {
 		return
 	}
 	s.shutdownOnce.Do(func() {
-		close(s.shutdownCh)
+		if s.shutdownCh != nil {
+			close(s.shutdownCh)
+		}
+		if s.Log != nil {
+			s.Log.Close()
+		}
 	})
 }
 
@@ -200,13 +205,16 @@ func NewRouter(svcs *Services) http.Handler {
 	r := chi.NewRouter()
 
 	var corsOrigins []string
+	cookieSecure := false
 	if svcs.Config != nil {
 		corsOrigins = svcs.Config.CORSOrigins
+		cookieSecure = svcs.Config.CookieSecure
 	}
 
 	r.Use(RecoveryMiddleware(svcs.Log))
-	r.Use(SecurityHeadersMiddleware)
+	r.Use(SecurityHeadersWithConfig(cookieSecure))
 	r.Use(CORSMiddleware(corsOrigins))
+	r.Use(CSRFProtectionMiddleware(corsOrigins))
 	r.Use(MaxBodySizeMiddleware(MaxRequestBodyBytes))
 	r.Use(GzipMiddleware)
 

@@ -1,6 +1,8 @@
 package ovhclient
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,7 +26,13 @@ const (
 	EndpointUS = "ovh-us"
 	EndpointCA = "ovh-ca"
 
-	DefaultHTTPTimeout = 30 * time.Second
+	DefaultHTTPTimeout       = 30 * time.Second
+	DefaultPublicHTTPTimeout = 60 * time.Second
+
+	// MaxPublicResponseBytes bounds decompressed public catalog responses (128 MiB).
+	MaxPublicResponseBytes = 128 << 20
+	// MaxPublicWireBytes bounds compressed wire payloads kept in memory prior to digest check (32 MiB).
+	MaxPublicWireBytes = 32 << 20
 )
 
 var (
@@ -32,6 +40,8 @@ var (
 	ErrCredentialsMissing = errors.New("OVH API credentials are not configured")
 	// ErrInvalidEndpoint indicates an unsupported OVH endpoint name.
 	ErrInvalidEndpoint = errors.New("unsupported OVH endpoint")
+	// ErrResponseTooLarge indicates an upstream public API response exceeded configured safety limits.
+	ErrResponseTooLarge = errors.New("ovhclient: response exceeds maximum allowed size")
 )
 
 var endpointBaseURLs = map[string]string{
@@ -108,6 +118,25 @@ func DefaultIAM(zone string) string {
 	return "ovh-nexus-" + z
 }
 
+// IsSupportedZone reports whether zone is a recognized OVH subsidiary code.
+func IsSupportedZone(zone string) bool {
+	z := strings.ToUpper(strings.TrimSpace(zone))
+	if z == "" {
+		return false
+	}
+	for _, s := range supportedZones {
+		if s == z {
+			return true
+		}
+	}
+	switch z {
+	case "QC", "WE", "WS", "SG", "AU", "IN":
+		return true
+	default:
+		return false
+	}
+}
+
 // SupportedZones returns the supported OVH subsidiary codes.
 func SupportedZones() []string {
 	return append([]string(nil), supportedZones...)
@@ -134,7 +163,7 @@ func NewPool(st *store.Store, log *logger.Hub) *Pool {
 		store: st,
 		log:   log,
 		publicHTTP: &http.Client{
-			Timeout: DefaultHTTPTimeout,
+			Timeout: DefaultPublicHTTPTimeout,
 		},
 		clients: make(map[string]cachedClient),
 	}
@@ -239,7 +268,167 @@ func (p *Pool) Invalidate(accountID string) {
 	delete(p.clients, strings.TrimSpace(accountID))
 }
 
-// GetPublicJSON performs an unauthenticated GET request against the public OVH /1.0 API.
+// PublicRawResponse holds a compact wire payload (typically ~0.7-1.2 MB gzipped)
+// together with the deterministic SHA-256 hex digest of its uncompressed body.
+// Callers compare SHA256 before calling DecodeJSON to skip JSON parsing entirely on unchanged catalogs.
+type PublicRawResponse struct {
+	RawBytes []byte
+	IsGzip   bool
+	SHA256   string
+}
+
+type maxBytesReader struct {
+	r       io.Reader
+	limit   int64
+	read    int64
+	tooBig  bool
+}
+
+func (m *maxBytesReader) Read(p []byte) (int, error) {
+	if m.read >= m.limit {
+		var probe [1]byte
+		n, err := m.r.Read(probe[:])
+		if n > 0 {
+			m.tooBig = true
+			return 0, ErrResponseTooLarge
+		}
+		if err != nil {
+			return 0, err
+		}
+		return 0, io.EOF
+	}
+	rem := m.limit - m.read
+	if int64(len(p)) > rem {
+		p = p[:rem]
+	}
+	n, err := m.r.Read(p)
+	m.read += int64(n)
+	return n, err
+}
+
+// DecodeJSON streams the response directly into out without allocating an intermediate uncompressed []byte copy.
+func (r *PublicRawResponse) DecodeJSON(out any) error {
+	if r == nil || out == nil {
+		return nil
+	}
+	var src io.Reader = bytes.NewReader(r.RawBytes)
+	var gz *gzip.Reader
+	if r.IsGzip {
+		var err error
+		gz, err = gzip.NewReader(src)
+		if err != nil {
+			return fmt.Errorf("ovhclient: open gzip stream: %w", err)
+		}
+		defer gz.Close()
+		src = gz
+	}
+	limited := &maxBytesReader{r: src, limit: int64(MaxPublicResponseBytes)}
+	dec := json.NewDecoder(limited)
+	if err := dec.Decode(out); err != nil {
+		if limited.tooBig || errors.Is(err, ErrResponseTooLarge) {
+			return fmt.Errorf("%w: decompressed JSON exceeds %d bytes", ErrResponseTooLarge, MaxPublicResponseBytes)
+		}
+		return fmt.Errorf("ovhclient: decode public JSON: %w", err)
+	}
+	if gz != nil {
+		// Drain trailing whitespace/bytes to EOF so gzip verifies the CRC32/ISIZE trailer.
+		if _, err := io.Copy(io.Discard, limited); err != nil {
+			if limited.tooBig || errors.Is(err, ErrResponseTooLarge) {
+				return fmt.Errorf("%w: decompressed JSON exceeds %d bytes", ErrResponseTooLarge, MaxPublicResponseBytes)
+			}
+			return fmt.Errorf("ovhclient: verify gzip trailer: %w", err)
+		}
+		if err := gz.Close(); err != nil {
+			return fmt.Errorf("ovhclient: close gzip stream: %w", err)
+		}
+	}
+	return nil
+}
+
+// FetchPublicRawFromURL fetches targetURL requesting explicit gzip compression, buffers the compact wire payload,
+// and computes the canonical SHA-256 digest of the uncompressed stream with a fixed 32 KiB buffer.
+func FetchPublicRawFromURL(ctx context.Context, client *http.Client, targetURL, displayPath string) (*PublicRawResponse, error) {
+	if client == nil {
+		client = &http.Client{Timeout: DefaultHTTPTimeout}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("ovhclient: build public request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("User-Agent", "ovh-nexus/1.4.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ovhclient: public GET %s: %w", displayPath, err)
+	}
+	defer resp.Body.Close()
+
+	isGzip := strings.Contains(strings.ToLower(resp.Header.Get("Content-Encoding")), "gzip")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errReader io.Reader = resp.Body
+		if isGzip {
+			if gz, gzErr := gzip.NewReader(resp.Body); gzErr == nil {
+				defer gz.Close()
+				errReader = gz
+			}
+		}
+		errBody, _ := io.ReadAll(io.LimitReader(errReader, 4096))
+		return nil, fmt.Errorf("ovhclient: public GET %s returned HTTP %d: %s", displayPath, resp.StatusCode, strings.TrimSpace(string(errBody)))
+	}
+
+	limit := int64(MaxPublicResponseBytes)
+	if isGzip {
+		limit = int64(MaxPublicWireBytes)
+	}
+	rawBytes, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("ovhclient: read public response %s: %w", displayPath, err)
+	}
+	if int64(len(rawBytes)) > limit {
+		return nil, fmt.Errorf("%w: public response %s exceeds %d bytes", ErrResponseTooLarge, displayPath, limit)
+	}
+
+	h := sha256.New()
+	if isGzip {
+		gz, err := gzip.NewReader(bytes.NewReader(rawBytes))
+		if err != nil {
+			return nil, fmt.Errorf("ovhclient: decompress public response %s: %w", displayPath, err)
+		}
+		buf := make([]byte, 32*1024)
+		n, copyErr := io.CopyBuffer(h, io.LimitReader(gz, int64(MaxPublicResponseBytes)+1), buf)
+		closeErr := gz.Close()
+		if copyErr != nil {
+			return nil, fmt.Errorf("ovhclient: hash public response %s: %w", displayPath, copyErr)
+		}
+		if n > int64(MaxPublicResponseBytes) {
+			return nil, fmt.Errorf("%w: decompressed public response %s exceeds %d bytes", ErrResponseTooLarge, displayPath, MaxPublicResponseBytes)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("ovhclient: verify gzip stream %s: %w", displayPath, closeErr)
+		}
+	} else {
+		_, _ = h.Write(rawBytes)
+	}
+
+	return &PublicRawResponse{
+		RawBytes: rawBytes,
+		IsGzip:   isGzip,
+		SHA256:   hex.EncodeToString(h.Sum(nil)),
+	}, nil
+}
+
+// GetPublicRaw performs an unauthenticated GET against the public OVH /1.0 API, returning compact wire bytes and SHA-256.
+func (p *Pool) GetPublicRaw(ctx context.Context, endpoint, apiPath string) (*PublicRawResponse, error) {
+	if !strings.HasPrefix(apiPath, "/") {
+		apiPath = "/" + apiPath
+	}
+	targetURL := EndpointAPIBaseURL(endpoint) + apiPath
+	return FetchPublicRawFromURL(ctx, p.PublicHTTPClient(), targetURL, apiPath)
+}
+
+// GetPublicJSON performs an unauthenticated GET request against the public OVH /1.0 API using streaming JSON decoding.
 func (p *Pool) GetPublicJSON(ctx context.Context, endpoint, apiPath string, out any) error {
 	if !strings.HasPrefix(apiPath, "/") {
 		apiPath = "/" + apiPath
@@ -250,7 +439,7 @@ func (p *Pool) GetPublicJSON(ctx context.Context, endpoint, apiPath string, out 
 		return fmt.Errorf("ovhclient: build public request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ovh-nexus/1.3.0")
+	req.Header.Set("User-Agent", "ovh-nexus/1.4.0")
 
 	resp, err := p.PublicHTTPClient().Do(req)
 	if err != nil {
@@ -258,15 +447,16 @@ func (p *Pool) GetPublicJSON(ctx context.Context, endpoint, apiPath string, out 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return fmt.Errorf("ovhclient: read public response %s: %w", apiPath, err)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("ovhclient: public GET %s returned HTTP %d: %s", apiPath, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	if out != nil {
-		if err := json.Unmarshal(body, out); err != nil {
+		limited := &maxBytesReader{r: resp.Body, limit: int64(MaxPublicResponseBytes)}
+		if err := json.NewDecoder(limited).Decode(out); err != nil {
+			if limited.tooBig || errors.Is(err, ErrResponseTooLarge) {
+				return fmt.Errorf("%w: public JSON %s exceeds %d bytes", ErrResponseTooLarge, apiPath, MaxPublicResponseBytes)
+			}
 			return fmt.Errorf("ovhclient: decode public JSON %s: %w", apiPath, err)
 		}
 	}
@@ -285,6 +475,9 @@ func ExtractQueryID(err error) string {
 // IsTransientError reports whether err is a transient network/429/5xx OVH error suitable for retry.
 func IsTransientError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrResponseTooLarge) || errors.Is(err, ErrCredentialsMissing) || errors.Is(err, ErrInvalidEndpoint) {
 		return false
 	}
 	var apiErr *ovh.APIError

@@ -372,7 +372,18 @@ func TestTOTPEnrollmentAntiReplayRecoveryAndGatekeeper(t *testing.T) {
 		t.Fatalf("expected 8 regenerated recovery codes, got %+v", regenResp)
 	}
 
-	// Old recovery code #1 must no longer work after regeneration
+	// Regenerating recovery codes rotates session_epoch, immediately revoking the previous cookie.
+	recStaleSession := doJSONReq(t, router, http.MethodPost, "/api/auth/totp/disable",
+		map[string]any{}, cookies, map[string]string{"X-TOTP-Code": actResp.RecoveryCodes[1]}, "")
+	if recStaleSession.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old session cookie to be revoked (401) after recovery code regeneration, got %d", recStaleSession.Code)
+	}
+	if len(recRegen.Result().Cookies()) == 0 {
+		t.Fatalf("expected fresh rotated session cookie after recovery code regeneration")
+	}
+	cookies = recRegen.Result().Cookies()
+
+	// Old recovery code #1 must no longer work after regeneration (with rotated session cookie)
 	recOldRec := doJSONReq(t, router, http.MethodPost, "/api/auth/totp/disable",
 		map[string]any{}, cookies, map[string]string{"X-TOTP-Code": actResp.RecoveryCodes[1]}, "")
 	if recOldRec.Code != http.StatusForbidden {
@@ -399,5 +410,131 @@ func TestTOTPEnrollmentAntiReplayRecoveryAndGatekeeper(t *testing.T) {
 		map[string]any{}, cookies, map[string]string{"X-TOTP-Code": code2}, "")
 	if recDisable.Code != http.StatusOK || !strings.Contains(recDisable.Body.String(), `"totpEnabled":false`) {
 		t.Fatalf("expected disable success, got %d body=%s", recDisable.Code, recDisable.Body.String())
+	}
+}
+
+func TestSessionEpochAndKeyFingerprintRevocation(t *testing.T) {
+	svc, st, cfg, _ := newTestAuthEnv(t, "")
+	router := chi.NewRouter()
+	router.Use(svc.RequireAuthAndTOTPGate)
+	router.Route("/api", func(api chi.Router) {
+		svc.MountRoutes(api)
+		api.Get("/servers", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+
+	// Two devices log in concurrently.
+	rec1 := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
+	rec2 := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
+	if rec1.Code != http.StatusOK || rec2.Code != http.StatusOK {
+		t.Fatalf("logins failed: %d %d", rec1.Code, rec2.Code)
+	}
+	dev1 := rec1.Result().Cookies()
+	dev2 := rec2.Result().Cookies()
+
+	// Unauthenticated POST /api/auth/logout MUST NOT bump session epoch or kick out logged-in devices.
+	recAnonLogout := doJSONReq(t, router, http.MethodPost, "/api/auth/logout", nil, nil, nil, "")
+	if recAnonLogout.Code != http.StatusOK {
+		t.Fatalf("anonymous logout status=%d", recAnonLogout.Code)
+	}
+	recCheck := doJSONReq(t, router, http.MethodGet, "/api/servers", nil, dev2, nil, "")
+	if recCheck.Code != http.StatusOK {
+		t.Fatalf("expected dev2 session to remain valid after unauthenticated logout, got %d", recCheck.Code)
+	}
+
+	// Authenticated logout from dev1 bumps persistent session_epoch -> immediately revokes dev2!
+	recLogout := doJSONReq(t, router, http.MethodPost, "/api/auth/logout", nil, dev1, nil, "")
+	if recLogout.Code != http.StatusOK {
+		t.Fatalf("authenticated logout status=%d", recLogout.Code)
+	}
+	recRevoked := doJSONReq(t, router, http.MethodGet, "/api/servers", nil, dev2, nil, "")
+	if recRevoked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected dev2 cookie to be immediately revoked (401) after dev1 logout, got %d", recRevoked.Code)
+	}
+
+	// Fresh login after logout works on the bumped epoch.
+	rec3 := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{"username": "Nexus", "password": cfg.APISecretKey}, nil, nil, "")
+	dev3 := rec3.Result().Cookies()
+	if rec3.Code != http.StatusOK || len(dev3) == 0 {
+		t.Fatalf("re-login failed: %d", rec3.Code)
+	}
+
+	// Rotating API_SECRET_KEY and recreating auth.Service on the same DB invalidates dev3 via keyFp mismatch!
+	rotatedCfg := *cfg
+	rotatedCfg.APISecretKey = "rotated-brand-new-secret-key-9999"
+	svcRotated, err := NewService(context.Background(), &rotatedCfg, st, nil)
+	if err != nil {
+		t.Fatalf("NewService rotated: %v", err)
+	}
+	rRotated := chi.NewRouter()
+	rRotated.Use(svcRotated.RequireAuthAndTOTPGate)
+	rRotated.Route("/api", func(api chi.Router) {
+		svcRotated.MountRoutes(api)
+		api.Get("/servers", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+	recKeyRotated := doJSONReq(t, rRotated, http.MethodGet, "/api/servers", nil, dev3, nil, "")
+	if recKeyRotated.Code != http.StatusUnauthorized {
+		t.Fatalf("expected cookie from old API_SECRET_KEY to be rejected (401) after rotation, got %d", recKeyRotated.Code)
+	}
+}
+
+func TestContentTypeAgnosticBodySensitive2FAGate(t *testing.T) {
+	svc, _, cfg, _ := newTestAuthEnv(t, "")
+	router := chi.NewRouter()
+	router.Use(svc.RequireAuthAndTOTPGate)
+	router.Route("/api", func(api chi.Router) {
+		svc.MountRoutes(api)
+		api.Post("/settings", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		api.Post("/orders/quick-order", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		api.Post("/queue", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	})
+
+	recLogin := doJSONReq(t, router, http.MethodPost, "/api/auth/login", map[string]string{
+		"username": "Nexus",
+		"password": cfg.APISecretKey,
+	}, nil, nil, "")
+	if recLogin.Code != http.StatusOK {
+		t.Fatalf("login failed: %d", recLogin.Code)
+	}
+	cookies := recLogin.Result().Cookies()
+
+	sendRaw := func(path, contentType, rawBody string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(rawBody))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. text/plain or omitted Content-Type carrying JSON credential update MUST still hit strict 2FA gate (403 TOTP_SETUP_REQUIRED).
+	for _, ct := range []string{"text/plain", ""} {
+		rec := sendRaw("/api/settings", ct, `{"clearCredentials":true}`)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 2FA gate for POST /api/settings with Content-Type=%q, got %d body=%s", ct, rec.Code, rec.Body.String())
+		}
+		recAutoPay := sendRaw("/api/orders/quick-order", ct, `{"planCode":"24ska01","auto_pay":true}`)
+		if recAutoPay.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 2FA gate for auto_pay quick-order with Content-Type=%q, got %d body=%s", ct, recAutoPay.Code, recAutoPay.Body.String())
+		}
+		recQueue := sendRaw("/api/queue", ct, `{"planCode":"24ska01","waiveRetractationPeriod":true}`)
+		if recQueue.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 2FA gate for waiveRetractationPeriod queue with Content-Type=%q, got %d body=%s", ct, recQueue.Code, recQueue.Body.String())
+		}
+	}
+
+	// 2. Malformed non-empty body on a body-sensitive route fails closed with 400 INVALID_JSON_BODY.
+	recBad := sendRaw("/api/settings", "text/plain", `not-valid-json`)
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 INVALID_JSON_BODY for malformed body on /api/settings, got %d body=%s", recBad.Code, recBad.Body.String())
+	}
+
+	// 3. Non-sensitive payload on /api/orders/quick-order (auto_pay=false) with normal JSON still passes.
+	recSafe := sendRaw("/api/orders/quick-order", "application/json", `{"planCode":"24ska01","auto_pay":false}`)
+	if recSafe.Code != http.StatusOK {
+		t.Fatalf("expected 200 for non-sensitive quick-order, got %d body=%s", recSafe.Code, recSafe.Body.String())
 	}
 }

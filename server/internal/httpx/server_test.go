@@ -203,7 +203,7 @@ func TestHTTPServerHardeningHealthGzipCSPAndSPA(t *testing.T) {
 		t.Fatalf("read gunzipped /api/health: %v", err)
 	}
 	healthMap := decodeMap(t, healthBytes)
-	if healthMap["status"] != "ok" || healthMap["version"] != "1.3.4" {
+	if healthMap["status"] != "ok" || healthMap["version"] != "1.4.0" {
 		t.Fatalf("unexpected health payload: %+v", healthMap)
 	}
 
@@ -1029,7 +1029,7 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"Authorization": "Bearer " + mcpToken,
 	}
 
-	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.3.4"
+	// 5. JSON-RPC 2.0 initialize -> serverInfo.version == "1.4.0"
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1043,11 +1043,11 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 	}
 	initRes := decodeMap(t, body)["result"].(map[string]any)
 	srvInfo := initRes["serverInfo"].(map[string]any)
-	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.3.4" {
+	if srvInfo["name"] != "ovh-nexus-mcp" || srvInfo["version"] != "1.4.0" {
 		t.Fatalf("unexpected MCP serverInfo: %+v", srvInfo)
 	}
 
-	// 6. tools/list -> 16 tools (11 L1 + 5 L2), 0 L3 tools when 2FA is off.
+	// 6. tools/list -> 17 tools (12 L1 + 5 L2), 0 L3 tools when 2FA is off.
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -1057,8 +1057,8 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		t.Fatalf("MCP tools/list failed: %d", code)
 	}
 	tools := decodeMap(t, body)["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 16 {
-		t.Fatalf("expected 16 tools (L1+L2) with 2FA off, got %d", len(tools))
+	if len(tools) != 17 {
+		t.Fatalf("expected 17 tools (L1+L2) with 2FA off, got %d", len(tools))
 	}
 
 	// 7. Calling L3 tool baremetal_reboot must be blocked while 2FA is disabled.
@@ -1359,8 +1359,8 @@ func TestE2EMCPGatewayAndDomainAdapters(t *testing.T) {
 		"method":  "tools/list",
 	}, mcpHeaders)
 	tools = decodeMap(t, body)["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 20 {
-		t.Fatalf("expected all 20 tools after 2FA + L3 unlock, got %d", len(tools))
+	if len(tools) != 21 {
+		t.Fatalf("expected all 21 tools after 2FA + L3 unlock, got %d", len(tools))
 	}
 
 	code, _, body = doHTTPJSON(t, client, http.MethodPost, ts.URL+"/api/mcp", map[string]any{
@@ -1610,5 +1610,106 @@ func TestE2EV132AnnouncedModelsListedAtAndSKUChanges(t *testing.T) {
 	}
 	if !foundSaleStarted {
 		t.Fatalf("expected recentChanges to include 27skle01 with saleStarted=true, got %+v", skuRes["recentChanges"])
+	}
+}
+
+func TestSecurityHotfixCORSWildcardCSRFAndHSTS(t *testing.T) {
+	// 1. CORS wildcard "*" MUST NOT reflect Origin and MUST NOT emit Access-Control-Allow-Credentials: true.
+	hWildcard := CORSMiddleware([]string{"*"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	reqWild := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	reqWild.Header.Set("Origin", "https://evil.example")
+	recWild := httptest.NewRecorder()
+	hWildcard.ServeHTTP(recWild, reqWild)
+	if got := recWild.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("expected wildcard ACAO '*', got %q", got)
+	}
+	if creds := recWild.Header().Get("Access-Control-Allow-Credentials"); creds != "" {
+		t.Fatalf("expected NO Access-Control-Allow-Credentials on wildcard CORS, got %q", creds)
+	}
+
+	// 2. HSTS emitted iff cookieSecure=true.
+	recHSTSOff := httptest.NewRecorder()
+	SecurityHeadersWithConfig(false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })).
+		ServeHTTP(recHSTSOff, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if recHSTSOff.Header().Get("Strict-Transport-Security") != "" {
+		t.Fatalf("expected no HSTS when cookieSecure=false")
+	}
+	recHSTSOn := httptest.NewRecorder()
+	SecurityHeadersWithConfig(true)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })).
+		ServeHTTP(recHSTSOn, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if !strings.Contains(recHSTSOn.Header().Get("Strict-Transport-Security"), "max-age=31536000") {
+		t.Fatalf("expected HSTS header when cookieSecure=true, got %q", recHSTSOn.Header().Get("Strict-Transport-Security"))
+	}
+
+	// 3. CSRF middleware blocks cross-origin cookie POST while allowing same-origin and Bearer MCP.
+	hCSRF := CSRFProtectionMiddleware([]string{"https://trusted.example"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	reqEvilOrigin := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqEvilOrigin.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+	reqEvilOrigin.Header.Set("Origin", "https://evil.example")
+	recEvilOrigin := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recEvilOrigin, reqEvilOrigin)
+	if recEvilOrigin.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 CSRF_ORIGIN_REJECTED for cross-origin cookie POST, got %d", recEvilOrigin.Code)
+	}
+
+	reqCrossSite := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqCrossSite.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+	reqCrossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	recCrossSite := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recCrossSite, reqCrossSite)
+	if recCrossSite.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 CSRF_CROSS_SITE_REJECTED for cross-site Sec-Fetch-Site, got %d", recCrossSite.Code)
+	}
+
+	reqSameOrigin := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqSameOrigin.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+	reqSameOrigin.Header.Set("Origin", "https://panel.example")
+	recSameOrigin := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recSameOrigin, reqSameOrigin)
+	if recSameOrigin.Code != http.StatusOK {
+		t.Fatalf("expected 200 for same-origin cookie POST, got %d", recSameOrigin.Code)
+	}
+
+	reqMCPBearer := httptest.NewRequest(http.MethodPost, "https://panel.example/api/mcp", nil)
+	reqMCPBearer.Header.Set("Origin", "https://any-mcp-client.example")
+	reqMCPBearer.Header.Set("Authorization", "Bearer nxs_mcp_testtoken")
+	recMCPBearer := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recMCPBearer, reqMCPBearer)
+	if recMCPBearer.Code != http.StatusOK {
+		t.Fatalf("expected Bearer MCP POST to bypass browser CSRF check, got %d", recMCPBearer.Code)
+	}
+
+	// 4. Forged Authorization/X-API-Key/X-Internal-Token headers MUST NOT bypass CSRF when ovh_session cookie is present.
+	for _, hdr := range []struct {
+		k string
+		v string
+	}{
+		{"Authorization", "Bearer forged-token"},
+		{"X-API-Key", "forged-key"},
+		{"X-Internal-Token", "forged-internal"},
+	} {
+		reqForged := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+		reqForged.AddCookie(&http.Cookie{Name: "ovh_session", Value: "tok"})
+		reqForged.Header.Set("Origin", "https://evil.example")
+		reqForged.Header.Set(hdr.k, hdr.v)
+		recForged := httptest.NewRecorder()
+		hCSRF.ServeHTTP(recForged, reqForged)
+		if recForged.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 CSRF rejection for cookie POST with forged %s header, got %d", hdr.k, recForged.Code)
+		}
+	}
+
+	// Non-cookie programmatic X-API-Key call still passes CSRF middleware cleanly.
+	reqProgAPIKey := httptest.NewRequest(http.MethodPost, "https://panel.example/api/queue", nil)
+	reqProgAPIKey.Header.Set("X-API-Key", "loopback-key")
+	recProgAPIKey := httptest.NewRecorder()
+	hCSRF.ServeHTTP(recProgAPIKey, reqProgAPIKey)
+	if recProgAPIKey.Code != http.StatusOK {
+		t.Fatalf("expected non-cookie X-API-Key POST to pass CSRF middleware, got %d", recProgAPIKey.Code)
 	}
 }

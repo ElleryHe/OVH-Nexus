@@ -19,17 +19,23 @@ const (
 )
 
 type orderQuote struct {
-	QuoteID      string
-	PlanCode     string
-	Datacenter   string
-	Options      []string
-	AccountID    string
-	ProfileAlias string
-	Price        map[string]any
-	AutoPay      bool
-	Quantity     int
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
+	QuoteID             string
+	PlanCode            string
+	Datacenter          string
+	Options             []string
+	PricingMode         string
+	Duration            string
+	Coupon              string
+	AccountID           string
+	ProfileAlias        string
+	Price               map[string]any
+	QuotedMonthlyExVAT  float64
+	QuotedSetupFeeExVAT float64
+	HasQuotedPrice      bool
+	AutoPay             bool
+	Quantity            int
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
 }
 
 type quoteStore struct {
@@ -46,6 +52,21 @@ func newQuoteStore(nowFn func() time.Time) *quoteStore {
 }
 
 func (qs *quoteStore) create(planCode, datacenter string, options []string, accountID, profileAlias string, price map[string]any) orderQuote {
+	return qs.createWithMode(planCode, datacenter, options, "default", "P1M", "", accountID, profileAlias, price)
+}
+
+func (qs *quoteStore) createWithMode(planCode, datacenter string, options []string, pricingMode, duration, coupon, accountID, profileAlias string, price map[string]any) orderQuote {
+	return qs.createWithQuotePrices(planCode, datacenter, options, pricingMode, duration, coupon, accountID, profileAlias, price, 0, 0, false)
+}
+
+func (qs *quoteStore) createWithQuotePrices(
+	planCode, datacenter string,
+	options []string,
+	pricingMode, duration, coupon, accountID, profileAlias string,
+	price map[string]any,
+	quotedMonthlyExVAT, quotedSetupFeeExVAT float64,
+	hasQuotedPrice bool,
+) orderQuote {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
 
@@ -60,17 +81,23 @@ func (qs *quoteStore) create(planCode, datacenter string, options []string, acco
 	maps.Copy(priceCopy, price)
 
 	q := orderQuote{
-		QuoteID:      qid,
-		PlanCode:     planCode,
-		Datacenter:   datacenter,
-		Options:      append([]string(nil), options...),
-		AccountID:    accountID,
-		ProfileAlias: profileAlias,
-		Price:        priceCopy,
-		AutoPay:      false,
-		Quantity:     1,
-		CreatedAt:    now,
-		ExpiresAt:    now.Add(QuoteTTLSeconds * time.Second),
+		QuoteID:             qid,
+		PlanCode:            planCode,
+		Datacenter:          datacenter,
+		Options:             append([]string(nil), options...),
+		PricingMode:         pricingMode,
+		Duration:            duration,
+		Coupon:              coupon,
+		AccountID:           accountID,
+		ProfileAlias:        profileAlias,
+		Price:               priceCopy,
+		QuotedMonthlyExVAT:  quotedMonthlyExVAT,
+		QuotedSetupFeeExVAT: quotedSetupFeeExVAT,
+		HasQuotedPrice:      hasQuotedPrice,
+		AutoPay:             false,
+		Quantity:            1,
+		CreatedAt:           now,
+		ExpiresAt:           now.Add(QuoteTTLSeconds * time.Second),
 	}
 	qs.quotes[qid] = q
 	return q
@@ -92,6 +119,27 @@ func (qs *quoteStore) consume(quoteID string) (orderQuote, bool) {
 		return orderQuote{}, false
 	}
 	return q, true
+}
+
+// restore returns an unexpired quote back to the store after a pre-checkout transient failure
+// (e.g., cart summary 429/503) so the caller can retry safely with the same quote_id.
+func (qs *quoteStore) restore(q orderQuote) bool {
+	if q.QuoteID == "" {
+		return false
+	}
+	qs.mu.Lock()
+	defer qs.mu.Unlock()
+
+	now := qs.nowFn()
+	qs.pruneLocked(now)
+	if now.After(q.ExpiresAt) {
+		return false
+	}
+	if _, exists := qs.quotes[q.QuoteID]; exists {
+		return false
+	}
+	qs.quotes[q.QuoteID] = q
+	return true
 }
 
 func (qs *quoteStore) pruneLocked(now time.Time) {

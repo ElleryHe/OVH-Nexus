@@ -35,8 +35,10 @@ import {
   resolvePricingModeDuration,
   synthesizePricingModes,
   resolvePricingModeEntry,
+  findAutoAppliedPromoCodeForPlanMode,
 } from '@/utils/hardwareFormat';
 import type {
+  CatalogPromotionsResponse,
   ListingState,
   PlanConfigOption,
   PlanPricingMode,
@@ -81,6 +83,7 @@ export interface QuickMonitorDialogProps {
   initialConfig?: QuickMonitorInitialConfig | null;
   initialConfigs?: PlanConfigOption[];
   existingSubscription?: StockSubscription | null;
+  promotions?: CatalogPromotionsResponse | null;
   onSuccess?: (planCode: string) => void;
 }
 
@@ -124,6 +127,7 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
   initialConfig = null,
   initialConfigs = [],
   existingSubscription = null,
+  promotions = null,
   onSuccess,
 }) => {
   const { locale, t } = useLocale();
@@ -850,7 +854,24 @@ export const QuickMonitorDialog: React.FC<QuickMonitorDialogProps> = ({
         const duration =
           tgt.duration ||
           resolvePricingModeDuration(mode, chosen?.pricingModes);
-        const trimmedCoupon = (tgt.coupon || '').trim();
+        let trimmedCoupon = (tgt.coupon || '').trim();
+        if (trimmedCoupon) {
+          const modePool = [
+            ...(chosen?.pricingModes || []),
+            ...(planMeta.pricingModes || []),
+          ];
+          const matchedAuto = findAutoAppliedPromoCodeForPlanMode(
+            planCode,
+            mode,
+            trimmedCoupon,
+            modePool,
+            promotions
+          );
+          if (matchedAuto) {
+            toast.info(t('promoDebug.autoCouponStripped', { code: matchedAuto }));
+            trimmedCoupon = '';
+          }
+        }
         return {
           id: tgt.id || `tgt-${idx + 1}`,
           configKey: tgt.configKey || '',

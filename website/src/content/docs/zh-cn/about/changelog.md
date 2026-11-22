@@ -3,7 +3,7 @@ title: 版本更新日志 (Changelog)
 description: OVH Nexus 的版本发布历史与功能演进记录。
 ---
 
-:::note[当前最新版本：v1.3.4]
+:::note[当前最新版本：v1.4.0]
 您可以在 [GitHub Releases](https://github.com/ElleryHe/OVH-Nexus/releases) 与 [Docker Hub (`elleryhe/ovh-nexus`)](https://hub.docker.com/r/elleryhe/ovh-nexus) 查看所有正式版发布包与多架构容器镜像。
 :::
 
@@ -12,6 +12,46 @@ description: OVH Nexus 的版本发布历史与功能演进记录。
 :::
 
 本页面遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范与 [语义化版本 (SemVer)](https://semver.org/lang/zh-CN/) 记录 **OVH Nexus** 的重要变更。
+
+## [1.4.0] - 2026-11-19 — 内存回收与目录缓存引擎重构、实时优惠情报横幅与 Debug 拆解及 MCP 优惠决策闭环
+
+### 新增功能 (Added)
+
+- **OVH 实时官促情报雷达、可折叠顶部横幅与双层优惠 Debug (`/servers`、`GET /api/catalog/promotions`)**：
+  - 新增 `GET /api/catalog/promotions` 聚合接口，零额外目录请求输出全部生效活动卡片（`promoCode`、`context`、`autoApplied`、`capacities`、`supportedModes`、持续/最短周期、起止时间与剩余小时倒计时、最高立省金额及实时现货机型统计）。
+  - 修复双通道优惠叠加解析，确保同时挂载循环月付折扣与初装费折扣的机型（如 `26game01-v4` 的 `BF26_OVH_GAME_15OFF` + `BF26_OVH_GAME_15OFF_SETUP`）完整保留 `renewPromo` 与 `setupPromo` 双明细。
+  - 在服务器目录顶部新增类 OVH 官网的**可折叠官促横幅**（按活动批次记忆折叠状态、点击活动胶囊一键过滤对应机型），并内置**「优惠规则与 Debug 总览」弹窗**，直观阐明「目录自动生效 (`context="standard"`)」与「手动购物车优惠码 (`coupon`)」的边界。
+  - 在单机「配置与下单弹窗」内新增**「优惠命中与计价 Debug」**面板：逐项拆解基础机型折后价、硬件升级差价（明确标示配件原价叠加/独立折扣）与初装费减免；当所选周期未命中活动（如 `upfront24` 错过 `default`/`upfront12` 活动）时提供一键切换提示；内置**防误填保护**（拦截误把自动生效活动名填入 Coupon 框的行为）与一键**「实测校验」**临时购物车实付试算功能。
+- **MCP 优惠感知工具与 Agent 周期/优惠码决策闭环（共 21 个工具）**：
+  - 新增免 OVH API 密钥的 L1 只读工具 **`catalog_promotions`**（L1 扩充至 **12 个工具**，总计 **21 个工具**），向 AI Agent 返回结构化活动列表、适用周期对照、`autoAppliedCodes` 与 `agentGuidance` 决策建议。
+  - 升级 L2 **`order_quote`**（并透传至 **`order_create_unpaid`**）与 **`queue_add`**，全面补齐 `pricing_mode`（`default` / `upfront12` / `upfront24`）、`coupon` 与 `max_monthly_price` 参数（底层继续硬性锁死 `auto_pay=false` 与 `quantity=1` 安全红线）。
+
+### 性能优化与重构 (Changed & Optimized)
+
+- **磁盘缓存压降 99% 与容器内存占用深度重构**：
+  - 彻底移除只写不读的 `Service.rawCatalogs` 与无调用方的 `Service.vpsCache` / `vps_*.json` 堆驻留泄漏，释放数百 MB 长期被钉死的原始 `map[string]any` 对象。
+  - 废弃目录路径上的 `map[string]any` 全量反序列化，改用精简强类型结构体与串行 `json.NewDecoder` 流式解码，并将公开目录解压上限从 `32 MiB` 放宽至 `128 MiB`、HTTP 超时延长至 `60s`。
+  - 在 120 秒高频 `SKUWatcher` 刷新中引入 **Gzip 流式 SHA-256 摘要短路**与局部超时防覆盖保护：上游目录未变更时实现 **0 次 JSON 解析、0 次字典重建、0 次磁盘写入**，同时完整保留 120 秒上新监测灵敏度。
+  - 引入 `PlanAliases` 消除字典 5 倍结构体值拷贝，入库前剔除占比 85%+ 的软件/系统许可证家族（`application-license` / `distribution-license`），并在 `GET /api/catalog/dictionary` 输出轻量浏览器投影，将接口体积从 **56 MB 压降至 ~0.5 MB**（彻底恢复浏览器 `localStorage` 本地缓存，升级至 `ovh_nexus_catalog_dict_v4`）。
+  - 磁盘缓存升级为流式原子写入的 `.json.gz`（`catalog_dict_v4_*.json.gz` 与 `servers_v4_*.json.gz`），`/data/cache/` 总占用从 **~95 MB 压降至 < 1 MB**，启动时自动清理历史 `v1`/`v2`/`v3`/`vps_*.json` 遗留文件。
+  - 在 `Dockerfile` 与 `main.go` 双层默认注入 `GOMEMLIMIT=256MiB` 与 `GOGC=50`（支持 `.env` 环境变量覆盖），并在冷重建后以节流异步方式调用 `debug.FreeOSMemory()` 归还物理内存页。
+
+### 安全加固与稳定性修复 (Security & Reliability Hardening)
+
+- **目录并发安全、原子落盘与促销规则校准**：
+  - 修复 SHA-256 短路路径原地修改共享 `*CatalogDictionary.UpdatedAt` 的数据竞争，改为不可变浅拷贝替换；将上游 SHA-256 摘要持久化至 `.json.gz`，实现重启后冷启动即时短路与 `buildServerPlans` 单边故障防覆盖。
+  - 将裸金属字典独立至 `bm:` 缓存键与 `catalog_bmdict_v4_*.json.gz`（避免遮蔽全量字典中的 VPS 条目与别名），`writeGzipJSONFile` 改用唯一 `os.CreateTemp` 临时文件防止并发截断。
+  - 公开目录流式读取显式拦截超限截断（`ErrResponseTooLarge`）与 Gzip CRC32 校验，补充子站白名单校验与确定性别名回退；过滤已过期/未开始/配额耗尽的促销活动，拆分 `voucherPromos` 不计入自动到手价，修复承诺期专属活动 `monthlySavings` 为 0 问题并按月均折算活动立省金额。
+- **采购与 MCP 报价重验、并发飞行锁与自动活动码兜底**：
+  - MCP `order_quote` → `order_create_unpaid` 补齐严格核价重验：结算前同时校验实时购物车不含税月均价与初装费，涨价超过 `€0.01` 即中止并返回 `PRICE_CHANGED_SINCE_QUOTE`。
+  - `queue_add` 与队列任务新增 `max_setup_fee`（SQLite 自动列迁移），严格拒绝显式 `<= 0` 限价与非法 `pricing_mode`；区分绑券接口的 `429`/`5xx` 瞬态错误（保持退避重试）与 `4xx` 永久拒券（`INVALID_COUPON`）。
+  - 新增按 `accountID + planCode + 配置指纹(options+mode+coupon)` 细粒度飞行锁并支持 `any` 机房通配防重；前后端（QuickOrder / 队列 / 快速监控 / MCP）统一自动剥离误填的目录自动活动码并记录 `WARNING` / Toast 提示。
+- **会话即时吊销、SSE 防泄漏、容器与 HTTP 边界加固**：
+  - 新增持久化 `session_epoch` 与 `API_SECRET_KEY` HMAC 指纹（`keyFp`）：登出、2FA 启停、恢复码重置及更换主密钥重启均立即吊销其他设备会话。
+  - 日志 SSE 流（`/api/logs/stream`）增加每帧 `10s` 写超时、并发订阅上限（`32`，超限返回 `503`）、停机统一关闭以及 URL 编码敏感词脱敏。
+  - 修复通配 `CORS_ORIGINS=*` 反射源与凭据头问题，为携带 `ovh_session` Cookie 的非幂等请求强制执行 `Origin`/`Sec-Fetch-Site`/`Referer` CSRF 校验（仅放行 `/api/mcp` 与无 Cookie 程序化请求），为 2FA 敏感请求体分级补齐无视 `Content-Type` 的统一 JSON 解析防绕过，`COOKIE_SECURE=true` 时下发 HSTS；移除带副作用的 `GET /api/servers/{planCode}/price`，为手动刷新按接口与区域分桶实施 30 秒节流，`/api/cache/info` 隐去宿主机绝对路径；容器入口改用不追踪软链的 `chown -RP`，SQLite PRAGMA 编码进 DSN，Dockerfile 升至 `golang:1.27.4-alpine`；前端补齐实测询价 `AbortController` 竞态隔离、浏览器内存字典 12 小时过期、横幅基于 `endDate` 动态倒计时以及历史订单外链 `https://` 白名单。
+
+---
 
 ## [1.3.4] - 2026-11-18 — 实时库存矩阵防挤压排版与假促销纠偏、SKU 基线自愈迁移及全站 SEO / `/llms.txt` AI 检索增强
 

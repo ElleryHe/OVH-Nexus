@@ -1,5 +1,23 @@
 export type ListingState = 'listed' | 'announced' | 'presale';
 
+export interface PromoDetail {
+  code: string;
+  description?: string;
+  context: string; // 'standard' (auto-applied) | 'voucher'
+  autoApplied: boolean;
+  capacity: 'renew' | 'installation' | string;
+  type?: string;
+  value?: number;
+  discountAmount?: number;
+  duration?: number;
+  minimumDuration?: number;
+  startDate?: string;
+  endDate?: string;
+  isGlobalQuantityLimited?: boolean;
+  globalQuantity?: number | null;
+  quantity?: number | null;
+}
+
 export interface PlanPricingMode {
   mode: string; // 'default' | 'upfront12' | 'upfront24' | 'degressivity12' | 'degressivity24'
   duration: string; // 'P1M' | 'P12M' | 'P24M'
@@ -19,7 +37,132 @@ export interface PlanPricingMode {
   promoValue?: number;
   promoType?: string;
   promoDuration?: number;
+  promoMinimumDuration?: number;
+  promoContext?: string;
+  autoApplied?: boolean;
+  promoStartDate?: string;
   promoEndDate?: string;
+  renewPromo?: PromoDetail | null;
+  setupPromo?: PromoDetail | null;
+  voucherPromos?: PromoDetail[];
+}
+
+export interface CatalogPromoCampaign {
+  promoCode: string;
+  context: string;
+  autoApplied: boolean;
+  capacities: string[];
+  supportedModes: string[];
+  discountType?: string;
+  discountValue?: number;
+  badge: string;
+  description?: string;
+  durationMonths?: number;
+  minimumDurationMonths?: number;
+  startDate?: string;
+  endDate?: string;
+  remainingHours?: number | null;
+  isGlobalQuantityLimited?: boolean;
+  globalQuantity?: number | null;
+  catalogSources: string[];
+  planCount: number;
+  inStockPlanCount: number;
+  maxSavingsAmount: number;
+  currency: string;
+  planCodes: string[];
+  samplePlans: string[];
+}
+
+export interface CatalogPromoPlan {
+  planCode: string;
+  name: string;
+  range?: string;
+  cpu?: string;
+  catalogSource?: string;
+  listingState: string;
+  currency: string;
+  startingPrice: number;
+  originalMonthlyPrice: number;
+  setupFee: number;
+  originalSetupFee: number;
+  monthlySavings: number;
+  setupSavings: number;
+  bestPromoMode?: string;
+  hasRecurringPromo: boolean;
+  hasSetupPromo: boolean;
+  autoApplied: boolean;
+  promoCodes: string[];
+  promoBadge?: string;
+  promoDescription?: string;
+  supportedPromoModes: string[];
+  missedPromoModes?: string[];
+  addonsDiscounted: boolean;
+  inStockDatacenters: string[];
+  inStockCount: number;
+  pricingModes: PlanPricingMode[];
+}
+
+export interface CatalogPromotionsResponse {
+  updatedAt: number;
+  endpoint: string;
+  zone: string;
+  currency: string;
+  totalCampaigns: number;
+  totalPromotedPlans: number;
+  inStockPromotedPlans: number;
+  autoAppliedCodes: string[];
+  campaigns: CatalogPromoCampaign[];
+  plans: CatalogPromoPlan[];
+}
+
+export interface CartPriceLine {
+  detailType?: string;
+  description?: string;
+  totalWithoutTax?: number | null;
+  originalWithoutTax?: number | null;
+  currencyCode?: string;
+}
+
+export interface ServerPriceProbeResult {
+  success: boolean;
+  code?: string;
+  planCode?: string;
+  datacenter?: string;
+  options?: string[];
+  pricingMode?: string;
+  duration?: string;
+  coupon?: string;
+  autoAppliedPromoDetected?: boolean;
+  autoAppliedPromoCode?: string;
+  autoAppliedPromoHint?: string;
+  error?: string;
+  price?: {
+    pricingMode?: string;
+    duration?: string;
+    intervalMonths?: number;
+    monthlyEquivalentWithoutTax?: number | null;
+    setupFeeWithoutTax?: number | null;
+    recurringWithoutTax?: number | null;
+    reductionWithoutTax?: number | null;
+    prices?: {
+      withTax?: number | null;
+      withoutTax?: number | null;
+      tax?: number | null;
+      currencyCode?: string;
+    };
+    items?: Array<{
+      itemId?: unknown;
+      planCode?: string;
+      description?: string;
+      prices?: {
+        withTax?: number | null;
+        withoutTax?: number | null;
+        tax?: number | null;
+        currencyCode?: string;
+      };
+    }>;
+    details?: CartPriceLine[];
+  } | null;
 }
 
 export interface DatacenterAvailabilityItem {
@@ -222,6 +365,7 @@ export interface QueueItem {
   configLabel?: string;
   currency?: string;
   maxMonthlyPrice?: number;
+  maxSetupFee?: number;
   pricingMode?: string;
   duration?: string;
   coupon?: string;
@@ -230,11 +374,13 @@ export interface QueueItem {
   updatedAt: string;
   retryInterval: number;
   retryCount: number;
+  maxRetryCount?: number;
   accountId?: string;
   quantity?: number;
   purchased?: number;
   failureCount?: number;
   nextAttemptAt?: number;
+  lastError?: string;
   auto_pay?: boolean;
   waive_retractation_period?: boolean;
   source?: 'manual' | 'stock-monitor' | 'mcp' | string;
@@ -249,6 +395,7 @@ export interface QuickOrderRequest {
   configLabel?: string;
   currency?: string;
   maxMonthlyPrice?: number;
+  maxSetupFee?: number;
   pricingMode?: string;
   duration?: string;
   coupon?: string;

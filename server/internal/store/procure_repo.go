@@ -24,6 +24,7 @@ type QueueItem struct {
 	Duration                string   `json:"duration,omitempty"`
 	Coupon                  string   `json:"coupon,omitempty"`
 	MaxMonthlyPrice         float64  `json:"maxMonthlyPrice,omitempty"`
+	MaxSetupFee             float64  `json:"maxSetupFee,omitempty"`
 	Currency                string   `json:"currency,omitempty"`
 	Quantity                int      `json:"quantity"`
 	Purchased               int      `json:"purchased"`
@@ -185,6 +186,7 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 		&item.Duration,
 		&item.Coupon,
 		&item.MaxMonthlyPrice,
+		&item.MaxSetupFee,
 		&item.Currency,
 		&item.Quantity,
 		&item.Purchased,
@@ -225,7 +227,7 @@ func scanQueueItem(scanner interface{ Scan(...any) error }) (*QueueItem, error) 
 func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, error) {
 	query := `
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
-		       config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, currency,
+		       config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, max_setup_fee, currency,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
 		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
@@ -258,7 +260,7 @@ func (s *Store) ListQueue(ctx context.Context, accountID string) ([]QueueItem, e
 func (s *Store) GetQueueItem(ctx context.Context, id string) (*QueueItem, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, account_id, plan_code, datacenters_json, options_json,
-		       config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, currency,
+		       config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, max_setup_fee, currency,
 		       quantity, purchased, failure_count, max_retry_count, status,
 		       retry_interval, retry_count, last_check_time, next_attempt_at,
 		       auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
@@ -324,14 +326,14 @@ func (s *Store) CreateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO order_queue (
 			id, account_id, plan_code, datacenters_json, options_json,
-			config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, currency,
+			config_key, config_label, pricing_mode, duration, coupon, max_monthly_price, max_setup_fee, currency,
 			quantity, purchased, failure_count, max_retry_count, status,
 			retry_interval, retry_count, last_check_time, next_attempt_at,
 			auto_pay, waive_retractation_period, source, source_ref, last_error, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		item.ID, item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
-		item.ConfigKey, item.ConfigLabel, item.PricingMode, item.Duration, item.Coupon, item.MaxMonthlyPrice, item.Currency,
+		item.ConfigKey, item.ConfigLabel, item.PricingMode, item.Duration, item.Coupon, item.MaxMonthlyPrice, item.MaxSetupFee, item.Currency,
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
 		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError,
@@ -371,14 +373,14 @@ func (s *Store) UpdateQueueItem(ctx context.Context, item QueueItem) (*QueueItem
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE order_queue SET
 			account_id = ?, plan_code = ?, datacenters_json = ?, options_json = ?,
-			config_key = ?, config_label = ?, pricing_mode = ?, duration = ?, coupon = ?, max_monthly_price = ?, currency = ?,
+			config_key = ?, config_label = ?, pricing_mode = ?, duration = ?, coupon = ?, max_monthly_price = ?, max_setup_fee = ?, currency = ?,
 			quantity = ?, purchased = ?, failure_count = ?, max_retry_count = ?, status = ?,
 			retry_interval = ?, retry_count = ?, last_check_time = ?, next_attempt_at = ?,
 			auto_pay = ?, waive_retractation_period = ?, source = ?, source_ref = ?, last_error = ?, updated_at = ?
 		WHERE id = ?
 	`,
 		item.AccountID, item.PlanCode, string(dcsJSON), string(optsJSON),
-		item.ConfigKey, item.ConfigLabel, item.PricingMode, item.Duration, item.Coupon, item.MaxMonthlyPrice, item.Currency,
+		item.ConfigKey, item.ConfigLabel, item.PricingMode, item.Duration, item.Coupon, item.MaxMonthlyPrice, item.MaxSetupFee, item.Currency,
 		item.Quantity, item.Purchased, item.FailureCount, item.MaxRetryCount, item.Status,
 		item.RetryInterval, item.RetryCount, item.LastCheckTime, item.NextAttemptAt,
 		boolToInt(item.AutoPay), boolToInt(item.WaiveRetractationPeriod), item.Source, item.SourceRef, item.LastError, item.UpdatedAt,

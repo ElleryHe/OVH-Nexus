@@ -17,7 +17,7 @@ COPY eslint.config.js ./
 
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS go-builder
 
 WORKDIR /src/server
 
@@ -53,7 +53,9 @@ ENV PORT=8080 \
     DATA_DIR=/data \
     TZ=UTC \
     PUID=65532 \
-    PGID=65532
+    PGID=65532 \
+    GOMEMLIMIT=256MiB \
+    GOGC=50
 
 EXPOSE 8080
 

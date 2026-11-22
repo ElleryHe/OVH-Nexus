@@ -69,6 +69,14 @@ func (s *Service) HandleCreateQueue(w http.ResponseWriter, r *http.Request) {
 		accountID = stringFromAny(raw["accountId"])
 	}
 
+	rawCoupon := stringFromAny(raw["coupon"])
+	maxMonthly := floatFromAny(raw["maxMonthlyPrice"], 0)
+	maxSetup := floatFromAny(raw["maxSetupFee"], 0)
+	if maxMonthly < 0 || maxSetup < 0 {
+		writeJSONError(w, http.StatusBadRequest, "INVALID_PRICE_CAP", "maxMonthlyPrice and maxSetupFee cannot be negative.")
+		return
+	}
+
 	req := CreateQueueRequest{
 		AccountID:               accountID,
 		PlanCode:                stringFromAny(raw["planCode"]),
@@ -78,8 +86,9 @@ func (s *Service) HandleCreateQueue(w http.ResponseWriter, r *http.Request) {
 		ConfigLabel:             stringFromAny(raw["configLabel"]),
 		PricingMode:             stringFromAny(raw["pricingMode"]),
 		Duration:                stringFromAny(raw["duration"]),
-		Coupon:                  stringFromAny(raw["coupon"]),
-		MaxMonthlyPrice:         floatFromAny(raw["maxMonthlyPrice"], 0),
+		Coupon:                  rawCoupon,
+		MaxMonthlyPrice:         maxMonthly,
+		MaxSetupFee:             maxSetup,
 		Currency:                stringFromAny(raw["currency"]),
 		Quantity:                intFromAny(raw["quantity"], 1),
 		MaxRetryCount:           intFromAny(raw["maxRetryCount"], 50),
@@ -100,11 +109,15 @@ func (s *Service) HandleCreateQueue(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "QUEUE_CREATE_FAILED", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status": "success",
 		"id":     created.ID,
 		"item":   created,
-	})
+	}
+	if rawCoupon != "" && created.Coupon == "" {
+		resp["couponStripped"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // HandleUpdateQueue handles PUT /api/queue/{id}.
@@ -156,6 +169,10 @@ func (s *Service) HandleUpdateQueue(w http.ResponseWriter, r *http.Request) {
 	if v, ok := raw["maxMonthlyPrice"]; ok {
 		f := floatFromAny(v, 0)
 		req.MaxMonthlyPrice = &f
+	}
+	if v, ok := raw["maxSetupFee"]; ok {
+		f := floatFromAny(v, 0)
+		req.MaxSetupFee = &f
 	}
 	if v, ok := raw["retryInterval"]; ok {
 		n := intFromAny(v, 0)
@@ -281,6 +298,7 @@ func (s *Service) HandleQuickOrder(w http.ResponseWriter, r *http.Request) {
 		Coupon:                  stringFromAny(raw["coupon"]),
 		Quantity:                intFromAny(raw["quantity"], 1),
 		MaxMonthlyPrice:         floatFromAny(raw["maxMonthlyPrice"], 0),
+		MaxSetupFee:             floatFromAny(raw["maxSetupFee"], 0),
 		Currency:                stringFromAny(raw["currency"]),
 		Subsidiary:              stringFromAny(raw["subsidiary"]),
 		SkipPriceCheck:          boolFromAnyKeys(raw, "skipPriceCheck"),

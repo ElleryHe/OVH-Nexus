@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"ovh-nexus/server/internal/auth"
+	"ovh-nexus/server/internal/catalog"
 	"ovh-nexus/server/internal/config"
 	"ovh-nexus/server/internal/logger"
 	"ovh-nexus/server/internal/store"
@@ -27,7 +28,7 @@ import (
 const (
 	MCPProtocolVersion = "2025-03-26"
 	MCPServerName      = "ovh-nexus-mcp"
-	MCPServerVersion   = "1.3.4"
+	MCPServerVersion   = "1.4.0"
 	maxMCPBodyBytes    = 2 << 20
 )
 
@@ -56,7 +57,21 @@ type Service struct {
 	checkoutMu  sync.Mutex
 	checkoutMap map[string]*sync.Mutex
 
+	fallbackCatOnce sync.Once
+	fallbackCat     *catalog.Service
+
 	clientForAccountFn func(ctx context.Context, accountID string) (OVHClient, *store.OVHAccount, error)
+}
+
+func (s *Service) getFallbackCatalog() *catalog.Service {
+	s.fallbackCatOnce.Do(func() {
+		dataDir := ""
+		if s.deps.Config != nil {
+			dataDir = s.deps.Config.DataDir
+		}
+		s.fallbackCat = catalog.NewService(s.store, s.deps.Log, s.deps.OVHPool, dataDir)
+	})
+	return s.fallbackCat
 }
 
 // NewService creates a new MCP Gateway service.
@@ -941,6 +956,33 @@ func asInt(v any, def int) int {
 	case string:
 		if i, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
 			return i
+		}
+		return def
+	default:
+		return def
+	}
+}
+
+func asFloat(v any, def float64) float64 {
+	switch t := v.(type) {
+	case nil:
+		return def
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+		return def
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return f
 		}
 		return def
 	default:

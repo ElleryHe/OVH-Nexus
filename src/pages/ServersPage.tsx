@@ -39,6 +39,8 @@ import {
   QuickMonitorDialog,
   QuickMonitorInitialConfig,
 } from '@/components/QuickMonitorDialog';
+import { CatalogPromoBanner } from '@/components/CatalogPromoBanner';
+import { OrderPromoDebugPanel } from '@/components/OrderPromoDebugPanel';
 import {
   OVH_DATACENTERS,
   formatDatacenter,
@@ -57,8 +59,10 @@ import {
   resolvePricingModeDuration,
   synthesizePricingModes,
   resolvePricingModeEntry,
+  findAutoAppliedPromoCodeForPlanMode,
 } from '@/utils/hardwareFormat';
 import type {
+  CatalogPromotionsResponse,
   ListingState,
   OVHAvailabilityRow,
   PlanConfigOption,
@@ -190,6 +194,11 @@ const ServersPage = () => {
   const [showBatchMonitorDialog, setShowBatchMonitorDialog] = useState(false);
   const [listingFilterTab, setListingFilterTab] =
     useState<ListingFilterTab>('all');
+  const [promotions, setPromotions] =
+    useState<CatalogPromotionsResponse | null>(null);
+  const [selectedPromoCode, setSelectedPromoCode] = useState<string | null>(
+    null
+  );
   const [recentSkuMap, setRecentSkuMap] = useState<Record<string, string>>({});
 
   const [quickMonitorTarget, setQuickMonitorTarget] = useState<{
@@ -536,6 +545,19 @@ const ServersPage = () => {
     }
   };
 
+  const fetchPromotions = useCallback(async (forceRefresh = false) => {
+    try {
+      const res = await api.get('/catalog/promotions', {
+        params: forceRefresh ? { refresh: '1' } : undefined,
+      });
+      if (res.data && Array.isArray(res.data.campaigns)) {
+        setPromotions(res.data as CatalogPromotionsResponse);
+      }
+    } catch {
+      // non-fatal: banner simply hides if promotions endpoint is unavailable
+    }
+  }, []);
+
   useEffect(() => {
     const loadInitialData = async () => {
       if (isAuthenticated) {
@@ -549,6 +571,7 @@ const ServersPage = () => {
           }
         })
         .catch(() => {});
+      fetchPromotions(false);
       await fetchServers(false);
     };
 
@@ -558,13 +581,14 @@ const ServersPage = () => {
       if (newAuthState) {
         await loadSubscribedServers();
       }
-      await fetchServers(true, newAuthState);
+      fetchPromotions(false);
+      await fetchServers(false, newAuthState);
     });
 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [fetchPromotions]);
 
   // Build unified configuration list for a server card (merging default config + available configs + live availability)
   const buildUnifiedConfigsForServer = useCallback(
@@ -1138,6 +1162,34 @@ const ServersPage = () => {
     return dcMap[displayDc.toLowerCase()] || displayDc.toLowerCase();
   };
 
+  const sanitizeCouponForSubmit = useCallback(
+    (
+      planCode: string,
+      pricingMode: string,
+      pricingModes: PlanPricingMode[] | undefined,
+      rawCoupon?: string
+    ): string => {
+      const trimmed = (rawCoupon || '').trim();
+      if (!trimmed) return '';
+      const matched = findAutoAppliedPromoCodeForPlanMode(
+        planCode,
+        pricingMode,
+        trimmed,
+        pricingModes,
+        promotions
+      );
+      if (matched) {
+        setSelectedCouponMap((prev) =>
+          prev[planCode] ? { ...prev, [planCode]: '' } : prev
+        );
+        toast.info(t('promoDebug.autoCouponStripped', { code: matched }));
+        return '';
+      }
+      return trimmed;
+    },
+    [promotions, t]
+  );
+
   const handleOpenAddToQueue = (
     server: ServerPlan,
     activeConfig: UnifiedCardConfig | null,
@@ -1160,17 +1212,17 @@ const ServersPage = () => {
     }
 
     const mode = selectedPricingModeMap[server.planCode] || 'default';
-    const modeEntry = resolvePricingModeEntry(
-      activeConfig?.pricingModes || server.pricingModes,
-      mode
-    );
+    const modePool = activeConfig?.pricingModes || server.pricingModes;
+    const modeEntry = resolvePricingModeEntry(modePool, mode);
     const duration =
       modeEntry?.duration ||
-      resolvePricingModeDuration(
-        mode,
-        activeConfig?.pricingModes || server.pricingModes
-      );
-    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+      resolvePricingModeDuration(mode, modePool);
+    const coupon = sanitizeCouponForSubmit(
+      server.planCode,
+      mode,
+      modePool,
+      selectedCouponMap[server.planCode]
+    );
 
     setQueueAutoPay(false);
     setQueueWaiveRetractation(false);
@@ -1238,17 +1290,17 @@ const ServersPage = () => {
     const apiDc = convertDisplayDcToApiDc(targetDc);
 
     const mode = selectedPricingModeMap[server.planCode] || 'default';
-    const modeEntry = resolvePricingModeEntry(
-      activeCfg?.pricingModes || server.pricingModes,
-      mode
-    );
+    const modePool = activeCfg?.pricingModes || server.pricingModes;
+    const modeEntry = resolvePricingModeEntry(modePool, mode);
     const duration =
       modeEntry?.duration ||
-      resolvePricingModeDuration(
-        mode,
-        activeCfg?.pricingModes || server.pricingModes
-      );
-    const coupon = (selectedCouponMap[server.planCode] || '').trim();
+      resolvePricingModeDuration(mode, modePool);
+    const coupon = sanitizeCouponForSubmit(
+      server.planCode,
+      mode,
+      modePool,
+      selectedCouponMap[server.planCode]
+    );
 
     setIsQuickOrdering(true);
     try {
@@ -1300,6 +1352,12 @@ const ServersPage = () => {
               .map((o) => o.value);
       const mergedOptions = Array.from(new Set([...configOpts, ...extraOptions]));
       const apiDatacenters = datacenters.map((dc) => convertDisplayDcToApiDc(dc));
+      const cleanCoupon = sanitizeCouponForSubmit(
+        server.planCode,
+        pricingMode || 'default',
+        selectedConfig?.pricingModes || server.pricingModes,
+        coupon
+      );
 
       await api.post('/queue', {
         planCode: server.planCode,
@@ -1310,7 +1368,7 @@ const ServersPage = () => {
         currency: selectedConfig?.currency || server.currency || undefined,
         pricingMode: pricingMode || 'default',
         duration: duration || 'P1M',
-        coupon: coupon || undefined,
+        coupon: cleanCoupon || undefined,
         auto_pay: queueAutoPay,
         waive_retractation_period: queueWaiveRetractation,
       });
@@ -1407,6 +1465,31 @@ const ServersPage = () => {
       );
     }
 
+    if (selectedPromoCode) {
+      const targetPromoLow = selectedPromoCode.toLowerCase();
+      const targetCamp = promotions?.campaigns.find(
+        (c) => c.promoCode.toLowerCase() === targetPromoLow
+      );
+      const codeSet = new Set(
+        (targetCamp?.planCodes || []).map((c) => c.toLowerCase())
+      );
+      filtered = filtered.filter((srv) => {
+        if (codeSet.size > 0 && codeSet.has(srv.planCode.toLowerCase())) {
+          return true;
+        }
+        if (srv.promoCode?.toLowerCase() === targetPromoLow) return true;
+        return (srv.pricingModes || []).some(
+          (m) =>
+            m.promoCode?.toLowerCase() === targetPromoLow ||
+            m.renewPromo?.code?.toLowerCase() === targetPromoLow ||
+            m.setupPromo?.code?.toLowerCase() === targetPromoLow ||
+            (m.voucherPromos || []).some(
+              (v) => v.code?.toLowerCase() === targetPromoLow
+            )
+        );
+      });
+    }
+
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       filtered = filtered.filter(
@@ -1440,7 +1523,7 @@ const ServersPage = () => {
     });
 
     return filtered;
-  }, [servers, listingFilterTab, searchTerm, selectedDatacenter, recentSkuMap, subscribedServers]);
+  }, [servers, listingFilterTab, selectedPromoCode, promotions, searchTerm, selectedDatacenter, recentSkuMap, subscribedServers]);
 
   const formatDateTime = (date: Date | null): string => {
     if (!date) return '未知';
@@ -1507,6 +1590,18 @@ const ServersPage = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Live OVH Promotions Radar Banner (Collapsible) */}
+      <CatalogPromoBanner
+        promotions={promotions}
+        selectedPromoCode={selectedPromoCode}
+        onSelectPromoCode={(code) => {
+          setSelectedPromoCode(code);
+          if (code && listingFilterTab !== 'all' && listingFilterTab !== 'promo') {
+            setListingFilterTab('all');
+          }
+        }}
+      />
 
       {/* Filters & Controls */}
       <div className="cyber-panel p-3 w-full space-y-2.5">
@@ -1584,7 +1679,10 @@ const ServersPage = () => {
               </button>
 
               <button
-                onClick={() => fetchServers(true)}
+                onClick={() => {
+                  fetchServers(true);
+                  fetchPromotions(true);
+                }}
                 disabled={isLoading || isRefreshing}
                 className="cyber-button text-xs flex items-center gap-1.5 px-2.5 py-1.5"
               >
@@ -1695,6 +1793,7 @@ const ServersPage = () => {
                 setSearchTerm('');
                 setSelectedDatacenter('all');
                 setListingFilterTab('all');
+                setSelectedPromoCode(null);
               }}
               className="px-4 py-1.5 bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/40 rounded-md text-xs font-semibold"
             >
@@ -2256,6 +2355,15 @@ const ServersPage = () => {
                   ),
                   setupFee: 0,
                   freeSetup: true,
+                  hasPromo: false,
+                  autoApplied: false,
+                  promoCode: undefined,
+                  promoBadge: undefined,
+                  promoDescription: undefined,
+                  promoContext: undefined,
+                  renewPromo: undefined,
+                  setupPromo: undefined,
+                  voucherPromos: undefined,
                 },
                 {
                   ...rawModes[0],
@@ -2271,6 +2379,15 @@ const ServersPage = () => {
                   ),
                   setupFee: 0,
                   freeSetup: true,
+                  hasPromo: false,
+                  autoApplied: false,
+                  promoCode: undefined,
+                  promoBadge: undefined,
+                  promoDescription: undefined,
+                  promoContext: undefined,
+                  renewPromo: undefined,
+                  setupPromo: undefined,
+                  voucherPromos: undefined,
                 },
               ]
             : [];
@@ -2648,6 +2765,44 @@ const ServersPage = () => {
                         )}
                       </div>
                     </div>
+
+                    {/* Promo Hit & Pricing Debug + Auto-Promo Guard + Live Cart Probe */}
+                    <OrderPromoDebugPanel
+                      server={modalServer}
+                      promotions={promotions}
+                      activeModeKey={activeModeEntry?.mode || selectedPricingMode}
+                      activeDuration={resolvePricingModeDuration(
+                        activeModeEntry?.mode || selectedPricingMode,
+                        availablePricingModes
+                      )}
+                      activeConfigMode={activeModeEntry}
+                      basePlanModes={modalServer.pricingModes || []}
+                      configModes={availablePricingModes}
+                      selectedDatacenter={
+                        selectedDcsForModal[0] ||
+                        activeCfg?.inStockDcs[0] ||
+                        allInStockDcs[0] ||
+                        'gra'
+                      }
+                      selectedOptions={[
+                        ...(activeCfg?.options || []),
+                        ...selectedAdvOpts,
+                      ]}
+                      coupon={selectedCoupon}
+                      isAuthenticated={isAuthenticated}
+                      onClearCoupon={() =>
+                        setSelectedCouponMap((prev) => ({
+                          ...prev,
+                          [modalServer.planCode]: '',
+                        }))
+                      }
+                      onSwitchMode={(mode) =>
+                        setSelectedPricingModeMap((prev) => ({
+                          ...prev,
+                          [modalServer.planCode]: mode,
+                        }))
+                      }
+                    />
                   </div>
                 )}
 
@@ -3348,6 +3503,7 @@ const ServersPage = () => {
         initialSelectedDcs={quickMonitorTarget?.initialSelectedDcs}
         initialConfig={quickMonitorTarget?.initialConfig}
         initialConfigs={quickMonitorTarget?.initialConfigs}
+        promotions={promotions}
         onSuccess={(planCode) => {
           const nextSet = new Set([...subscribedServersRef.current, planCode]);
           subscribedServersRef.current = nextSet;

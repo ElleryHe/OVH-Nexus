@@ -31,8 +31,10 @@ var (
 	ErrNoPricedConfig = errors.New("No priced configuration available in the specified datacenter")
 	// ErrConfigRequiredForAutoOrder indicates stock-monitor auto-order was triggered without explicit configuration options.
 	ErrConfigRequiredForAutoOrder = errors.New("CONFIG_REQUIRED_FOR_AUTO_ORDER: stock-monitor auto-order requires explicit configuration options")
-	// ErrPriceAboveLimit indicates the live OVH cart recurring monthly ex-VAT price exceeds MaxMonthlyPrice.
-	ErrPriceAboveLimit = errors.New("PRICE_ABOVE_LIMIT: live cart monthly price exceeds configured maxMonthlyPrice")
+	// ErrPriceAboveLimit indicates the live OVH cart recurring monthly ex-VAT price or setup fee exceeds configured limits.
+	ErrPriceAboveLimit = errors.New("PRICE_ABOVE_LIMIT: live cart price exceeds configured price cap")
+	// ErrPriceChangedSinceQuote indicates the live OVH cart price increased above the quoted ex-VAT monthly price or setup fee.
+	ErrPriceChangedSinceQuote = errors.New("PRICE_CHANGED_SINCE_QUOTE: live cart price exceeded quoted price")
 	// ErrInvalidCoupon indicates OVH rejected the custom promo/voucher coupon code.
 	ErrInvalidCoupon = errors.New("INVALID_COUPON: coupon code rejected by OVH")
 	// ErrDuplicateOrder indicates an active queue task or recent order exists within the 2-minute window.
@@ -54,26 +56,31 @@ type QuoteRequest struct {
 
 // QuoteResult holds the monthly price breakdown returned by QuoteOrder.
 type QuoteResult struct {
-	PlanCode    string                      `json:"planCode"`
-	ModelName   string                      `json:"modelName"`
-	Datacenter  string                      `json:"datacenter"`
-	Options     []string                    `json:"options"`
-	PricingMode string                      `json:"pricingMode,omitempty"`
-	Duration    string                      `json:"duration,omitempty"`
-	Coupon      string                      `json:"coupon,omitempty"`
-	Price       *catalog.ServerPricePayload `json:"price"`
+	PlanCode             string                      `json:"planCode"`
+	ModelName            string                      `json:"modelName"`
+	Datacenter           string                      `json:"datacenter"`
+	Options              []string                    `json:"options"`
+	PricingMode          string                      `json:"pricingMode,omitempty"`
+	Duration             string                      `json:"duration,omitempty"`
+	Coupon               string                      `json:"coupon,omitempty"`
+	CouponStripped       bool                        `json:"couponStripped,omitempty"`
+	AutoAppliedPromoCode string                      `json:"autoAppliedPromoCode,omitempty"`
+	Price                *catalog.ServerPricePayload `json:"price"`
 }
 
 // UnpaidOrderRequest holds parameters for placing an unpaid order (auto_pay=false, quantity=1 hardcoded).
 type UnpaidOrderRequest struct {
-	AccountID   string   `json:"accountId"`
-	PlanCode    string   `json:"planCode"`
-	Datacenter  string   `json:"datacenter"`
-	Options     []string `json:"options"`
-	PricingMode string   `json:"pricingMode,omitempty"`
-	Duration    string   `json:"duration,omitempty"`
-	Coupon      string   `json:"coupon,omitempty"`
-	TaskID      string   `json:"taskId,omitempty"`
+	AccountID       string   `json:"accountId"`
+	PlanCode        string   `json:"planCode"`
+	Datacenter      string   `json:"datacenter"`
+	Options         []string `json:"options"`
+	PricingMode     string   `json:"pricingMode,omitempty"`
+	Duration        string   `json:"duration,omitempty"`
+	Coupon          string   `json:"coupon,omitempty"`
+	TaskID          string   `json:"taskId,omitempty"`
+	MaxMonthlyPrice float64  `json:"maxMonthlyPrice,omitempty"`
+	MaxSetupFee     float64  `json:"maxSetupFee,omitempty"`
+	EnforceQuoteCap bool     `json:"enforceQuoteCap,omitempty"`
 }
 
 // UnpaidOrderResult holds the created unpaid order summary.
@@ -106,6 +113,7 @@ type QuickOrderRequest struct {
 	Coupon                  string   `json:"coupon,omitempty"`
 	Quantity                int      `json:"quantity"`
 	MaxMonthlyPrice         float64  `json:"maxMonthlyPrice"`
+	MaxSetupFee             float64  `json:"maxSetupFee"`
 	Currency                string   `json:"currency,omitempty"`
 	Subsidiary              string   `json:"subsidiary,omitempty"`
 	SkipPriceCheck          bool     `json:"skipPriceCheck"`
@@ -125,10 +133,12 @@ type QuickOrderResult struct {
 	PeriodPrice  float64                     `json:"periodPrice,omitempty"`
 	MonthlyPrice float64                     `json:"monthlyPrice,omitempty"`
 	SetupFee     float64                     `json:"setupFee,omitempty"`
-	PricingMode  string                      `json:"pricingMode,omitempty"`
-	Duration     string                      `json:"duration,omitempty"`
-	Coupon       string                      `json:"coupon,omitempty"`
-	Quantity     int                         `json:"quantity,omitempty"`
+	PricingMode          string                      `json:"pricingMode,omitempty"`
+	Duration             string                      `json:"duration,omitempty"`
+	Coupon               string                      `json:"coupon,omitempty"`
+	CouponStripped       bool                        `json:"couponStripped,omitempty"`
+	AutoAppliedPromoCode string                      `json:"autoAppliedPromoCode,omitempty"`
+	Quantity             int                         `json:"quantity,omitempty"`
 	OrderIDs     []string                    `json:"orderIds,omitempty"`
 	Options      []string                    `json:"options"`
 	Code         string                      `json:"code,omitempty"`
@@ -149,6 +159,7 @@ type CreateQueueRequest struct {
 	Duration                string
 	Coupon                  string
 	MaxMonthlyPrice         float64
+	MaxSetupFee             float64
 	Currency                string
 	Quantity                int
 	MaxRetryCount           int
@@ -173,6 +184,7 @@ type UpdateQueueRequest struct {
 	Coupon                  *string
 	Currency                *string
 	MaxMonthlyPrice         *float64
+	MaxSetupFee             *float64
 	Quantity                *int
 	RetryInterval           *int
 	AutoPay                 *bool
@@ -195,8 +207,9 @@ type Service struct {
 	workerMu sync.Mutex
 	inFlight map[string]bool
 
-	acctMuLock sync.Mutex
-	acctMus    map[string]*sync.Mutex
+	acctMuLock    sync.Mutex
+	acctMus       map[string]*sync.Mutex
+	inflightLocks sync.Map // key: accountID|planCode|optionsFingerprint(opts, mode, coupon) -> *sync.Mutex
 }
 
 // NewService constructs a procurement Service.
@@ -258,6 +271,54 @@ func (s *Service) accountLock(accountID string) *sync.Mutex {
 		s.acctMus[key] = mu
 	}
 	return mu
+}
+
+// lockInflightConfig serializes concurrent order/queue operations for identical (account, plan, options, pricingMode, coupon)
+// configurations while allowing distinct plans or hardware configurations to proceed concurrently.
+func (s *Service) lockInflightConfig(accountID, planCode string, opts []string, pricingMode, coupon string) func() {
+	key := strings.TrimSpace(accountID) + "|" + strings.ToLower(strings.TrimSpace(planCode)) + "|" + optionsFingerprint(opts, pricingMode, coupon)
+	val, _ := s.inflightLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := val.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// stripAutoAppliedCoupon detects whether rawCoupon matches an active OVH auto-applied catalog campaign
+// (context=="standard") for the exact target planCode and pricingMode, and strips it with a WARNING log
+// so checkout receives the automatic discount instead of failing with INVALID_COUPON.
+// Coupons belonging to other models or other pricing modes are preserved verbatim for OVH validation.
+func (s *Service) stripAutoAppliedCoupon(ctx context.Context, accountID, subsidiary, planCode, pricingMode, rawCoupon string) (cleanCoupon string, strippedCode string) {
+	trimmed := strings.TrimSpace(rawCoupon)
+	if trimmed == "" || s.catalog == nil || strings.TrimSpace(planCode) == "" {
+		return trimmed, ""
+	}
+	ep, zn := s.resolveAccountEndpointZone(ctx, accountID)
+	if strings.TrimSpace(subsidiary) != "" {
+		zn = strings.TrimSpace(subsidiary)
+	}
+	camp, isAuto := s.catalog.LookupAutoAppliedPromoForPlan(ctx, ep, zn, planCode, pricingMode, trimmed)
+	if !isAuto || camp == nil {
+		return trimmed, ""
+	}
+	slog.Warn("stripped auto-applied OVH catalog campaign code from manual coupon field",
+		"planCode", planCode,
+		"pricingMode", pricingMode,
+		"coupon", trimmed,
+		"campaign", camp.PromoCode,
+		"context", camp.Context,
+		"modes", strings.Join(camp.SupportedModes, ","),
+	)
+	if s.log != nil {
+		s.log.Warn(logger.SourceQueue, "Stripped auto-applied OVH catalog campaign code from manual coupon field (applied automatically by OVH)",
+			"planCode", planCode,
+			"pricingMode", pricingMode,
+			"coupon", trimmed,
+			"campaign", camp.PromoCode,
+			"context", camp.Context,
+			"modes", strings.Join(camp.SupportedModes, ","),
+		)
+	}
+	return "", camp.PromoCode
 }
 
 func (s *Service) getAccountClient(ctx context.Context, accountID string) (*ovh.Client, *store.OVHAccount, error) {
@@ -402,7 +463,12 @@ func (s *Service) executeQueueTask(ctx context.Context, taskID string) {
 			)
 		}
 
-		_, purchaseErr := s.purchaseServer(ctx, *item)
+		purchaseErr := func() error {
+			unlockFlight := s.lockInflightConfig(item.AccountID, item.PlanCode, item.Options, item.PricingMode, item.Coupon)
+			defer unlockFlight()
+			_, err := s.purchaseServer(ctx, *item)
+			return err
+		}()
 
 		// Reload latest item state in case the user paused/deleted/edited while checkout ran.
 		latest, getErr := s.store.GetQueueItem(ctx, taskID)
@@ -436,7 +502,7 @@ func (s *Service) executeQueueTask(ctx context.Context, taskID string) {
 		if maxRetries <= 0 {
 			maxRetries = 50
 		}
-		if errors.Is(purchaseErr, ErrPriceAboveLimit) || errors.Is(purchaseErr, ErrInvalidCoupon) || latest.FailureCount >= maxRetries {
+		if errors.Is(purchaseErr, ErrPriceAboveLimit) || errors.Is(purchaseErr, ErrPriceChangedSinceQuote) || errors.Is(purchaseErr, ErrInvalidCoupon) || latest.FailureCount >= maxRetries {
 			latest.Status = "failed"
 			latest.NextAttemptAt = 0
 		} else {
@@ -487,7 +553,7 @@ func (s *Service) CreateQueueTask(ctx context.Context, req CreateQueueRequest) (
 		source = "manual"
 	}
 	normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon := strings.TrimSpace(req.Coupon)
+	trimmedCoupon, _ := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", planCode, normMode, req.Coupon)
 
 	item := store.QueueItem{
 		AccountID:               strings.TrimSpace(req.AccountID),
@@ -500,6 +566,7 @@ func (s *Service) CreateQueueTask(ctx context.Context, req CreateQueueRequest) (
 		Duration:                normDur,
 		Coupon:                  trimmedCoupon,
 		MaxMonthlyPrice:         req.MaxMonthlyPrice,
+		MaxSetupFee:             req.MaxSetupFee,
 		Currency:                strings.TrimSpace(req.Currency),
 		Quantity:                qty,
 		MaxRetryCount:           maxRetries,
@@ -565,13 +632,17 @@ func (s *Service) UpdateQueueTask(ctx context.Context, id string, req UpdateQueu
 		existing.PricingMode, existing.Duration, _ = catalog.NormalizePricingModeAndDuration(pm, dur)
 	}
 	if req.Coupon != nil {
-		existing.Coupon = strings.TrimSpace(*req.Coupon)
+		cleanCoupon, _ := s.stripAutoAppliedCoupon(ctx, existing.AccountID, "", existing.PlanCode, existing.PricingMode, *req.Coupon)
+		existing.Coupon = cleanCoupon
 	}
 	if req.Currency != nil {
 		existing.Currency = strings.TrimSpace(*req.Currency)
 	}
 	if req.MaxMonthlyPrice != nil && *req.MaxMonthlyPrice >= 0 {
 		existing.MaxMonthlyPrice = *req.MaxMonthlyPrice
+	}
+	if req.MaxSetupFee != nil && *req.MaxSetupFee >= 0 {
+		existing.MaxSetupFee = *req.MaxSetupFee
 	}
 	if req.RetryInterval != nil && *req.RetryInterval > 0 {
 		existing.RetryInterval = *req.RetryInterval
@@ -615,7 +686,7 @@ func (s *Service) QuoteOrder(ctx context.Context, req QuoteRequest) (*QuoteResul
 	}
 	opts := cleanStringList(req.Options)
 	normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon := strings.TrimSpace(req.Coupon)
+	trimmedCoupon, strippedCode := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", planCode, normMode, req.Coupon)
 
 	if s.catalog == nil {
 		return nil, errors.New("catalog service is unavailable")
@@ -642,14 +713,16 @@ func (s *Service) QuoteOrder(ctx context.Context, req QuoteRequest) (*QuoteResul
 	}
 
 	return &QuoteResult{
-		PlanCode:    planCode,
-		ModelName:   modelName,
-		Datacenter:  strings.ToUpper(dc),
-		Options:     opts,
-		PricingMode: normMode,
-		Duration:    normDur,
-		Coupon:      trimmedCoupon,
-		Price:       priceRes.Price,
+		PlanCode:             planCode,
+		ModelName:            modelName,
+		Datacenter:           strings.ToUpper(dc),
+		Options:              opts,
+		PricingMode:          normMode,
+		Duration:             normDur,
+		Coupon:               trimmedCoupon,
+		CouponStripped:       strippedCode != "",
+		AutoAppliedPromoCode: strippedCode,
+		Price:                priceRes.Price,
 	}, nil
 }
 
@@ -668,8 +741,12 @@ func (s *Service) CreateUnpaidOrder(ctx context.Context, req UnpaidOrderRequest)
 	if taskID == "" {
 		taskID = fmt.Sprintf("mcp-order-%d", time.Now().UnixNano())
 	}
+	opts := cleanStringList(req.Options)
 	normMode, normDur, _ := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon := strings.TrimSpace(req.Coupon)
+	trimmedCoupon, _ := s.stripAutoAppliedCoupon(ctx, req.AccountID, "", planCode, normMode, req.Coupon)
+
+	unlockFlight := s.lockInflightConfig(req.AccountID, planCode, opts, normMode, trimmedCoupon)
+	defer unlockFlight()
 
 	// Hardcoded safety invariants: never auto-pay, never waive 14-day EU retractation, quantity strictly 1.
 	syntheticItem := store.QueueItem{
@@ -677,10 +754,12 @@ func (s *Service) CreateUnpaidOrder(ctx context.Context, req UnpaidOrderRequest)
 		AccountID:               strings.TrimSpace(req.AccountID),
 		PlanCode:                planCode,
 		Datacenters:             []string{dc},
-		Options:                 cleanStringList(req.Options),
+		Options:                 opts,
 		PricingMode:             normMode,
 		Duration:                normDur,
 		Coupon:                  trimmedCoupon,
+		MaxMonthlyPrice:         req.MaxMonthlyPrice,
+		MaxSetupFee:             req.MaxSetupFee,
 		Quantity:                1,
 		Purchased:               0,
 		RetryCount:              1,
@@ -688,7 +767,7 @@ func (s *Service) CreateUnpaidOrder(ctx context.Context, req UnpaidOrderRequest)
 		WaiveRetractationPeriod: false,
 	}
 
-	hist, err := s.purchaseServer(ctx, syntheticItem)
+	hist, err := s.purchaseServerWithOptions(ctx, syntheticItem, req.EnforceQuoteCap)
 	if err != nil {
 		return nil, err
 	}
@@ -762,10 +841,7 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 				dict, _ := s.catalog.GetDictionary(ctx, ep, zn, false)
 				var defMem, defSto string
 				if dict != nil {
-					if e, ok := dict.RealPlans[planCode]; ok {
-						defMem = nonEmptyStr(e.DefaultMemory, e.DefaultSpecs.Memory)
-						defSto = nonEmptyStr(e.DefaultStorage, e.DefaultSpecs.Storage)
-					} else if e, ok := dict.Plans[planCode]; ok {
+					if e, ok := dict.LookupPlan(planCode); ok {
 						defMem = nonEmptyStr(e.DefaultMemory, e.DefaultSpecs.Memory)
 						defSto = nonEmptyStr(e.DefaultStorage, e.DefaultSpecs.Storage)
 					}
@@ -817,13 +893,18 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 	}
 
 	normMode, normDur, intervalMonths := catalog.NormalizePricingModeAndDuration(req.PricingMode, req.Duration)
-	trimmedCoupon := strings.TrimSpace(req.Coupon)
+	trimmedCoupon, strippedCode := s.stripAutoAppliedCoupon(ctx, req.AccountID, req.Subsidiary, planCode, normMode, req.Coupon)
+
+	if !req.SkipDuplicateCheck {
+		unlockFlight := s.lockInflightConfig(req.AccountID, planCode, opts, normMode, trimmedCoupon)
+		defer unlockFlight()
+	}
 
 	var pricePayload *catalog.ServerPricePayload
 	var periodExVAT, liveMonthlyExVAT, setupFeeExVAT float64
 	currency := nonEmptyStr(req.Currency, "EUR")
 
-	if req.SkipPriceCheck && req.MaxMonthlyPrice <= 0 && trimmedCoupon == "" {
+	if req.SkipPriceCheck && req.MaxMonthlyPrice <= 0 && req.MaxSetupFee <= 0 && trimmedCoupon == "" {
 		zero := 0.0
 		pricePayload = &catalog.ServerPricePayload{
 			PricingMode:    normMode,
@@ -897,21 +978,22 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 					Quantity:    qty,
 				}, http.StatusBadRequest, ErrPriceCheckFailed
 			}
-			if req.MaxMonthlyPrice > 0 && liveMonthlyExVAT > req.MaxMonthlyPrice+0.01 {
+			if (req.MaxMonthlyPrice > 0 && liveMonthlyExVAT > req.MaxMonthlyPrice+0.01) ||
+				(req.MaxSetupFee > 0 && setupFeeExVAT > req.MaxSetupFee+0.01) {
 				return s.abortPriceAboveLimit(ctx, req, planCode, datacenter, opts, qty, pricePayload, periodExVAT, liveMonthlyExVAT, setupFeeExVAT, normMode, normDur, trimmedCoupon, currency)
 			}
 		}
 	}
 
 	if !req.SkipDuplicateCheck {
-		targetFP := optionsFingerprint(opts, normMode)
+		targetFP := optionsFingerprint(opts, normMode, trimmedCoupon)
 		activeItems, err := s.store.ListQueue(ctx, req.AccountID)
 		if err == nil {
 			for _, item := range activeItems {
 				if item.PlanCode == planCode &&
-					slices.Contains(item.Datacenters, datacenter) &&
+					datacentersOverlap(item.Datacenters, datacenter) &&
 					(item.Status == "running" || item.Status == "pending" || item.Status == "paused") &&
-					optionsFingerprint(item.Options, item.PricingMode) == targetFP {
+					optionsFingerprint(item.Options, item.PricingMode, item.Coupon) == targetFP {
 					return &QuickOrderResult{
 						Success:     false,
 						Code:        "DUPLICATE_QUEUE_TASK",
@@ -932,9 +1014,9 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 			cutoff := time.Now().Add(-120 * time.Second)
 			for _, h := range histItems {
 				if h.PlanCode == planCode &&
-					h.Datacenter == datacenter &&
+					datacentersMatch(h.Datacenter, datacenter) &&
 					h.Status == "success" &&
-					optionsFingerprint(h.Options, h.PricingMode) == targetFP {
+					optionsFingerprint(h.Options, h.PricingMode, h.Coupon) == targetFP {
 					if ts, parseErr := time.Parse(time.RFC3339Nano, h.Timestamp); parseErr == nil && ts.After(cutoff) {
 						return &QuickOrderResult{
 							Success:     false,
@@ -969,6 +1051,7 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 		Duration:                normDur,
 		Coupon:                  trimmedCoupon,
 		MaxMonthlyPrice:         req.MaxMonthlyPrice,
+		MaxSetupFee:             req.MaxSetupFee,
 		Currency:                currency,
 		Quantity:                qty,
 		MaxRetryCount:           3,
@@ -1002,6 +1085,7 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 			"duration", normDur,
 			"quantity", qty,
 			"maxMonthlyPrice", req.MaxMonthlyPrice,
+			"maxSetupFee", req.MaxSetupFee,
 			"periodExVat", periodExVAT,
 			"monthlyExVat", liveMonthlyExVAT,
 			"setupFeeExVat", setupFeeExVAT,
@@ -1011,19 +1095,21 @@ func (s *Service) QuickOrder(ctx context.Context, req QuickOrderRequest) (*Quick
 	}
 
 	return &QuickOrderResult{
-		Success:      true,
-		ID:           created.ID,
-		Message:      fmt.Sprintf("%s (%s) added to procurement queue", planCode, strings.ToUpper(datacenter)),
-		Price:        pricePayload,
-		PeriodPrice:  periodExVAT,
-		MonthlyPrice: liveMonthlyExVAT,
-		SetupFee:     setupFeeExVAT,
-		PricingMode:  normMode,
-		Duration:     normDur,
-		Coupon:       trimmedCoupon,
-		Quantity:     qty,
-		Options:      opts,
-		Item:         created,
+		Success:              true,
+		ID:                   created.ID,
+		Message:              fmt.Sprintf("%s (%s) added to procurement queue", planCode, strings.ToUpper(datacenter)),
+		Price:                pricePayload,
+		PeriodPrice:          periodExVAT,
+		MonthlyPrice:         liveMonthlyExVAT,
+		SetupFee:             setupFeeExVAT,
+		PricingMode:          normMode,
+		Duration:             normDur,
+		Coupon:               trimmedCoupon,
+		CouponStripped:       strippedCode != "",
+		AutoAppliedPromoCode: strippedCode,
+		Quantity:             qty,
+		Options:              opts,
+		Item:                 created,
 	}, http.StatusOK, nil
 }
 
@@ -1131,6 +1217,17 @@ func (s *Service) quoteLiveCart(
 	if trimmedCoupon != "" {
 		if couponErr := catalog.ApplyCartCoupon(ctx, client, cartID, trimmedCoupon); couponErr != nil {
 			deleteCartOnce()
+			if ovhclient.IsTransientError(couponErr) {
+				return nil, 0, 0, 0, "EUR", couponErr
+			}
+			if s.catalog != nil {
+				if camp, isAuto := s.catalog.LookupAutoAppliedPromo(ctx, ep, zone, trimmedCoupon); isAuto && camp != nil {
+					return nil, 0, 0, 0, "EUR", fmt.Errorf(
+						"%w: %s is an automatic OVH catalog promotion (context=%s, modes=%s) applied automatically without a coupon code — leave Coupon empty (%v)",
+						ErrInvalidCoupon, camp.PromoCode, camp.Context, strings.Join(camp.SupportedModes, "/"), couponErr,
+					)
+				}
+			}
 			return nil, 0, 0, 0, "EUR", fmt.Errorf("%w: %v", ErrInvalidCoupon, couponErr)
 		}
 	}
@@ -1360,6 +1457,10 @@ func (s *Service) abortPriceAboveLimit(
 }
 
 func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*store.PurchaseHistory, error) {
+	return s.purchaseServerWithOptions(ctx, item, false)
+}
+
+func (s *Service) purchaseServerWithOptions(ctx context.Context, item store.QueueItem, enforceQuoteCap bool) (*store.PurchaseHistory, error) {
 	acctMu := s.accountLock(item.AccountID)
 	acctMu.Lock()
 	defer acctMu.Unlock()
@@ -1452,6 +1553,18 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 	if trimmedCoupon != "" {
 		if couponErr := catalog.ApplyCartCoupon(ctx, client, cartID, trimmedCoupon); couponErr != nil {
 			s.deleteCartQuietly(client, cartID)
+			if ovhclient.IsTransientError(couponErr) {
+				if s.log != nil {
+					s.log.Warn(logger.SourceQueue, "Transient OVH error applying cart coupon; keeping task for retry",
+						"taskId", item.ID,
+						"planCode", item.PlanCode,
+						"datacenter", selectedDisplayDC,
+						"coupon", trimmedCoupon,
+						"error", couponErr.Error(),
+					)
+				}
+				return nil, s.recordFailedPurchase(ctx, item, selectedDisplayDC, fmt.Sprintf("apply coupon transient error: %v", couponErr))
+			}
 			errMsg := fmt.Sprintf("INVALID_COUPON: coupon %q was rejected by OVH for %s (%v)", trimmedCoupon, item.PlanCode, couponErr)
 			slog.Warn("order aborted: OVH rejected cart coupon",
 				"planCode", item.PlanCode,
@@ -1499,7 +1612,20 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 	currency := nonEmptyStr(item.Currency, "EUR")
 	var summary map[string]any
 	var cartInfo map[string]any
-	if sumErr := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/summary", url.PathEscape(cartID)), &summary); sumErr == nil {
+	var summaryErr error
+	summaryURL := fmt.Sprintf("/order/cart/%s/summary", url.PathEscape(cartID))
+	sumErr := client.GetWithContext(ctx, summaryURL, &summary)
+	if sumErr != nil && enforceQuoteCap && ovhclient.IsTransientError(sumErr) {
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+			summary = nil
+			sumErr = client.GetWithContext(ctx, summaryURL, &summary)
+		}
+	}
+	if sumErr == nil {
 		_ = client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s", url.PathEscape(cartID)), &cartInfo)
 		parsed := catalog.ExtractCartPricePayload(summary, cartInfo)
 		periodExVAT, setupFeeExVAT, currency = extractCartRecurringAndSetupPrice(summary, cartInfo, parsed)
@@ -1535,26 +1661,79 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 				priceInfo.Text = priceText
 			}
 		}
+	} else {
+		summaryErr = sumErr
 	}
 
-	if item.MaxMonthlyPrice > 0 && liveMonthlyExVAT > item.MaxMonthlyPrice+0.01 {
+	if enforceQuoteCap {
+		if summaryErr != nil || (liveMonthlyExVAT <= 0 && periodExVAT <= 0) {
+			s.deleteCartQuietly(client, cartID)
+			errMsg := fmt.Sprintf("PRICE_CHECK_FAILED: unable to verify live cart summary before checkout for %s (%v)", item.PlanCode, summaryErr)
+			_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
+			return nil, fmt.Errorf("%w: %s", ErrPriceCheckFailed, errMsg)
+		}
+		monthlyExceeded := item.MaxMonthlyPrice > 0 && liveMonthlyExVAT > item.MaxMonthlyPrice+0.01
+		setupExceeded := setupFeeExVAT > item.MaxSetupFee+0.01
+		if monthlyExceeded || setupExceeded {
+			s.deleteCartQuietly(client, cartID)
+			errMsg := fmt.Sprintf(
+				"PRICE_CHANGED_SINCE_QUOTE: live cart price for %s exceeded quote (liveMonthly=%.2f %s vs quoted=%.2f, liveSetup=%.2f vs quoted=%.2f)",
+				item.PlanCode, liveMonthlyExVAT, currency, item.MaxMonthlyPrice, setupFeeExVAT, item.MaxSetupFee,
+			)
+			if s.log != nil {
+				s.log.Warn(logger.SourceQueue, "MCP unpaid order aborted: live cart price increased since quote",
+					"planCode", item.PlanCode,
+					"pricingMode", normMode,
+					"liveMonthlyExVAT", liveMonthlyExVAT,
+					"quotedMonthlyExVAT", item.MaxMonthlyPrice,
+					"liveSetupFeeExVAT", setupFeeExVAT,
+					"quotedSetupFeeExVAT", item.MaxSetupFee,
+				)
+			}
+			_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
+			return nil, fmt.Errorf("%w: %s", ErrPriceChangedSinceQuote, errMsg)
+		}
+	}
+
+	hasPriceCap := item.MaxMonthlyPrice > 0 || item.MaxSetupFee > 0
+	if !enforceQuoteCap && hasPriceCap && (summaryErr != nil || (liveMonthlyExVAT <= 0 && periodExVAT <= 0)) {
 		s.deleteCartQuietly(client, cartID)
-		slog.Warn("quick order aborted: live cart monthly price exceeds configured maxMonthlyPrice",
+		errMsg := fmt.Sprintf("PRICE_CHECK_FAILED: unable to verify live cart price against configured cap for %s (%v)", item.PlanCode, summaryErr)
+		if s.log != nil {
+			s.log.Warn(logger.SourceQueue, "Order attempt aborted (will retry): failed to verify live cart summary against price cap",
+				"taskId", item.ID,
+				"planCode", item.PlanCode,
+				"maxMonthlyPrice", item.MaxMonthlyPrice,
+				"maxSetupFee", item.MaxSetupFee,
+				"error", errMsg,
+			)
+		}
+		_ = s.recordFailedPurchase(ctx, item, selectedDisplayDC, errMsg)
+		return nil, fmt.Errorf("%w: %s", ErrPriceCheckFailed, errMsg)
+	}
+
+	monthlyCapExceeded := item.MaxMonthlyPrice > 0 && liveMonthlyExVAT > item.MaxMonthlyPrice+0.01
+	setupCapExceeded := item.MaxSetupFee > 0 && setupFeeExVAT > item.MaxSetupFee+0.01
+	if monthlyCapExceeded || setupCapExceeded {
+		s.deleteCartQuietly(client, cartID)
+		slog.Warn("order aborted: live cart price exceeds configured cap",
 			"planCode", item.PlanCode,
 			"pricingMode", normMode,
 			"periodExVAT", periodExVAT,
 			"liveMonthlyExVAT", liveMonthlyExVAT,
 			"maxMonthlyPrice", item.MaxMonthlyPrice,
 			"setupFeeExVAT", setupFeeExVAT,
+			"maxSetupFee", item.MaxSetupFee,
 		)
 		if s.log != nil {
-			s.log.Warn(logger.SourceQueue, "quick order aborted: live cart monthly price exceeds configured maxMonthlyPrice",
+			s.log.Warn(logger.SourceQueue, "order aborted: live cart price exceeds configured cap",
 				"planCode", item.PlanCode,
 				"pricingMode", normMode,
 				"periodExVAT", periodExVAT,
 				"liveMonthlyExVAT", liveMonthlyExVAT,
 				"maxMonthlyPrice", item.MaxMonthlyPrice,
 				"setupFeeExVAT", setupFeeExVAT,
+				"maxSetupFee", item.MaxSetupFee,
 			)
 		}
 		labelPart := strings.TrimSpace(item.ConfigLabel)
@@ -1562,7 +1741,10 @@ func (s *Service) purchaseServer(ctx context.Context, item store.QueueItem) (*st
 			labelPart = strings.TrimSpace(item.ConfigKey)
 		}
 		var errMsg string
-		if labelPart != "" {
+		if setupCapExceeded && !monthlyCapExceeded {
+			errMsg = fmt.Sprintf("PRICE_ABOVE_LIMIT: order for %s was blocked by setup fee cap (liveSetupFeeExVAT %.2f %s > maxSetupFee %.2f %s)",
+				item.PlanCode, setupFeeExVAT, currency, item.MaxSetupFee, currency)
+		} else if labelPart != "" {
 			errMsg = fmt.Sprintf("PRICE_ABOVE_LIMIT: auto-order for %s (%s) was blocked by the price cap (liveMonthlyExVAT %.2f %s > maxMonthlyPrice %.2f %s)",
 				item.PlanCode, labelPart, liveMonthlyExVAT, currency, item.MaxMonthlyPrice, currency)
 		} else {
@@ -1737,8 +1919,6 @@ func extractCartRecurringAndSetupPrice(
 			var val float64
 			if it.Prices.WithoutTax != nil && *it.Prices.WithoutTax != 0 {
 				val = *it.Prices.WithoutTax
-			} else if it.Prices.WithTax != nil && *it.Prices.WithTax != 0 {
-				val = *it.Prices.WithTax
 			}
 			if val == 0 {
 				continue
@@ -1783,13 +1963,6 @@ func extractCartRecurringAndSetupPrice(
 			monthlyExVAT = totalEx - setupFeeExVAT
 		} else {
 			monthlyExVAT = totalEx
-		}
-	case parsed != nil && parsed.Prices.WithTax != nil && *parsed.Prices.WithTax > 0:
-		totalInc := *parsed.Prices.WithTax
-		if setupFeeExVAT > 0 && totalInc > setupFeeExVAT {
-			monthlyExVAT = totalInc - setupFeeExVAT
-		} else {
-			monthlyExVAT = totalInc
 		}
 	}
 
@@ -1866,9 +2039,6 @@ func extractCartItemExVATPrice(it map[string]any) (float64, string) {
 			return v, cc
 		}
 		if v, cc := extractNumericPriceAndCurrency(pm["totalPrice"]); v != 0 {
-			return v, cc
-		}
-		if v, cc := extractNumericPriceAndCurrency(pm["withTax"]); v != 0 {
 			return v, cc
 		}
 	}
@@ -2122,10 +2292,14 @@ func nonEmptyStr(a, b string) string {
 	return strings.TrimSpace(b)
 }
 
-func optionsFingerprint(opts []string, pricingMode ...string) string {
+func optionsFingerprint(opts []string, modeAndCoupon ...string) string {
 	mode := "default"
-	if len(pricingMode) > 0 && strings.TrimSpace(pricingMode[0]) != "" {
-		mode, _, _ = catalog.NormalizePricingModeAndDuration(pricingMode[0], "")
+	if len(modeAndCoupon) > 0 && strings.TrimSpace(modeAndCoupon[0]) != "" {
+		mode, _, _ = catalog.NormalizePricingModeAndDuration(modeAndCoupon[0], "")
+	}
+	coupon := ""
+	if len(modeAndCoupon) > 1 {
+		coupon = strings.ToLower(strings.TrimSpace(modeAndCoupon[1]))
 	}
 	norm := make([]string, 0, len(opts))
 	for _, o := range opts {
@@ -2134,7 +2308,28 @@ func optionsFingerprint(opts []string, pricingMode ...string) string {
 		}
 	}
 	slices.Sort(norm)
-	return mode + "::" + strings.Join(norm, "|")
+	return mode + "::" + coupon + "::" + strings.Join(norm, "|")
+}
+
+func datacentersMatch(a, b string) bool {
+	na := strings.ToLower(strings.TrimSpace(a))
+	nb := strings.ToLower(strings.TrimSpace(b))
+	if na == "" || nb == "" {
+		return false
+	}
+	if na == "any" || nb == "any" {
+		return true
+	}
+	return na == nb
+}
+
+func datacentersOverlap(list []string, target string) bool {
+	for _, dc := range list {
+		if datacentersMatch(dc, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSub(endpoint, zone string) string {

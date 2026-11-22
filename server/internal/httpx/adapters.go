@@ -324,6 +324,20 @@ func (a *catalogAdapter) GetSKUChangesFiltered(ctx context.Context, limit int, c
 	}).GetSKUChangesFiltered(ctx, limit, changeType, listingState)
 }
 
+func (a *catalogAdapter) GetPromotions(ctx context.Context, opts catalog.PromotionsQueryOptions) (*catalog.CatalogPromotionsResponse, error) {
+	if a.cat == nil {
+		return nil, errors.New("catalog service is not configured")
+	}
+	ep, zn := a.resolveEndpointAndZone(ctx)
+	if strings.TrimSpace(opts.Endpoint) == "" {
+		opts.Endpoint = ep
+	}
+	if strings.TrimSpace(opts.Zone) == "" {
+		opts.Zone = zn
+	}
+	return a.cat.GetPromotions(ctx, opts)
+}
+
 type procurementAdapter struct {
 	proc *procurement.Service
 }
@@ -333,14 +347,26 @@ func (a *procurementAdapter) QuoteOrder(
 	accountID, planCode, datacenter string,
 	options []string,
 ) (*mcp.OrderQuoteResult, error) {
+	return a.QuoteOrderWithMode(ctx, accountID, planCode, datacenter, options, "default", "P1M", "")
+}
+
+func (a *procurementAdapter) QuoteOrderWithMode(
+	ctx context.Context,
+	accountID, planCode, datacenter string,
+	options []string,
+	pricingMode, duration, coupon string,
+) (*mcp.OrderQuoteResult, error) {
 	if a.proc == nil {
 		return nil, errors.New("procurement service is not configured")
 	}
 	res, err := a.proc.QuoteOrder(ctx, procurement.QuoteRequest{
-		AccountID:  accountID,
-		PlanCode:   planCode,
-		Datacenter: datacenter,
-		Options:    options,
+		AccountID:   accountID,
+		PlanCode:    planCode,
+		Datacenter:  datacenter,
+		Options:     options,
+		PricingMode: pricingMode,
+		Duration:    duration,
+		Coupon:      coupon,
 	})
 	if err != nil {
 		return nil, err
@@ -357,11 +383,17 @@ func (a *procurementAdapter) CreateUnpaidOrder(ctx context.Context, req mcp.Unpa
 		return nil, errors.New("procurement service is not configured")
 	}
 	res, err := a.proc.CreateUnpaidOrder(ctx, procurement.UnpaidOrderRequest{
-		TaskID:     req.TaskID,
-		AccountID:  req.AccountID,
-		PlanCode:   req.PlanCode,
-		Datacenter: req.Datacenter,
-		Options:    req.Options,
+		TaskID:          req.TaskID,
+		AccountID:       req.AccountID,
+		PlanCode:        req.PlanCode,
+		Datacenter:      req.Datacenter,
+		Options:         req.Options,
+		PricingMode:     req.PricingMode,
+		Duration:        req.Duration,
+		Coupon:          req.Coupon,
+		MaxMonthlyPrice: req.MaxMonthlyPrice,
+		MaxSetupFee:     req.MaxSetupFee,
+		EnforceQuoteCap: req.EnforceQuoteCap,
 	})
 	if err != nil {
 		return nil, err
