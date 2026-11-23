@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/ovh/go-ovh v1.9.0
+	github.com/ovh/go-ovh v1.10.0
 	golang.org/x/crypto v0.59.0
 	modernc.org/sqlite v1.62.0
 )
